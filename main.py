@@ -1245,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.15")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.16")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3002,6 +3002,10 @@ class BioCorePlugin(Star):
                          "BioCore core restore")
                 register("/astrbot_plugin_biocore/page/consolidate", self.page_consolidate, ["POST"],
                          "BioCore memory consolidation")
+                register("/astrbot_plugin_biocore/page/memory/rollback/<path:session>/<entry_id>",
+                         self.page_memory_rollback, ["POST"], "BioCore memory rollback")
+                register("/astrbot_plugin_biocore/page/memory/delete/<path:session>/<entry_id>",
+                         self.page_memory_delete, ["POST"], "BioCore memory soft delete")
         except Exception as exc:
             logger.warning("[biocore] page api register failed: %s", exc)
 
@@ -3113,6 +3117,60 @@ class BioCorePlugin(Star):
             pass
         logger.info("[biocore] restored %s data files", count)
         return {"status": "ok", "data": {"files": count}}
+
+    def _memory_doc_for_session(self, session_key: str) -> tuple[Path, dict]:
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(session_key or "default"))[:80]
+        path = MEMORY_DIR / (safe + ".json")
+        if path.exists():
+            try:
+                d = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(d, dict):
+                    return path, d
+            except Exception:
+                pass
+        return path, {"entries": []}
+
+    def _memory_save_doc_for_session(self, path: Path, doc: dict) -> None:
+        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def _memory_entry_id(entry: dict) -> str:
+        if not isinstance(entry, dict):
+            return ""
+        return str(entry.get("id") or "").strip()
+
+    async def page_memory_rollback(self, session: str, entry_id: str):
+        """Rollback one memory entry to its previous version (dashboard API)."""
+        try:
+            path, doc = self._memory_doc_for_session(session)
+            entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+            target = next((e for e in entries if isinstance(e, dict) and self._memory_entry_id(e) == entry_id), None)
+            if target is None:
+                return {"status": "error", "message": "memory entry not found", "data": {}}
+            if not memory_meta.rollback_entry(target):
+                return {"status": "error", "message": "no previous version", "data": {}}
+            target["rollback_ts"] = time.time()
+            self._memory_save_doc_for_session(path, doc)
+            return {"status": "ok", "data": {"session": session, "id": entry_id, "text": target.get("text", "")[:160]}}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:180], "data": {}}
+
+    async def page_memory_delete(self, session: str, entry_id: str):
+        """Soft-delete one memory entry; keeps a tombstone for audit."""
+        try:
+            path, doc = self._memory_doc_for_session(session)
+            entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+            target = next((e for e in entries if isinstance(e, dict) and self._memory_entry_id(e) == entry_id), None)
+            if target is None:
+                return {"status": "error", "message": "memory entry not found", "data": {}}
+            doc["tombstones"] = (doc.get("tombstones") if isinstance(doc.get("tombstones"), list) else [])[-100:]
+            doc["tombstones"].append({"id": entry_id, "ts": time.time(), "text": str(target.get("text", ""))[:200]})
+            doc["entries"] = [e for e in entries if not (isinstance(e, dict) and self._memory_entry_id(e) == entry_id)]
+            self._memory_save_doc_for_session(path, doc)
+            return {"status": "ok", "data": {"session": session, "id": entry_id, "deleted": True}}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:180], "data": {}}
 
     async def page_consolidate(self):
         """Force one memory consolidation pass over all local sessions."""
@@ -3730,6 +3788,8 @@ class BioCorePlugin(Star):
                     duplicate["memory_confidence"] = min(float(duplicate.get("memory_confidence", 0.5) or 0.5), 0.55)
                 except Exception:
                     duplicate["memory_confidence"] = 0.55
+            if not duplicate.get("id"):
+                duplicate["id"] = _sha256(str(duplicate.get("text", ""))[:300])[:12]
             duplicate["memory_tier"] = memory_meta.memory_tier(duplicate, now)
             _write_op = memory_meta.classify_write_op(
                 duplicate, {"text": text[:1200]}, 1.0, conflict=_conflict or bool(duplicate.get("conflict"))
@@ -3741,7 +3801,7 @@ class BioCorePlugin(Star):
             duplicate["provenance"] = self._memory_provenance(event, now)
         else:
             _importance = self._memory_importance(core, "user")
-            entries.append({"text": text[:1200], "role": "user", "vector": vec,
+            entries.append({"id": _sha256(str(text)[:300])[:12], "text": text[:1200], "role": "user", "vector": vec,
                             "ts": now, "hits": 1,
                             "sender_id": _sid, "sender_name": _sname,
                             "attachments": self._attachments_from_messages(event),
@@ -3756,12 +3816,13 @@ class BioCorePlugin(Star):
                             "last_write_op": "ADD",
                             "write_ops": {"ADD": 1},
                             "memory_tier": "hot",
+                            "id": _sha256(str(text)[:300])[:12],
                             "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
             self._trim_memory(doc, core)
         self._save_memory(event, doc)
         self._schedule_consolidation(event, core)
         scored.sort(key=lambda x: x[0], reverse=True)
-        top = scored[:self._memory_top_k(core)]
+        top = memory_meta.select_top(scored, self._memory_top_k(core))
         # Nader reconsolidation + Ebbinghaus review: recalling an item makes
         # it labile, strengthens it slightly, and schedules the next review.
         _intervals = [1, 2, 4, 7, 15, 30, 60]
@@ -3785,7 +3846,7 @@ class BioCorePlugin(Star):
                 e["stability_days"] = round(_st, 3)
                 _days = max(_intervals[min(_rc - 1, len(_intervals) - 1)], _st)
                 e["next_review_ts"] = now + _days * 86400
-                _eid = self._sha256(str(e.get("text", ""))[:300])[:12]
+                _eid = _sha256(str(e.get("text", ""))[:300])[:12]
                 e["id"] = _eid
                 _ids.append(e)
             except Exception:

@@ -240,6 +240,42 @@ def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> No
     entry["previous_versions"] = versions[-max(1, int(limit)):]
 
 
+def select_top(scored: Any, k: Any, *, cold_budget: int = 2) -> list:
+    """Select top memories with a small cold-tier budget.
+
+    Hot/warm entries are preferred; cold entries fill remaining slots only up
+    to cold_budget. This is a conservative read budget, not an eviction.
+    """
+    try:
+        limit = max(0, int(k))
+    except Exception:
+        limit = 0
+    if limit <= 0 or not isinstance(scored, list):
+        return []
+    warm_or_better: list = []
+    cold: list = []
+    for item in scored:
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        entry = item[1]
+        tier = str(entry.get("memory_tier") or "warm") if isinstance(entry, dict) else "warm"
+        if tier == "cold":
+            cold.append(item)
+        else:
+            warm_or_better.append(item)
+    selected = warm_or_better[:limit]
+    remaining = max(0, limit - len(selected))
+    selected.extend(cold[:min(remaining, max(0, int(cold_budget)))])
+    if len(selected) < limit:
+        used = {id(x[1]) for x in selected}
+        for item in cold:
+            if id(item[1]) not in used:
+                selected.append(item)
+                if len(selected) >= limit:
+                    break
+    return selected[:limit]
+
+
 def rollback_entry(entry: dict[str, Any] | None) -> bool:
     """Restore the last previous version, if any. Vector is invalidated."""
     if not isinstance(entry, dict):
