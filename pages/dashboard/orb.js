@@ -172,7 +172,7 @@
 
   let sig = null;
   if (signalCanvas) { const SD = Math.min(2, window.devicePixelRatio || 1); signalCanvas.width = 1000 * SD; signalCanvas.height = 160 * SD; sig = signalCanvas.getContext("2d"); sig.scale(SD, SD); }
-  const hist = { echo: [], upper: [], lower: [], noise: [], spike: [] };
+  const hist = { echo: [], upper: [], lower: [], noise: [], spike: [], bio: [] };
   Object.keys(hist).forEach(k => { for (let i = 0; i < 120; i++) hist[k].push(.5); });
   function pushHistory(s) {
     const rp = s.ripple || {}, n = s.noise || {}, t = phase * 2.2;
@@ -181,6 +181,16 @@
     hist.lower.push(clamp((rp.lower || 0) + Math.cos(t * 1.1 + .4) * .06));
     hist.noise.push(clamp(.5 + (Number(n.energy || 0) + Number(n.social || 0)) * 1.6 + Math.sin(t * 1.8) * .08));
     hist.spike.push(clamp((s.spiking && s.spiking.rate || 0) * 6 + Math.max(0, Math.sin(t * 3.4)) * .25));
+    // State-driven bio signal (not white noise): valence/arousal/energy/stress/echo.
+    // Noise channels only modulate the high-frequency texture below.
+    const _v = clamp((Number(s.v || 0) + 1) / 2);
+    const _a = clamp(s.a == null ? .5 : s.a);
+    const _energy = clamp(s.energy == null ? .5 : s.energy);
+    const _stress = clamp(Math.abs(Number(n.stress || 0)) * 2 + Math.abs(Number(n.attention || 0)));
+    const _echo = clamp(Math.abs(Number(s.echo_trace || s.echo || 0)));
+    const _bio = clamp(.30 * _v + .22 * _a + .16 * _energy + .12 * (1 - _stress) + .10 * _echo +
+                       .10 * (.5 + .5 * Math.sin(t * 1.1)));
+    hist.bio.push(_bio);
     Object.keys(hist).forEach(k => { if (hist[k].length > 120) hist[k].shift(); });
   }
   function drawSignal() {
@@ -225,9 +235,10 @@
       const w2 = Math.sin(t * Math.PI * 9.4 - phase * 1.0 + ripple * 2.6);
       const interference = (w1 + w2) * .5 * (1 + overlap * .9);
       const jitter = (Math.sin(t * Math.PI * 37 + phase * 7.0) + Math.sin(t * Math.PI * 23 - phase * 4.0)) * .5 * nAmp;
-      let v = interference * .54 + jitter * .22 + (hist.echo[i] - .5) * echo * .28;
+      let v = (hist.bio[i] - .5) * 2 * .58
+            + interference * .34 + jitter * .20 + (hist.echo[i] - .5) * echo * .24;
       reflection = reflection * .93 + v * .18;
-      v += reflection * .60 + (hist.spike[i] - .5) * spike * .55;
+      v += reflection * .55 + (hist.spike[i] - .5) * spike * .50;
       vals.push(Math.max(-1, Math.min(1, v)));
     }
     const X = i => LEFT + i / (n - 1) * (SW - LEFT - RIGHT);
