@@ -1,16 +1,38 @@
 # -*- coding: utf-8 -*-
 """Deterministic memory provenance, confidence and write-op helpers.
 
-This module is intentionally free of AstrBot imports so it can be used by
-scripts/eval_metamemory_policy.py and unit-tested without starting AstrBot.
+The module is intentionally free of AstrBot imports so it can be used by
+scripts/eval_metamemory_policy.py without starting AstrBot.
 
 It does not call an LLM. The LLM/interpretation layer may propose candidates,
-but these helpers decide the stored metadata and conservative write operation.
+but these helpers decide what metadata is stored and which conservative write
+operation is allowed.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
+
+__all__ = [
+    "SOURCE_RANK",
+    "normalize_source",
+    "source_for_input",
+    "initial_confidence",
+    "update_confidence",
+    "merge_sources",
+    "source_precedence",
+    "retrieval_weight",
+    "should_abstain",
+    "classify_write_op",
+    "memory_tier",
+    "detect_conflict",
+    "merge_version",
+    "select_top",
+    "summarize_recall",
+    "rollback_entry",
+    "build_destination",
+]
 
 SOURCE_RANK = {
     "direct": 5,
@@ -30,13 +52,44 @@ _BASE_CONFIDENCE = {
     "unknown": 0.35,
 }
 
+_SOURCE_WEIGHT = {
+    "direct": 1.0,
+    "media": 0.97,
+    "told": 0.92,
+    "retrieved": 0.88,
+    "inferred": 0.80,
+    "unknown": 0.75,
+}
+
+_TIER_WEIGHT = {"hot": 1.03, "warm": 1.0, "cold": 0.97}
+
+_CONFLICT_MARKERS = (
+    "改成",
+    "改为",
+    "其实是",
+    "更正",
+    "纠正",
+    "不是",
+    "不再",
+    "取消",
+    "推迟",
+    "换到",
+    "变成",
+    "update",
+    "correction",
+    "instead",
+)
+
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, float(value)))
+    try:
+        return max(low, min(high, float(value)))
+    except Exception:
+        return low
 
 
 def normalize_source(value: Any) -> str:
-    """Normalize a source label to one of the known deterministic labels."""
+    """Normalize a source label to a known deterministic label."""
     text = str(value or "").strip().lower()
     aliases = {
         "user": "direct",
@@ -88,13 +141,14 @@ def update_confidence(
 ) -> float:
     """Blend previous confidence with deterministic evidence features.
 
-    Repeated recall raises confidence slowly; age lowers it slowly. This is not
-    a statistical calibrator; it is a conservative default until real
-    probability calibration is added.
+    Repeated recall raises confidence slowly; age lowers it slowly. This is
+    not a statistical calibrator; it is a conservative default until a real
+    probability calibrator is added.
     """
     src = normalize_source(source)
     base = _BASE_CONFIDENCE.get(src, 0.35)
-    evidence = min(0.08, 0.01 * max(0, int(hits))) + min(0.05, 0.01 * max(0, int(review_count)))
+    evidence = min(0.08, 0.01 * max(0, int(hits)))
+    evidence += min(0.05, 0.01 * max(0, int(review_count)))
     decay = min(0.12, max(0.0, float(age_days)) / 365.0 * 0.06)
     current = base + evidence - decay
     if previous is None:
@@ -105,9 +159,11 @@ def update_confidence(
 
 def merge_sources(left: Any, right: Any) -> str:
     """Keep the stronger source when duplicate memories merge."""
-    a = normalize_source(left)
-    b = normalize_source(right)
-    return a if SOURCE_RANK.get(a, 0) >= SOURCE_RANK.get(b, 0) else b
+    left_source = normalize_source(left)
+    right_source = normalize_source(right)
+    if SOURCE_RANK.get(left_source, 0) >= SOURCE_RANK.get(right_source, 0):
+        return left_source
+    return right_source
 
 
 def source_precedence(*sources: Any) -> str:
@@ -121,30 +177,23 @@ def source_precedence(*sources: Any) -> str:
 
 
 def retrieval_weight(entry: dict[str, Any] | None) -> float:
-    """Small source/confidence weight for memory retrieval scoring.
+    """Small source/confidence/tier weight for memory retrieval scoring.
 
-    This keeps direct/heard memories slightly above inferred/unknown ones, and
-    keeps old entries compatible (missing fields default to neutral).
+    Old entries without the new metadata keep a neutral 1.0 weight.
     """
     if not isinstance(entry, dict):
         return 1.0
     if "memory_source" not in entry and "memory_confidence" not in entry:
         return 1.0
     source = normalize_source(entry.get("memory_source"))
-    source_weight = {
-        "direct": 1.0,
-        "media": 0.97,
-        "told": 0.92,
-        "retrieved": 0.88,
-        "inferred": 0.80,
-        "unknown": 0.75,
-    }.get(source, 0.80)
+    source_weight = _SOURCE_WEIGHT.get(source, 0.80)
     try:
-        conf = _clamp(entry.get("memory_confidence", 0.7))
+        confidence = _clamp(entry.get("memory_confidence", 0.7))
     except Exception:
-        conf = 0.7
-    tier_weight = {"hot": 1.03, "warm": 1.0, "cold": 0.97}.get(str(entry.get("memory_tier") or "warm"), 1.0)
-    return round((0.85 + 0.15 * conf) * source_weight * tier_weight, 4)
+        confidence = 0.7
+    tier = str(entry.get("memory_tier") or "warm")
+    tier_weight = _TIER_WEIGHT.get(tier, 1.0)
+    return round((0.85 + 0.15 * confidence) * source_weight * tier_weight, 4)
 
 
 def should_abstain(
@@ -171,11 +220,9 @@ def classify_write_op(
 ) -> str:
     """Conservative write operation for a new memory candidate.
 
-    Returns one of ADD, UPDATE, DELETE, NOOP.
-
-    DELETE is only returned when the caller explicitly marks a deletion
-    candidate (new_entry is None and old_entry exists with delete flag); this
-    helper never deletes on semantic similarity alone.
+    Returns one of ADD, UPDATE, DELETE, NOOP. DELETE is only returned when the
+    caller explicitly marks a deletion candidate; semantic similarity alone
+    never deletes a memory.
     """
     if old_entry is None:
         return "ADD"
@@ -184,22 +231,21 @@ def classify_write_op(
     if conflict:
         return "UPDATE"
     try:
-        sim = _clamp(cosine)
+        similarity = _clamp(cosine)
     except Exception:
-        sim = 0.0
-    if sim >= 0.93:
+        similarity = 0.0
+    if similarity >= 0.93:
         return "NOOP"
-    if sim >= 0.72:
+    if similarity >= 0.72:
         return "UPDATE"
     return "ADD"
 
 
 def memory_tier(entry: dict[str, Any] | None, now: float | None = None) -> str:
-    """Cheap deterministic hot/warm/cold tier for read-budget experiments."""
+    """Cheap deterministic hot/warm/cold tier for read-budget selection."""
     if not isinstance(entry, dict):
         return "cold"
     try:
-        import time
         current = float(now if now is not None else time.time())
         ts = float(entry.get("ts", 0) or 0)
         age_days = max(0.0, (current - ts) / 86400.0)
@@ -217,20 +263,19 @@ def memory_tier(entry: dict[str, Any] | None, now: float | None = None) -> str:
 def detect_conflict(old_text: str, new_text: str) -> bool:
     """Conservative correction/contradiction heuristic for duplicate writes.
 
-    It only fires on explicit correction markers, not on every negation. This
-    is intentionally conservative: missed updates are safer than silent
-    rewrites.
+    It only fires on explicit correction markers, not on every negation. A
+    missed update is safer than a silent rewrite.
     """
     old = str(old_text or "").strip().lower()
     new = str(new_text or "").strip().lower()
     if not old or not new or old == new:
         return False
-    markers = ("改成", "改为", "其实是", "更正", "纠正", "不是", "不再", "取消", "推迟", "换到", "变成", "update", "correction", "instead")
-    return any(marker in new for marker in markers) and any(ch.isdigit() for ch in new) is False
+    has_marker = any(marker in new for marker in _CONFLICT_MARKERS)
+    return has_marker and not any(ch.isdigit() for ch in new)
 
 
 def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> None:
-    """Keep a bounded previous-version list for UPDATE/rollback experiments."""
+    """Keep a bounded previous-version list for UPDATE/rollback."""
     if not isinstance(entry, dict) or not old_text:
         return
     versions = entry.get("previous_versions")
@@ -243,8 +288,8 @@ def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> No
 def select_top(scored: Any, k: Any, *, cold_budget: int = 2) -> list:
     """Select top memories with a small cold-tier budget.
 
-    Hot/warm entries are preferred; cold entries fill remaining slots only up
-    to cold_budget. This is a conservative read budget, not an eviction.
+    Hot/warm entries are preferred; cold entries fill remaining slots up to
+    cold_budget. This is a read budget, not an eviction.
     """
     try:
         limit = max(0, int(k))
@@ -267,7 +312,7 @@ def select_top(scored: Any, k: Any, *, cold_budget: int = 2) -> list:
     remaining = max(0, limit - len(selected))
     selected.extend(cold[:min(remaining, max(0, int(cold_budget)))])
     if len(selected) < limit:
-        used = {id(x[1]) for x in selected}
+        used = {id(item[1]) for item in selected}
         for item in cold:
             if id(item[1]) not in used:
                 selected.append(item)
@@ -276,8 +321,45 @@ def select_top(scored: Any, k: Any, *, cold_budget: int = 2) -> list:
     return selected[:limit]
 
 
+def summarize_recall(top: Any, now: float | None = None) -> dict[str, Any]:
+    """Build the per-turn memory meta used by the interpretation layer."""
+    if not isinstance(top, list):
+        return {"count": 0, "confidence": 0.0, "source": "unknown", "abstain": False, "tiers": {}, "destinations": {}}
+    rows = []
+    destinations: dict[str, int] = {}
+    tiers: dict[str, int] = {}
+    for _score, entry in top:
+        if not isinstance(entry, dict):
+            continue
+        source = normalize_source(entry.get("memory_source"))
+        try:
+            confidence = float(entry.get("memory_confidence", 0.6) or 0.6)
+        except Exception:
+            confidence = 0.6
+        tier = str(entry.get("memory_tier") or memory_tier(entry, now))
+        rows.append({"source": source, "confidence": confidence, "tier": tier})
+        tiers[tier] = int(tiers.get(tier, 0) or 0) + 1
+        destination = entry.get("destination")
+        if isinstance(destination, dict):
+            name = str(destination.get("sender_name") or destination.get("sender_id") or "").strip()
+            if name:
+                destinations[name] = int(destinations.get(name, 0) or 0) + 1
+    if not rows:
+        return {"count": 0, "confidence": 0.0, "source": "unknown", "abstain": False, "tiers": {}, "destinations": {}}
+    avg_confidence = sum(row["confidence"] for row in rows) / len(rows)
+    source = source_precedence(*(row["source"] for row in rows))
+    return {
+        "count": len(rows),
+        "confidence": round(_clamp(avg_confidence), 4),
+        "source": source,
+        "abstain": should_abstain(avg_confidence, source),
+        "tiers": tiers,
+        "destinations": dict(sorted(destinations.items(), key=lambda item: -item[1])[:4]),
+    }
+
+
 def rollback_entry(entry: dict[str, Any] | None) -> bool:
-    """Restore the last previous version, if any. Vector is invalidated."""
+    """Restore the last previous version. The vector is cleared for re-embedding."""
     if not isinstance(entry, dict):
         return False
     versions = entry.get("previous_versions")
@@ -291,7 +373,7 @@ def rollback_entry(entry: dict[str, Any] | None) -> bool:
 
 
 def build_destination(sender_id: Any = "", sender_name: Any = "") -> dict[str, str]:
-    """Small destination/source record for who told the agent this memory."""
+    """Small destination record for who told the agent this memory."""
     return {
         "sender_id": str(sender_id or ""),
         "sender_name": str(sender_name or ""),
