@@ -370,12 +370,40 @@
     if(tomb){
       tomb.innerHTML=tombs.length?tombs.slice().reverse().slice(0,10).map(t=>{
         const item=(t&&typeof t==="object")?t:{text:String(t||"")};
-        return '<div class="mem-tomb-row"><span class="mem-flag mem-flag-danger">已删除</span><small>'+esc(memWhen(item.ts))+' · #'+esc(String(item.id||"").slice(0,12))+'</small><span class="mem-tomb-text">'+esc(String(item.text||"").slice(0,160))+'</span></div>';
+        const _sid=String(current.session||""); const _tid=String(item.id||"");
+        return '<div class="mem-tomb-row"><span class="mem-flag mem-flag-danger">已删除</span><small>'+esc(memWhen(item.ts))+' · #'+esc(_tid.slice(0,12))+'</small><span class="mem-tomb-text">'+esc(String(item.text||"").slice(0,160))+'</span>'+
+          (_tid?'<button type="button" class="btn mini" data-mem-restore="1" data-session="'+esc(_sid)+'" data-id="'+esc(_tid)+'">恢复</button>':'')+
+          '</div>';
       }).join(""):'<div class="empty-mini">这个会话没有墓碑记录。</div>';
     }
     if(!list.dataset.bound){
       list.addEventListener("click",onMemAction);
       list.dataset.bound="1";
+    }
+    if(tomb&&!tomb.dataset.bound){
+      tomb.addEventListener("click",onTombAction);
+      tomb.dataset.bound="1";
+    }
+  }
+  async function onTombAction(e){
+    const target=e.target||{};
+    const btn=target.closest?target.closest("[data-mem-restore]"):null;
+    if(!btn) return;
+    const session=String(btn.dataset.session||"");
+    const id=String(btn.dataset.id||"");
+    if(!session||!id) return;
+    if(!bridge){ window.alert("未连接 AstrBot 页面桥，无法恢复"); return; }
+    btn.disabled=true; btn.textContent="恢复中…";
+    try{
+      const path="page/memory/restore/"+encodeURIComponent(session)+"/"+encodeURIComponent(id);
+      const raw=await bridge.apiPost(path,{});
+      const payload=raw&&raw.data?raw.data:raw;
+      if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"恢复失败");
+      btn.textContent="已恢复";
+      setTimeout(()=>{ try{ load(); }catch(err){} },500);
+    }catch(err){
+      btn.disabled=false; btn.textContent="恢复";
+      window.alert("恢复失败："+String(err&&err.message||err));
     }
   }
   function onMemAction(e){
@@ -1054,7 +1082,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.23";
+  const BIO_VERSION = "v1.2.24";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
