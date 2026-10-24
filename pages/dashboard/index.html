@@ -431,6 +431,7 @@
         <div class="setting-row"><div><b>敏感记忆保护</b><small>自动识别手机号/证件/银行卡/邮箱/密码等，召回时以 ••• 掩码交给模型；敏感记忆不跨会话共享。</small></div><label class="switch"><input type="checkbox" id="swSensitiveMemory" checked><span></span></label></div>
         <div class="setting-row"><div><b>混合检索（词法 + MMR）</b><small>embedding 余弦之外加入词法分，并用 MMR 减少近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
+        <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><select id="personaSelect" class="event-session"></select></div>
         <div class="setting-row"><div><b>LLM 只用于回复+总结（严格）</b><small>默认开启：只保留“事件总结/记忆总结”两类 LLM 调用；人格编译、事件排序抽取、跨事件反思、图片描述改用确定性回退，不额外调用 LLM。关闭后恢复全部能力。</small></div><label class="switch"><input type="checkbox" id="swLlmOnlyReplySummary" checked><span></span></label></div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>

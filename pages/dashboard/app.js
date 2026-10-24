@@ -798,6 +798,14 @@
     const cores=data.cores||[]; $("sessionCount").textContent=cores.length+" SESSIONS";
     $("sessionList").innerHTML=cores.length?cores.map(c=>{const i=c.intent||{},ss=c.snapshot||{};return '<div class="session"><div class="session-name" title="'+esc(c.key)+'">'+esc(c.key)+'</div><div class="session-state">'+esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t</div></div>";}).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
     try{applyApiConfig();}catch(e){}
+    try{applyPersonaSelect();}catch(e){}
+  }
+  function applyPersonaSelect(){
+    const sel=$("personaSelect"); if(!sel) return;
+    const ps=Array.isArray(data.personas)?data.personas:[];
+    const cur=String(data.persona_id||"");
+    sel.innerHTML='<option value="">跟随默认人设</option>'+ps.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.name||p.id||""))+'</option>').join("");
+    sel.value=cur;
   }
   function setMetric(l,b,v){const n=clamp(v);$(l).textContent=n.toFixed(2);$(b).style.width=pct(n);}
   function switchView(name){
@@ -863,6 +871,19 @@
     }catch(err){
       e.target.checked=!val;
       if(window.alert) window.alert("跨会话记忆设置保存失败："+String(err&&err.message||err));
+    }
+  });
+  const personaSel=$("personaSelect");
+  if(personaSel) personaSel.addEventListener("change",async e=>{
+    const val=String(e.target.value||"");
+    if(!bridge){ return; }
+    try{
+      const raw=await bridge.apiPost("page/toggle",{key:"persona_id",value:val});
+      const payload=raw&&raw.data?raw.data:raw;
+      if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
+      if(data) data.persona_id=val;
+    }catch(err){
+      if(window.alert) window.alert("人格来源保存失败："+String(err&&err.message||err));
     }
   });
   const resetVisualBtn=$("resetVisualBtn");

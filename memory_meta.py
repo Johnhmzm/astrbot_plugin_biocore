@@ -80,6 +80,7 @@ __all__ = [
     "WORKING_SET_CAPACITY",
     "update_working_set",
     "working_set_boost",
+    "dedupe_texts",
 ]
 
 SOURCE_RANK = {
@@ -1721,3 +1722,29 @@ def working_set_boost(entry: Any, working_set: Any) -> float:
     if entry_id and entry_id in {str(x) for x in working_set}:
         return 1.08
     return 1.0
+
+
+def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 8) -> list[str]:
+    """Drop near-duplicate memory texts before an LLM summary call.
+
+    Deterministic char-bigram similarity; keeps first (caller usually passes
+    the most important first) and caps the number of representatives. This is
+    the embedding-grouped memory cluster's last-line dedupe before summary
+    tokens are spent.
+    """
+    out: list[str] = []
+    try:
+        thr = max(0.5, min(1.0, float(threshold)))
+        cap = max(1, int(limit))
+    except Exception:
+        thr, cap = 0.88, 8
+    for item in (texts or []):
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if any(text_similarity(text, prev) >= thr for prev in out):
+            continue
+        out.append(text)
+        if len(out) >= cap:
+            break
+    return out

@@ -1478,7 +1478,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.39")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.40")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1568,6 +1568,11 @@ class BioCorePlugin(Star):
         self.stimuli = []
         self.profile = None
         self.persona_text = ""
+        # Persona selection: empty = follow AstrBot default persona.
+        self.persona_id = str(self.config.get("persona_id") or "").strip()
+        # Hash of the persona text whose numeric profile was compiled; lets
+        # strict LLM mode still compile ONCE on first run / persona change.
+        self._persona_compiled_hash = ""
         # Schema slots proposed once by the persona compiler (bounded strings).
         self.schema_texts = []
         self.self_model = self._load_self_model()
@@ -1599,6 +1604,8 @@ class BioCorePlugin(Star):
                 d = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
                 self.profile = dict(d.get("profile") or {})
                 self.persona_text = str(d.get("persona") or "")
+                _ph = str(d.get("persona_hash") or "")
+                self._persona_compiled_hash = _ph or (_sha256(self.persona_text) if self.persona_text else "")
                 _schema = d.get("schema")
                 if isinstance(_schema, list):
                     self.schema_texts = [str(x).strip()[:60] for x in _schema
@@ -1610,6 +1617,16 @@ class BioCorePlugin(Star):
     async def _persona_text(self, event) -> str:
         try:
             pm = self.context.persona_manager
+            _pid = str(getattr(self, "persona_id", "") or self.config.get("persona_id") or "").strip()
+            if _pid:
+                try:
+                    _p = pm.get_persona_v3_by_id(_pid)
+                except Exception:
+                    _p = None
+                if _p:
+                    if isinstance(_p, dict):
+                        return str(_p.get("prompt") or _p.get("system_prompt") or "")
+                    return str(getattr(_p, "prompt", "") or getattr(_p, "system_prompt", "") or "")
             p = await pm.get_default_persona_v3(getattr(event, "unified_msg_origin", None))
             if isinstance(p, dict):
                 return str(p.get("prompt") or p.get("system_prompt") or "")
@@ -1641,12 +1658,11 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
             return
-        if not self._llm_allowed("persona"):
-            # Strict scope: keep the existing/default numeric profile instead
-            # of spending an LLM call on persona compilation.
+        _ph = _sha256(text)
+        if getattr(self, "_persona_compiled_hash", "") == _ph and getattr(self, "profile", None):
+            # Already compiled for this persona: no extra LLM call.
             self.persona_text = text
-            self.profile = getattr(self, "profile", None) or dict(DEFAULT_PROFILE)
-            logger.info("[biocore] llm scope=reply+summary: skip persona compile")
+            logger.info("[biocore] persona already compiled; skip")
             return
         try:
             provider = await self.context.get_using_provider_async(getattr(event, "unified_msg_origin", ""))
@@ -1670,8 +1686,10 @@ class BioCorePlugin(Star):
         try:
             PROFILE_PATH.write_text(json.dumps(
                 {"persona": self.persona_text, "profile": self.profile,
-                 "schema": list(getattr(self, "schema_texts", []) or [])},
+                 "schema": list(getattr(self, "schema_texts", []) or []),
+                 "persona_hash": _sha256(self.persona_text or text)},
                 ensure_ascii=False, indent=1), encoding="utf-8")
+            self._persona_compiled_hash = _sha256(self.persona_text or text)
             logger.info("[biocore] first-run profile written: %s", PROFILE_PATH)
         except Exception as exc:
             logger.warning("[biocore] profile save failed: %s", exc)
@@ -1720,6 +1738,8 @@ class BioCorePlugin(Star):
                             "llm_memory_candidates", "llm_only_reply_summary"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
+                if "persona_id" in d and "persona_id" not in self.config:
+                    self.persona_id = str(d.get("persona_id") or "").strip()
                 if isinstance(d.get("kb_names"), list) and "kb_names" not in self.config:
                     self.kb_names = [str(x) for x in d.get("kb_names") if str(x).strip()]
         except Exception as exc:
@@ -1738,6 +1758,7 @@ class BioCorePlugin(Star):
                     getattr(self, "llm_memory_candidates", True)),
                 "llm_only_reply_summary": bool(
                     getattr(self, "llm_only_reply_summary", True)),
+                "persona_id": str(getattr(self, "persona_id", "") or ""),
                 "inject_intent": bool(self.inject_intent),
                 "kb_enabled": bool(getattr(self, "kb_enabled", False)),
                 "kb_names": list(getattr(self, "kb_names", [])),
@@ -3016,10 +3037,6 @@ class BioCorePlugin(Star):
         refs = self._image_refs(event)
         if not refs:
             return ""
-        if not self._llm_allowed("caption"):
-            # Strict scope: no image-caption LLM call; image memory falls back
-            # to the attachment placeholder only.
-            return ""
         if not await self._ensure_image_service():
             return ""
         self._image_last_used = time.time()
@@ -3616,6 +3633,17 @@ class BioCorePlugin(Star):
         return {"status": "ok", "data": {"files": len(results), "sessions": len(files)}}
 
     async def page_status(self):
+        _personas = []
+        try:
+            _pm = getattr(self.context, "persona_manager", None)
+            if _pm is not None:
+                for _p in (await _pm.get_all_personas()):
+                    _pid = str(getattr(_p, "persona_id", "") or "")
+                    _pname = str(getattr(_p, "name", "") or _pid)
+                    if _pid:
+                        _personas.append({"id": _pid, "name": _pname})
+        except Exception:
+            _personas = []
         cores = []
         for key, core in list(self.cores.items())[:20]:
             cores.append({
@@ -3656,6 +3684,8 @@ class BioCorePlugin(Star):
             "llm_only_reply_summary": bool(
                 getattr(self, "llm_only_reply_summary", True)),
             "persona_loaded": bool(self.persona_text),
+            "persona_id": str(getattr(self, "persona_id", "") or ""),
+            "personas": _personas,
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
             "memory": self._memory_stats(),
@@ -3703,8 +3733,14 @@ class BioCorePlugin(Star):
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                        "cross_session_memory", "sensitive_memory_protection",
                        "hybrid_retrieval", "llm_memory_candidates",
-                       "llm_only_reply_summary"):
+                       "llm_only_reply_summary", "persona_id"):
             return {"status": "error", "message": "unknown setting"}
+        if key == "persona_id":
+            _val = str(data.get("value") or "").strip()
+            self.persona_id = _val
+            self._save_settings()
+            await self._persist_plugin_config({key: _val})
+            return {"status": "ok", "data": {"key": key, "value": _val}}
         setattr(self, key, bool(data.get("value")))
         self._save_settings()
         await self._persist_plugin_config({key: bool(getattr(self, key))})
@@ -4144,7 +4180,11 @@ class BioCorePlugin(Star):
                 return
             changed = False
             for group in groups:
-                texts = [str(entries[i].get("text", "")).strip() for i in group if str(entries[i].get("text", "")).strip()]
+                _raw_texts = [str(entries[i].get("text", "")).strip() for i in group
+                              if str(entries[i].get("text", "")).strip()]
+                # Dedupe near-identical memories before spending summary tokens;
+                # grouping above already uses embedding cosine (>=0.86).
+                texts = memory_meta.dedupe_texts(_raw_texts, threshold=0.88, limit=8)
                 if len(texts) < 2:
                     continue
                 prompt = interpretation.memory_summary_prompt(texts)

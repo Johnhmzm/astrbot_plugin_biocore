@@ -41,6 +41,12 @@
     "type": "bool",
     "default": true
   },
+  "persona_id": {
+    "description": "人格提示词来源",
+    "hint": "选择 AstrBot 已有人设用于编译数值倾向；留空跟随当前默认人设。首次使用或更换人设时编译一次，重复加载不调用 LLM。",
+    "type": "string",
+    "default": ""
+  },
   "llm_only_reply_summary": {
     "description": "LLM 只用于回复+总结（严格）",
     "hint": "默认开启。只允许事件总结/记忆总结调用 LLM；人格数值编译、事件排序抽取、跨事件反思、图片描述都不再额外调用 LLM（用确定性回退）。关闭后恢复全部 LLM 能力。",
