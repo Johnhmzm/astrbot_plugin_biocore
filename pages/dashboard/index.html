@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261025-0016" />
+<link rel="stylesheet" href="./styles.css?v=20261025-0031" />
 </head>
 <body>
 <div class="shell">
@@ -211,7 +211,7 @@
         <button type="button" class="persona-tab fold-panel folded" data-persona-tab="tree">
           <span class="fold-face">
             <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><path d="M12 6v5M12 11l-5 3v4M12 11l5 3v4"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/></svg></span>
-            <small>反思树</small>
+            <small>洞察树</small>
           </span>
         </button>
         <button type="button" class="persona-tab fold-panel folded" data-persona-tab="spectrum">
@@ -264,7 +264,7 @@
         <div class="signal-grid" id="regStats"></div>
       </div>
       <div class="panel persona-tabpanel" data-persona-tab="tree">
-        <div class="panel-head"><h3>反思树</h3><span class="hint" id="treeCount">REFLECTION TREE</span></div>
+        <div class="panel-head"><h3>长期洞察树</h3><span class="hint" id="treeCount">LONG-TERM INSIGHT TREE</span></div>
         <div class="tree" id="reflectionTree"></div>
       </div>
       <div class="panel persona-tabpanel" data-persona-tab="spectrum">
@@ -433,16 +433,26 @@
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
         <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><div class="llm-route"><span class="llm-route-slot" aria-hidden="true"></span><select id="personaSelect" class="event-session"></select></div></div>
         <p class="api-note">功能路由：每个功能独立开关；需要 LLM 的功能默认跟随主 LLM，可指定其他 provider（找不到时回退主 LLM）。事件排序不选模型：嵌入与重排固定跟随 API 接入的默认配置；图片描述只走视觉 provider。</p>
+        <p class="api-note">说明：事件感悟（单事件）在事件总结里；长期模式洞察（跨事件）是更高层综合，默认手动生成。</p>
         <div class="setting-row"><div><b>人格编译</b><small>首次使用/更换人设时用一次；关闭则沿用已保存的数值 profile。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_persona_compile_enabled"><span></span></label><select id="fn_persona_compile_provider" class="event-session"></select></div></div>
-        <div class="setting-row"><div><b>事件总结</b><small>强事件发生时总结成事件档案；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>事件总结</b><small>强事件发生时总结成事件档案（含「事件感悟（单事件）」）；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>事件排序（嵌入+规则）</b><small>确定性分段 + embedding 新异度 + 线索排序，不调用 LLM；嵌入与重排固定跟随 API 接入的默认配置，不再单独选模型。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_ranking_enabled"><span></span></label></div></div>
-        <div class="setting-row"><div><b>跨事件反思</b><small>累计至少 3 条新的重要事件、且距上次 ≥60 分钟后，在记忆压缩/事件归档时顺带提炼一条更高层认识（24 小时兜底最多一次）；默认关闭，关闭时只写确定性摘要。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_insight_enabled"><span></span></label><select id="fn_insight_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>长期模式洞察（跨事件）</b><small>跨事件高层综合。LLM 开关只控制是否允许调用模型；主入口是下方「生成长期洞察」按钮，默认手动。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_insight_enabled"><span></span></label><select id="fn_insight_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>自动长期洞察</b><small>默认关闭。打开后才会在记忆压缩/事件归档时按「新增重要事件 ≥3 + 60 分钟冷却 + 24 小时兜底」自动生成；LLM 开关关闭时不会在后台写入任何记录。</small></div><label class="switch"><input type="checkbox" id="swInsightAuto"><span></span></label></div>
         <div class="setting-row"><div><b>记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。关闭时改用 embedding 分组+去重的抽取式摘要，不调用 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>图片描述</b><small>调用视觉 provider 描述图片；默认关闭，且只走视觉 API，不混用文本 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_image_caption_enabled"><span></span></label><select id="fn_image_caption_provider" class="event-session"></select></div></div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
-        <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><button type="button" class="btn" id="insightNowBtn">立即反思（跨事件）</button><span id="compressState"></span><span id="insightState"></span></div>
+        <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
+        <div class="insight-card">
+          <div class="insight-card-head">
+            <div><b>最近长期模式洞察</b><small>跨事件高层综合；默认手动生成，最近结果如下。</small></div>
+            <div class="insight-card-actions"><button type="button" class="btn primary" id="insightNowBtn">生成长期洞察</button><span class="insight-hint" id="insightHint"></span></div>
+          </div>
+          <div class="insight-history" id="insightHistoryList"></div>
+          <span class="api-note" id="insightState"></span>
+        </div>
       </div>
       <div class="section-title mt" data-settings-title="settingsVisual"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
       <div class="panel settings settings-panel" id="settingsVisual">
@@ -484,5 +494,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261025-0016"></script><script src="./orb.js?v=20261025-0016"></script>
+<script src="./app.js?v=20261025-0031"></script><script src="./orb.js?v=20261025-0031"></script>
 </body></html>

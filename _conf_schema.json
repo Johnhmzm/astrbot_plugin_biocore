@@ -49,7 +49,7 @@
   },
   "llm_only_reply_summary": {
     "description": "LLM 只用于回复+总结（严格）",
-    "hint": "默认开启。只允许事件总结/记忆总结调用 LLM；人格数值编译、事件排序抽取、跨事件反思、图片描述都不再额外调用 LLM（用确定性回退）。关闭后恢复全部 LLM 能力。",
+    "hint": "默认开启。只允许事件总结/记忆总结调用 LLM；人格数值编译、事件排序抽取、长期模式洞察、图片描述都不再额外调用 LLM（用确定性回退）。关闭后恢复全部 LLM 能力。",
     "type": "bool",
     "default": true
   },
@@ -115,20 +115,26 @@
     "default": 0.75
   },
   "reflection_interval_hours": {
-    "description": "周期反思间隔小时（已废弃，仅兜底）",
-    "hint": "已不再是主触发：跨事件反思改为事件驱动（见 insight_min_new_events / insight_cooldown_minutes），在记忆压缩/事件归档时顺带执行。此值只用于抬高 24 小时超长兜底的最小间隔（生效值 = max(24, 本值) 小时）。",
+    "description": "长期洞察旧周期参数（已废弃，仅兜底）",
+    "hint": "已不再是主触发：只有打开「自动长期洞察」后才走事件驱动触发（见 insight_auto_enabled / insight_min_new_events / insight_cooldown_minutes）。此值只用于抬高 24 小时超长兜底的最小间隔（生效值 = max(24, 本值) 小时）。",
     "type": "int",
     "default": 6
   },
+  "insight_auto_enabled": {
+    "description": "自动长期洞察（默认关）",
+    "hint": "默认关闭：只在 Dashboard 点「生成长期洞察」手动生成。打开后才会在记忆压缩/事件归档时，按新增重要事件 ≥3 + 60 分钟冷却 + 24 小时兜底自动生成；LLM 洞察开关关闭时不会在后台写入任何记录。",
+    "type": "bool",
+    "default": false
+  },
   "insight_min_new_events": {
-    "description": "跨事件反思：新增重要事件阈值",
-    "hint": "自上次反思以来累计至少这么多条新的重要事件（importance≥0.6）才反思；默认 3，越小越积极。",
+    "description": "自动长期洞察：新增重要事件阈值",
+    "hint": "自动长期洞察打开后，自上次洞察以来累计至少这么多条新的重要事件（importance≥0.6）才生成；默认 3，越小越积极。",
     "type": "int",
     "default": 3
   },
   "insight_cooldown_minutes": {
-    "description": "跨事件反思：最小冷却分钟",
-    "hint": "两次跨事件反思之间至少间隔这么久，防止事件密集期连续调用；默认 60 分钟。",
+    "description": "自动长期洞察：最小冷却分钟",
+    "hint": "自动长期洞察打开后，两次长期洞察之间至少间隔这么久，防止事件密集期连续调用；默认 60 分钟。",
     "type": "int",
     "default": 60
   },
