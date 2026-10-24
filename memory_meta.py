@@ -120,6 +120,32 @@ def source_precedence(*sources: Any) -> str:
     return best
 
 
+def retrieval_weight(entry: dict[str, Any] | None) -> float:
+    """Small source/confidence weight for memory retrieval scoring.
+
+    This keeps direct/heard memories slightly above inferred/unknown ones, and
+    keeps old entries compatible (missing fields default to neutral).
+    """
+    if not isinstance(entry, dict):
+        return 1.0
+    if "memory_source" not in entry and "memory_confidence" not in entry:
+        return 1.0
+    source = normalize_source(entry.get("memory_source"))
+    source_weight = {
+        "direct": 1.0,
+        "media": 0.97,
+        "told": 0.92,
+        "retrieved": 0.88,
+        "inferred": 0.80,
+        "unknown": 0.75,
+    }.get(source, 0.80)
+    try:
+        conf = _clamp(entry.get("memory_confidence", 0.7))
+    except Exception:
+        conf = 0.7
+    return round((0.85 + 0.15 * conf) * source_weight, 4)
+
+
 def should_abstain(
     confidence: float,
     source: str = "unknown",

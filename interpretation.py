@@ -106,9 +106,18 @@ def user_block(user: dict) -> str:
     if not d:
         return ""
     name = str(d.get("sender_name") or d.get("sender_id") or "").strip()
-    return "%s；互动 %s；信任 %.2f" % (
+    base = "%s；互动 %s；信任 %.2f" % (
         name or "未知", int(d.get("interactions", 0) or 0),
         float(d.get("trust", 0.5) or 0.5))
+    rel = d.get("relationship")
+    state = rel.get("state") if isinstance(rel, dict) else None
+    if isinstance(state, dict) and state:
+        base += "；关系 亲近%.2f 冲突%.2f 修复%.2f 可预测%.2f" % (
+            float(state.get("closeness", 0.5) or 0.5),
+            float(state.get("conflict", 0.5) or 0.5),
+            float(state.get("repair", 0.0) or 0.0),
+            float(state.get("predictability", 0.5) or 0.5))
+    return base
 
 
 def memory_block(lines) -> str:
