@@ -173,9 +173,9 @@ def image_caption_prompt(base_prompt: str = "") -> str:
 
 def event_summary_prompt(texts) -> str:
     joined = "\n".join("- " + str(t)[:400] for t in (texts or [])[:12])
-    return ("下面是一段已经发生的事件（来自聊天记录）。请只输出一个 JSON 对象，不要代码块，不要解释：\n"
-            '{"title":"短标题","event":"完整事件经过，80字以内","meaning_to_her":"这件事对她意味着什么，60字以内","reflection":"她之后形成的更高层认识或对自己的影响，60字以内"}\n'
-            "要求：事件要覆盖整件事，不要只写一句话；意义只写她自己的感受、立场或关系变化；reflection 是从这件事提炼出的反思，不要复述事件；不要编造。\n\n" + joined)
+    return ("把下面一段聊天记录总结成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
+            '{"title":"短标题","event":"事件经过≤80字","meaning_to_her":"对她的意义≤60字","reflection":"反思≤60字"}\n'
+            "事件覆盖整件事，意义只写她的感受/立场/关系变化，reflection 不复述事件；不编造。\n\n" + joined)
 
 
 def insight_prompt(events) -> str:
@@ -199,8 +199,8 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
         float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
         it.get("emotion") or "neutral", it.get("compound") or "-",
         it.get("need") or "talk", plan(core), it.get("regulation") or "none"))
-    mb = memory_block(memory) if isinstance(memory, (list, tuple)) else str(memory or "")[:300]
-    eb = event_block(events) if isinstance(events, (list, tuple)) else str(events or "")[:300]
+    mb = memory_block(memory) if isinstance(memory, (list, tuple)) else str(memory or "")[:220]
+    eb = event_block(events) if isinstance(events, (list, tuple)) else str(events or "")[:220]
     sb = self_block(self_model)
     ub = user_block(user)
     ib = image_block(image)
@@ -209,10 +209,14 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
     mm = memory_meta if isinstance(memory_meta, dict) else {}
     _mm_count = int(mm.get("count", 0) or 0) if mm else 0
     if _mm_count > 0:
-        cp += " | memn=%d memc=%.2f memsrc=%s" % (
+        cp += " | memn=%d memc=%.2f" % (
             _mm_count,
-            float(mm.get("confidence", 0.0) or 0.0),
-            str(mm.get("source", "unknown") or "unknown")[:12])
+            float(mm.get("confidence", 0.0) or 0.0))
+        # Only surface the source when it is actually uncertain; direct input is
+        # assumed and does not need extra tokens every turn.
+        _msrc = str(mm.get("source", "unknown") or "unknown")[:12]
+        if _msrc in ("inferred", "unknown"):
+            cp += " memsrc=" + _msrc
         if mm.get("abstain"):
             cp += " mem=uncertain"
         _ansc = answer_confidence
@@ -220,11 +224,14 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
             _ansc = mm.get("answer_confidence")
         if _ansc is not None:
             try:
-                cp += " ansc=%.2f" % max(0.0, min(1.0, float(_ansc)))
+                _aconf = max(0.0, min(1.0, float(_ansc)))
+                # High confidence is the default; only low values change behavior.
+                if _aconf < 0.65:
+                    cp += " ansc=%.2f" % _aconf
             except Exception:
                 pass
         _dests = mm.get("destinations")
-        if isinstance(_dests, dict) and _dests:
+        if isinstance(_dests, dict) and len(_dests) >= 2:
             cp += " memwho=" + ",".join("%s×%s" % (str(k)[:20], int(v)) for k, v in list(_dests.items())[:3])
     # Prospective memory: open-loop count plus the nearest due item (bounded).
     _loops = [x for x in (open_loops or []) if isinstance(x, dict)] if isinstance(open_loops, (list, tuple)) else []
@@ -246,20 +253,20 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
     if eb:
         cp += " | ev=" + eb
     if sb:
-        cp += " | self=" + sb[:160]
+        cp += " | self=" + sb[:120]
     if ub:
-        cp += " | u=" + ub[:100]
+        cp += " | u=" + ub[:80]
     if ib:
         cp += " | img=" + ib
     if kb:
-        cp += " | kb=" + str(kb)[:180].replace("\n", "；")
+        cp += " | kb=" + str(kb)[:140].replace("\n", "；")
     if speaker:
-        cp += " | spk=" + str(speaker)[:80]
+        cp += " | spk=" + str(speaker)[:60]
     if voice:
-        cp += " | voice=" + str(voice)[:160]
-    cp += ("\n[BC-Return] 回复末尾只输出一个 "
-           '<bc>{"e":"joy|sadness|anger|fear|loneliness|neutral","i":0.0-1.0}</bc>'
-           "（可选 n=share|space|vent|be_heard|talk，x=open|normal|short）；"
+        cp += " | voice=" + str(voice)[:120]
+    # Minimal fallback instruction only; full format lives in the
+    # biocore-interpretation skill (loaded on demand) to save per-turn tokens.
+    cp += ("\n[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；"
            "不解释、不输出任何数值 delta。")
     if _mm_count > 0 and mm.get("abstain"):
         cp += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
@@ -426,11 +433,10 @@ def memory_summary_prompt(texts) -> str:
     """
     joined = "\n".join("- " + str(t)[:500] for t in (texts or []) if str(t).strip())
     return ("把下面这些长期记忆整理成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
-            '{"summary":"不超过 180 字的中文摘要，保留人物、关系、偏好、承诺、事件和情绪变化，不要编造",\n'
-            ' "candidates":[{"text":"一条长期有用的事实/偏好/承诺，40字以内",'
-            '"source":"told|inferred","confidence":0.0-1.0,"kind":"add|update"}]}\n'
-            "规则：candidates 最多 3 条；只提取长期有用的信息（偏好、关系、承诺、重要经历），一次性闲聊不要提；\n"
-            "已有相似记忆用 update，否则 add；绝对不要输出 delete；没有则输出空数组。\n\n" + joined)
+            '{"summary":"≤180字摘要，保留人物/关系/偏好/承诺/事件/情绪变化，不编造",\n'
+            ' "candidates":[{"text":"≤40字长期有用事实","source":"told|inferred",\n'
+            ' "confidence":0.0-1.0,"kind":"add|update"}]}\n'
+            "candidates≤3，只提长期有用信息（偏好/关系/承诺/重要经历）；相似用 update，否则 add；禁止 delete；没有给 []。\n\n" + joined)
 
 
 def parse_memory_summary(raw: str, limit: int = 240) -> str:
