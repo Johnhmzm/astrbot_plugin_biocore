@@ -523,7 +523,8 @@
     const _importantOnly = !state.visual || state.visual.memoryBallsImportant !== false;
     let _pickedMem = _allMem;
     if (_allMem.length && _importantOnly) {
-      _pickedMem = _allMem.filter((ev) => ev && (ev.self_defining === true ||
+      _pickedMem = _allMem.filter((ev) => ev && (ev._kind === "event" ||
+        ev.self_defining === true ||
         Number(ev.importance == null ? 0 : ev.importance) >= 0.60));
     }
     const _memSource = _pickedMem;

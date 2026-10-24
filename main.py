@@ -239,8 +239,9 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "ts": ts,
                 "importance": importance,
                 "hits": int(entry.get("hits", 0) or 0),
-                "memory_source": str(entry.get("memory_source") or ""),
+                "memory_source": str(entry.get("memory_source") or "direct"),
                 "memory_confidence": confidence,
+                "legacy": not bool(entry.get("memory_source")),
                 "memory_tier": str(entry.get("memory_tier") or ""),
                 "conflict": bool(entry.get("conflict")),
                 "last_write_op": str(entry.get("last_write_op") or ""),
@@ -255,7 +256,8 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "poison_risk": bool(entry.get("poison_risk")),
                 "links": len(entry.get("links") or []),
                 "self_defining": bool(entry.get("self_defining")),
-                "verification": str((entry.get("verification") or {}).get("status") or "")
+                "verification": str((entry.get("verification") or {}).get("status")
+                                    or memory_meta.verify_entry(entry).get("status") or "")
             })
         tombstones = []
         for item in (doc.get("tombstones") or [])[-max_tombstones:]:
@@ -1476,7 +1478,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.29")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.30")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3831,11 +3833,18 @@ class BioCorePlugin(Star):
                                 if isinstance(e, dict)
                                 and self._usable_memory_text(str(e.get("text", "")))]
                 try:
+                    for entry in d["entries"]:
+                        entry.setdefault("inhibition", 0.0)
+                        entry.setdefault("suppression_count", 0)
+                        entry.setdefault("memory_tier", "warm")
+                        # Lazy migration: pre-provenance data is direct user/
+                        # model input, not "unknown". This runs for every old
+                        # entry on load, then persists on the next save.
+                        if not entry.get("memory_source") and not entry.get("memory_confidence"):
+                            entry["memory_source"] = "direct"
+                            entry["memory_confidence"] = 0.7
+                            entry["legacy_backfilled"] = True
                     if int(d.get("schema_version", 0) or 0) < MEMORY_SCHEMA_VERSION:
-                        for entry in d["entries"]:
-                            entry.setdefault("inhibition", 0.0)
-                            entry.setdefault("suppression_count", 0)
-                            entry.setdefault("memory_tier", "warm")
                         d["schema_version"] = MEMORY_SCHEMA_VERSION
                 except Exception:
                     pass

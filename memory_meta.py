@@ -1629,11 +1629,18 @@ def verify_entry(entry: Any) -> dict:
     """Deterministic verification/consistency summary for one memory."""
     if not isinstance(entry, dict):
         return {"status": "unverified", "sources": 0, "conflict": False}
-    source = normalize_source(entry.get("memory_source"))
-    try:
-        confidence = float(entry.get("memory_confidence", 0.5) or 0.5)
-    except Exception:
-        confidence = 0.5
+    # Legacy entries (before provenance metadata existed) were written from
+    # direct user/model input; treat them as direct@0.7 instead of "unknown"
+    # so upgraded data does not show up as "来源不明".
+    if "memory_source" not in entry and "memory_confidence" not in entry:
+        source = "direct"
+        confidence = 0.7
+    else:
+        source = normalize_source(entry.get("memory_source"))
+        try:
+            confidence = float(entry.get("memory_confidence", 0.5) or 0.5)
+        except Exception:
+            confidence = 0.5
     prov = entry.get("provenance") if isinstance(entry.get("provenance"), dict) else {}
     sources = 0
     for key in ("sources", "source_texts"):
