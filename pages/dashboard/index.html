@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-1934" />
+<link rel="stylesheet" href="./styles.css?v=20261024-1940" />
 </head>
 <body>
 <div class="shell">
@@ -62,7 +62,7 @@
             <span class="orb-tag ot-spike">sync <b id="orbSpike">--</b></span>
           </div>
           <div class="orb-meta"><b id="orbValence">+0.00</b><span>PAD valence</span></div>
-          <div class="orb-mem-legend" id="orbMemLegend">记忆球：每条记忆一球 · 灰绿=未记录情绪 · 大小=重要度</div>
+          <div class="orb-mem-legend" id="orbMemLegend">记忆球：仅重要记忆成球 · 球大小=重要度 · 外环数=情绪强度</div>
         </div>
       </div>
 
@@ -408,7 +408,9 @@
         <div class="setting-row"><div><b>粒子连线</b><small>连接同环相邻粒子，仅 attention 高或悬停球体时淡入。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪节点</b><small>与情绪环表达重叠，默认关闭；需要调试时再开启。</small></div><label class="switch"><input type="checkbox" id="swShowNodes" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪影响线</b><small>情绪节点之间的淡线，默认关闭。</small></div><label class="switch"><input type="checkbox" id="swShowNodeLinks" checked><span></span></label></div>
-        <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>一球一条记忆（优先）或一个真实事件（最多 10 个 + 外圈档案带）；越久越向内，大小=质量，颜色=情绪。若看不到球，先点右侧“恢复默认显示”，再强制刷新页面。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>一球一条重要记忆（最多 10 个 + 外圈档案带）；越久越向内，大小=重要度，颜色=写入情绪。若看不到球，先点右侧“恢复默认显示”，再强制刷新页面。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>只显示重要记忆球</b><small>默认开启：只有重要度≥0.60 或“自指记忆”才成球（普通闲聊/低重要度记忆不成球）；关闭后最多显示 10 条记忆球。</small></div><label class="switch"><input type="checkbox" id="swMemoryBallsImportant" checked><span></span></label></div>
+        <div class="setting-row"><div><b>情绪强度环</b><small>球体外的虚线环数量随情绪强度（arousal + |valence| + 控制感偏离）变化，1–4 圈；越强圈越多。</small></div><label class="switch"><input type="checkbox" id="swShowEmotionRings" checked><span></span></label></div>
         <div class="setting-row"><div><b>恢复默认显示</b><small>清除本地可视化开关缓存并刷新页面（不影响后端数据）。</small></div><button type="button" class="btn mini" id="resetVisualBtn">恢复默认显示</button></div>
         <div class="setting-row"><div><b>外层环</b><small>围绕球体自主运转的环，速度来自 echo / echo_trace。</small></div><label class="switch"><input type="checkbox" id="swShowEcho" checked><span></span></label></div>
         <div class="setting-row"><div><b>外层环 02</b><small>第二条反向环，倾角和速度独立。</small></div><label class="switch"><input type="checkbox" id="swShowRipple" checked><span></span></label></div>
@@ -440,5 +442,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-1934"></script><script src="./orb.js?v=20261024-1934"></script>
+<script src="./app.js?v=20261024-1940"></script><script src="./orb.js?v=20261024-1940"></script>
 </body></html>

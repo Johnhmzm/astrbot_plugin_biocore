@@ -425,6 +425,31 @@
     });
     _ringOrbits.forEach(o => ring(o, ry, rx, false, cy));
 
+    // Emotion-intensity rings: how strongly she feels = how many outer rings.
+    // Count 1..4 from arousal + |valence| + dominance deviation; deterministic.
+    if (!state.visual || state.visual.emotionRings !== false) {
+      const _ev = Number(s.v || 0), _ea = clamp(s.a == null ? .5 : s.a);
+      const _ed = Number(s.d == null ? .5 : s.d);
+      const _eI = clamp(.42 * _ea + .33 * Math.abs(_ev) + .15 * Math.abs(_ed - .5) * 2 +
+                        .10 * clamp(s.stress == null ? 0 : s.stress));
+      const _ringCount = 1 + Math.floor(_eI * 3.999);   // 1..4
+      window.__biocoreEmotionRings = _ringCount;
+      for (let k = 0; k < _ringCount; k++) {
+        const rr = R * (1.58 + 0.17 * k);
+        const rot = phase * (0.22 + 0.10 * k) * (k % 2 ? -1 : 1);
+        ctx.save();
+        ctx.globalAlpha = 0.10 + 0.14 * _eI;
+        ctx.strokeStyle = isDark() ? "rgba(225,220,205,.8)" : "rgba(96,88,74,.8)";
+        ctx.lineWidth = .55;
+        ctx.setLineDash([2 + k, 5 + k]);
+        ctx.beginPath();
+        if (ctx.ellipse) ctx.ellipse(CX, cy, rr, rr * (0.26 + 0.03 * k), rot, 0, Math.PI * 2);
+        else ctx.arc(CX, cy, rr, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
     // emotion node layer: 7 nodes projected from affect space
     if (!state.visual || state.visual.nodes !== false) {
       const _en = [
@@ -492,9 +517,17 @@
     // memory event nodes: one ball per real archived event (max 10 shown).
     // Identity (phase / inclination / periapsis) comes from a hash of
     // id / event_key, so list reordering or new arrivals cannot move old balls.
-    // Prefer memory entries (one ball per memory); fall back to archived events.
-    const _memSource = (Array.isArray(state.memories) && state.memories.length)
-      ? state.memories
+    // Only important memories form balls by default (importance >= 0.60 or
+    // self-defining); events are the fallback only when no memory list exists.
+    const _allMem = Array.isArray(state.memories) ? state.memories : [];
+    const _importantOnly = !state.visual || state.visual.memoryBallsImportant !== false;
+    let _pickedMem = _allMem;
+    if (_allMem.length && _importantOnly) {
+      _pickedMem = _allMem.filter((ev) => ev && (ev.self_defining === true ||
+        Number(ev.importance == null ? 0 : ev.importance) >= 0.60));
+    }
+    const _memSource = _allMem.length
+      ? _pickedMem
       : (Array.isArray(state.events) ? state.events : []);
     const _memEvents = _memSource.filter((ev) => ev && typeof ev === "object");
     const _memShown = _memEvents.slice(0, 10);
@@ -593,7 +626,8 @@
         const sinceRecall = Math.max(0, _nowS - Number(ev.last_recall || b.tsS));
         const recallFresh = Math.exp(-sinceRecall / 86400);
         const haloPulse = .85 + .15 * Math.sin(phase * (.55 + .45 * recallN) + b.ageDays);
-        const size = (1.9 + 6.0 * Math.cbrt(b.mass)) * front;
+        // Ball size is dominated by memory/event importance (not recall count).
+        const size = (1.6 + 8.0 * Math.pow(b.imp, 0.75) + 0.6 * Math.min(1, b.recall / 5)) * front;
         b.size = size;
         const fillAlpha = (.14 + .52 * b.imp) * ageAlpha * (.55 + .45 * b.cent) * front;
         const haloAlpha = (.06 + .12 * recallN + .05 * recallFresh) * ageAlpha *

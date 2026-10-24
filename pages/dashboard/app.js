@@ -83,7 +83,7 @@
   const shortSession=(v)=>{const t=String(v||"");return t.length>36?t.slice(0,33)+"…":t;};
   function storeGet(k, fallback){ try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch (e) { return fallback; } }
   function storeSet(k, v){ try { localStorage.setItem(k, String(v)); } catch (e) {} }
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -296,6 +296,7 @@
           meaning_to_her:text.slice(0,140), central_details:text.slice(0,140),
           ts:Number(e.ts||0), importance:Number(e.importance||0.5),
           centrality:0.5, recall_count:Number(e.hits||0), merge_count:0,
+          self_defining:!!e.self_defining,
           emotion:String(e.encoding_emotion||"neutral")||"neutral",
           emotion_known:!!String(e.encoding_emotion||"").trim(),
           memory_source:String(e.memory_source||""),
@@ -305,7 +306,23 @@
       });
     });
     out.sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0));
-    return out.slice(0,10);
+    return out.slice(0,60);
+  }
+  // Only important memories form balls by default: importance >= 0.60 or
+  // self-defining (identity-central) memory. Toggle restores "show all".
+  const MEMORY_BALL_IMPORTANCE=0.60;
+  function importantMemoryBalls(list){
+    if(!Array.isArray(list)) return [];
+    if(!visual.memoryBallsImportant) return list;
+    return list.filter(ev=>ev&&(ev.self_defining===true||Number(ev.importance||0)>=MEMORY_BALL_IMPORTANCE));
+  }
+  function updateOrbLegend(){
+    if(!$("orbMemLegend")) return;
+    const st=window.__biocoreState||{};
+    const all=Array.isArray(st.memories)?st.memories:[];
+    const shown=importantMemoryBalls(all).slice(0,10);
+    const suffix=visual.memoryBallsImportant?"仅重要记忆（重要度≥0.60 或自指）":"全部记忆（最多 10）";
+    $("orbMemLegend").textContent="记忆球 ×"+shown.length+"："+suffix+" · 球大小=重要度 · 外环数=情绪强度 · 悬停查看";
   }
   function normMemEntry(e){
     const src=(e&&typeof e==="object")?e:{};
@@ -640,8 +657,8 @@
     const core=(data.cores&&data.cores[0])||demo.cores[0];
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
     const _memBalls=memoryBallsFromIndex();
-    if($("orbMemLegend")) $("orbMemLegend").textContent="记忆球 ×"+_memBalls.length+"：每条记忆一球 · 灰绿=未记录情绪 · 大小=重要度 · 悬停查看";
     window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_memBalls};
+    updateOrbLegend();
     renderSessionMemory();
     renderMemoryMeta();
     renderRelationships();
@@ -725,7 +742,7 @@
     $("crumbView").textContent=names[name]||name;
   }
   document.querySelectorAll(".nav-item").forEach(a=>a.addEventListener("click",()=>switchView(a.dataset.view)));
-  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_intensity",visual.intensity);if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
+  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
   $("swShowNoise").checked=visual.noise; $("swShowEcho").checked=visual.echo; $("swShowRipple").checked=visual.ripple;
   if($("swShowDominance"))$("swShowDominance").checked=visual.dominance;
   if($("swShowSocial"))$("swShowSocial").checked=visual.social;
@@ -733,6 +750,8 @@
   if($("swShowNodes"))$("swShowNodes").checked=visual.nodes;
   if($("swShowNodeLinks"))$("swShowNodeLinks").checked=visual.nodeLinks;
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").checked=visual.memoryNodes;
+  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").checked=visual.memoryBallsImportant;
+  if($("swShowEmotionRings"))$("swShowEmotionRings").checked=visual.emotionRings;
   $("orbIntensity").value=visual.intensity;
   $("swShowNoise").addEventListener("change",e=>{visual.noise=e.target.checked;visualSave();});
   $("swShowEcho").addEventListener("change",e=>{visual.echo=e.target.checked;visualSave();});
@@ -743,6 +762,8 @@
   if($("swShowNodes"))$("swShowNodes").addEventListener("change",e=>{visual.nodes=e.target.checked;visualSave();});
   if($("swShowNodeLinks"))$("swShowNodeLinks").addEventListener("change",e=>{visual.nodeLinks=e.target.checked;visualSave();});
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();});
+  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();updateOrbLegend();});
+  if($("swShowEmotionRings"))$("swShowEmotionRings").addEventListener("change",e=>{visual.emotionRings=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
   function bindBehaviorToggle(id,key){
     const el=$(id);
@@ -780,7 +801,7 @@
   });
   const resetVisualBtn=$("resetVisualBtn");
   if(resetVisualBtn) resetVisualBtn.addEventListener("click",()=>{
-    try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
+    try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_show_memory_balls_important","bio_show_emotion_rings","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
     try{ location.reload(); }catch(e){}
   });
   const selfSave=$("selfSaveBtn");
@@ -1181,7 +1202,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.27";
+  const BIO_VERSION = "v1.2.28";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

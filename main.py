@@ -254,6 +254,7 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "scope": str(entry.get("scope") or ""),
                 "poison_risk": bool(entry.get("poison_risk")),
                 "links": len(entry.get("links") or []),
+                "self_defining": bool(entry.get("self_defining")),
                 "verification": str((entry.get("verification") or {}).get("status") or "")
             })
         tombstones = []
@@ -1475,7 +1476,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.27")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.28")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
