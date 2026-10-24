@@ -90,6 +90,24 @@
     "type": "int",
     "default": 6
   },
+  "image_llama_server": {
+    "description": "图片服务 llama-server 路径",
+    "hint": "留空时使用内置默认路径；换机器请填写实际路径。",
+    "type": "string",
+    "default": ""
+  },
+  "image_llama_model": {
+    "description": "图片服务 VLM 模型路径",
+    "hint": "留空时使用内置默认路径。",
+    "type": "string",
+    "default": ""
+  },
+  "image_llama_mmproj": {
+    "description": "图片服务 mmproj 路径",
+    "hint": "留空时使用内置默认路径。",
+    "type": "string",
+    "default": ""
+  },
   "image_service_idle_seconds": {
     "description": "图片服务空闲回收秒数",
     "hint": "图片识别完成后等待多少秒没有新请求就关闭本地 VLM 服务。默认 120。",

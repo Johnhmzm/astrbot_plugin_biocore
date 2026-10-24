@@ -1282,6 +1282,12 @@ class BioCorePlugin(Star):
             self.image_cache_max_entries = max(20, int(self.config.get("image_cache_max_entries", 500) or 500))
         except Exception:
             self.image_cache_max_entries = 500
+        def _configured_path(key, fallback):
+            raw = str(self.config.get(key, "") or "").strip()
+            return Path(raw) if raw else fallback
+        self.image_llama_server = _configured_path("image_llama_server", LLAMA_SERVER)
+        self.image_llama_model = _configured_path("image_llama_model", LLAMA_MODEL)
+        self.image_llama_mmproj = _configured_path("image_llama_mmproj", LLAMA_MMPROJ)
         _triggers = self.config.get("image_trigger_words", [])
         self.image_trigger_words = ([str(x).strip() for x in _triggers if str(x).strip()]
                                     if isinstance(_triggers, (list, tuple)) else [])
@@ -1670,7 +1676,7 @@ class BioCorePlugin(Star):
                 self._image_last_used = time.time()
                 return True
             try:
-                if not LLAMA_SERVER.is_file() or not LLAMA_MODEL.is_file():
+                if not self.image_llama_server.is_file() or not self.image_llama_model.is_file():
                     logger.warning("[biocore] image service files missing")
                     return False
                 args = [str(LLAMA_SERVER), "-m", str(LLAMA_MODEL)]
