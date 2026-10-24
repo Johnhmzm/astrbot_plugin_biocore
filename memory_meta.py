@@ -240,6 +240,20 @@ def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> No
     entry["previous_versions"] = versions[-max(1, int(limit)):]
 
 
+def rollback_entry(entry: dict[str, Any] | None) -> bool:
+    """Restore the last previous version, if any. Vector is invalidated."""
+    if not isinstance(entry, dict):
+        return False
+    versions = entry.get("previous_versions")
+    if not isinstance(versions, list) or not versions:
+        return False
+    entry["text"] = str(versions.pop())[:1200]
+    entry["vector"] = []
+    entry["vec_updated_ts"] = 0.0
+    entry["last_write_op"] = "ROLLBACK"
+    return True
+
+
 def build_destination(sender_id: Any = "", sender_name: Any = "") -> dict[str, str]:
     """Small destination/source record for who told the agent this memory."""
     return {
