@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-2249" />
+<link rel="stylesheet" href="./styles.css?v=20261024-2256" />
 </head>
 <body>
 <div class="shell">
@@ -437,7 +437,7 @@
         <div class="setting-row"><div><b>事件总结</b><small>强事件发生时总结成事件档案；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>事件排序抽取</b><small>LLM 抽取/排序；默认关闭时改用确定性分段 + embedding/新异度/线索排序，不调用 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_ranking_enabled"><span></span></label><select id="fn_event_ranking_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>跨事件反思</b><small>定期从最近事件提炼更高层认识；默认关闭，关闭时用确定性摘要。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_insight_enabled"><span></span></label><select id="fn_insight_provider" class="event-session"></select></div></div>
-        <div class="setting-row"><div><b>记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。关闭时改用 embedding 分组+去重的抽取式摘要，不调用 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>图片描述</b><small>调用视觉 provider 描述图片；默认关闭，且只走视觉 API，不混用文本 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_image_caption_enabled"><span></span></label><select id="fn_image_caption_provider" class="event-session"></select></div></div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
@@ -484,5 +484,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-2249"></script><script src="./orb.js?v=20261024-2249"></script>
+<script src="./app.js?v=20261024-2256"></script><script src="./orb.js?v=20261024-2256"></script>
 </body></html>
