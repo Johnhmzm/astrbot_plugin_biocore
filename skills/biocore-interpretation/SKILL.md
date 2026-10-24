@@ -105,3 +105,10 @@ loops/due/soon → 可自然提一句待办/承诺，但不要复述字段名
 不输出数值 delta（会被丢弃）
 不要附加 JSON 解释
 ```
+
+
+## Prompt fallback / token 约束
+
+- 每轮 prompt 里只保留极短 fallback：`[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；不解释、不输出任何数值 delta。`
+- 完整字段含义、可选字段、翻译规则与输出格式以本 skill 为准，不要要求把长规则塞回每轮 prompt。
+- 可选字段只在需要时出现：`ansc` 仅置信度 <0.65，`memsrc` 仅 inferred/unknown，`memwho` 仅多人来源，`loops/due/soon` 仅存在前瞻记忆。
