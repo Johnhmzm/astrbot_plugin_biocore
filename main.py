@@ -118,7 +118,7 @@ LLM_FUNCTIONS = (
 LLM_FUNCTION_DEFAULTS = {
     "persona_compile": False,
     "event_summary": True,
-    "event_ranking": False,
+    "event_ranking": True,
     "insight": False,
     "memory_summary": True,
     "image_caption": False,
@@ -1506,7 +1506,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.44")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.45")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3043,7 +3043,7 @@ class BioCorePlugin(Star):
                            if w in seg_text)
                 cue_score = min(1.0, cues / 3.0)
                 score = 0.35 * imp + 0.25 * schema + 0.20 * novelty + 0.20 * cue_score
-                if imp < 0.55 or score < 0.45:
+                if imp < 0.55 or score < 0.40:
                     continue
                 candidates.append((score, seg_text, seg_entries, vec, schema, imp))
             candidates.sort(key=lambda x: x[0], reverse=True)
@@ -3102,133 +3102,16 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] deterministic event ranking failed: %s", exc)
 
     async def _archive_ranked_events(self, event, core, entries):
+        """Deterministic embedding/rule event extraction (LLM is never used here).
+
+        The event_ranking switch merely enables/disables this local pipeline;
+        event summarization stays a separate optional function (event_summary).
+        """
         if not entries:
             return
         if not self._llm_allowed("event_ranking"):
-            # No LLM ranking: keep the event pipeline alive with deterministic
-            # segment generation + embedding/novelty/salience ranking.
-            await self._archive_ranked_events_deterministic(event, core, entries)
             return
-        try:
-            provider = await self._provider_for("event_ranking", event)
-            if provider is None:
-                return
-            texts = []
-            source_ts = []
-            attachments = []
-            for e in entries[-24:]:
-                t = str(e.get("text", "")).strip()
-                cap = str(e.get("image_caption", "") or "").strip()
-                if cap:
-                    t = (t + "\n[图片内容] " + cap).strip() if t else ("[图片内容] " + cap)
-                if t:
-                    texts.append(t)
-                    try:
-                        _ts = float(e.get("ts", 0) or 0)
-                    except Exception:
-                        _ts = 0.0
-                    if _ts > 0:
-                        source_ts.append(_ts)
-                try:
-                    attachments.extend(e.get("attachments") or [])
-                except Exception:
-                    pass
-            if not texts:
-                return
-            prompt = interpretation.event_ranking_prompt(texts)
-            resp = await provider.text_chat(prompt=prompt)
-            raw = str(getattr(resp, "completion_text", "") or "").strip()
-            items = interpretation.parse_event_ranking(raw)
-            if not items:
-                return
-            ranked = []
-            for ev in items:
-                if not isinstance(ev, dict):
-                    continue
-                try:
-                    imp = float(ev.get("importance", 0) or 0)
-                except Exception:
-                    imp = 0.0
-                emo = str(ev.get("emotion") or "neutral")
-                body = str(ev.get("event") or "").strip()
-                if imp < 0.6 or emo == "neutral" or not body:
-                    continue
-                ranked.append((imp, ev))
-            ranked.sort(key=lambda x: x[0], reverse=True)
-            for imp, ev in ranked[:3]:
-                _title = str(ev.get("title") or "重要事件").strip()[:80]
-                _body = str(ev.get("event") or "").strip()[:600]
-                _meaning = str(ev.get("meaning_to_her") or "").strip()[:400]
-                _reflection = str(ev.get("reflection") or "").strip()[:400]
-                _prov = self._event_provenance(event, entries, ts=time.time())
-                _check = self._source_check(_body, texts, provenance=_prov, record_ts=_prov.get("ts"))
-                _ekey = self._normalize_event_key(ev.get("event_key") or _title, _title)
-                _ev_vec = None
-                try:
-                    _ev_vec = await self._embed_text(_body)
-                except Exception:
-                    _ev_vec = None
-                record = {
-                    "id": "evt_" + str(int(time.time())) + "_" + str(abs(hash(_title + _body)) % 100000),
-                    "ts": time.time(),
-                    "session": str(getattr(event, "unified_msg_origin", "") or ""),
-                    "title": _title,
-                    "event": _body,
-                    "event_key": _ekey,
-                    "centrality": round(max(0.0, min(1.0, float(ev.get("centrality", imp) or imp))), 3),
-                    "central_details": str(ev.get("central_details") or _body)[:400],
-                    "peripheral_details": str(ev.get("peripheral_details") or "")[:300],
-                    "central_weight": round(0.4 + 0.6 * max(0.0, min(1.0, float(ev.get("centrality", imp) or imp))), 3),
-                    "peripheral_weight": round(max(0.05, 0.6 * (1.0 - max(0.0, min(1.0, float(ev.get("centrality", imp) or imp))))), 3),
-                    "peripheral_retention": round(max(0.05, 1.0 - max(0.0, min(1.0, float(ev.get("centrality", imp) or imp)))), 3),
-                    "meaning_to_her": _meaning,
-                    "reflection": _reflection,
-                    "emotion": str(ev.get("emotion") or "neutral"),
-                    "importance": round(imp, 3),
-                    "appraisal": dict(core.appraisal) if core is not None else {},
-                    "confidence": round(max(0.2, min(1.0, 0.55 + 0.45 * float(_check.get("overlap", 0)))), 3),
-                    "source_count": len(texts),
-                    "source_check": _check,
-                    "provenance": _prov,
-                    "attachments": attachments[:20],
-                    "modalities": sorted(set(["图片"] if any(a.get("type") == "image" for a in attachments) else [])),
-                    "recall_count": 0,
-                    "last_recall": time.time(),
-                    "strength": round(imp, 3),
-                    "source_texts": texts[:12],
-                }
-                # MemoryBank time window: source entries' earliest / latest ts.
-                _valid_ts = sorted(source_ts)
-                if _valid_ts:
-                    record["time_span"] = {
-                        "start_ts": round(_valid_ts[0], 3),
-                        "end_ts": round(_valid_ts[-1], 3),
-                        "span_seconds": round(_valid_ts[-1] - _valid_ts[0], 3),
-                    }
-                    record["summary_window"] = {
-                        "earliest_ts": round(_valid_ts[0], 3),
-                        "latest_ts": round(_valid_ts[-1], 3),
-                        "source_count": len(texts),
-                    }
-                _dup = self._find_any_duplicate_event(record.get("session") or "", _ekey, _body,
-                                                     record.get("ts") or time.time())
-                if _dup is not None:
-                    record["duplicate_of"] = str(_dup.get("id") or "")
-                    self._merge_archive_duplicate(_dup, record)
-                    continue
-                _bnd = self._event_boundary(record.get("session") or "", _body, record.get("ts") or time.time())
-                record["boundary_score"] = _bnd.get("boundary_score", 0.0)
-                record["parent_event_id"] = _bnd.get("parent_event_id", "")
-                if _ev_vec:
-                    record["event_embedding"] = [round(float(x), 5) for x in _ev_vec]
-                self._append_event_archive(record)
-                if core is not None:
-                    core.remember_event(str(record.get("event_key") or _title), _title,
-                                        _meaning, _reflection, embedding=_ev_vec)
-                self._update_self_narrative(_title, _reflection or _meaning)
-                logger.info("[biocore] ranked event archived: %s imp=%.2f", _title, imp)
-        except Exception as exc:
-            logger.warning("[biocore] ranked event extraction failed: %s", exc)
+        await self._archive_ranked_events_deterministic(event, core, entries)
 
     async def _archive_strong_event(self, event, core, texts, summary, attachments=None):
         if core is None:
