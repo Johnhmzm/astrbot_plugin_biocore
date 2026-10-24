@@ -14,7 +14,8 @@
   let state = { intent: { emotion: "neutral" }, snapshot: { energy: .5, stress: .2, trust: .5, a: .4,
     noise: { stress: 0, energy: 0, social: 0, attention: 0, valence: 0 }, echo: 0, echo_trace: 0,
     ripple: { upper: .3, lower: .2, overlap: .1 }, spiking: { rate: .03 } },
-    visual: { noise: true, echo: true, ripple: true, nodes: false, nodeLinks: false, intensity: 65 } };
+    visual: { noise: true, echo: true, ripple: true, nodes: false, nodeLinks: false, intensity: 65 },
+    events: [], memories: [] };
   let phase = 0, lastFrame = 0, frameCount = 0;
   const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
   const isDark = () => document.documentElement.dataset.theme === "dark";
@@ -339,6 +340,7 @@
 
   function draw(ts) {
     requestAnimationFrame(draw);
+    window.__biocoreOrbAlive = true;
     if (document.hidden) return;
     if (ts - lastFrame < 33) return;
     lastFrame = ts; frameCount++;
@@ -490,8 +492,11 @@
     // memory event nodes: one ball per real archived event (max 10 shown).
     // Identity (phase / inclination / periapsis) comes from a hash of
     // id / event_key, so list reordering or new arrivals cannot move old balls.
-    const _memEvents = (Array.isArray(state.events) ? state.events : [])
-      .filter((ev) => ev && typeof ev === "object");
+    // Prefer memory entries (one ball per memory); fall back to archived events.
+    const _memSource = (Array.isArray(state.memories) && state.memories.length)
+      ? state.memories
+      : (Array.isArray(state.events) ? state.events : []);
+    const _memEvents = _memSource.filter((ev) => ev && typeof ev === "object");
     const _memShown = _memEvents.slice(0, 10);
     const _memExtra = Math.max(0, _memEvents.length - _memShown.length);
     const _nowS = Date.now() / 1000;

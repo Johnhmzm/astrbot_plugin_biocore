@@ -248,6 +248,9 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "summarized": bool(entry.get("summarized")),
                 "destination": dict(destination) if isinstance(destination, dict) else None,
                 "provenance": dict(provenance) if isinstance(provenance, dict) else None,
+                # Read-only extras for the orb memory-ball layer.
+                "encoding_emotion": str(entry.get("encoding_emotion") or ""),
+                "last_used": round(float(entry.get("last_used", 0) or 0), 3),
             })
         tombstones = []
         for item in (doc.get("tombstones") or [])[-max_tombstones:]:
@@ -1451,7 +1454,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.24")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.25")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
