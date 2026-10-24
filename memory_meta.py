@@ -60,6 +60,9 @@ __all__ = [
     "handle_delete_command",
     "detect_open_loops",
     "resolve_open_loops",
+    "CANDIDATE_MAX",
+    "CANDIDATE_MAX_CONFIDENCE",
+    "apply_memory_candidate",
 ]
 
 SOURCE_RANK = {
@@ -964,6 +967,118 @@ def rollback_candidate(entries: Any) -> dict | None:
             best = entry
             best_ts = ts
     return best
+
+
+
+
+# ---------------------------------------------------------------------------
+# LLM-proposed memory candidates (Mem0-style: propose, never write)
+# ---------------------------------------------------------------------------
+CANDIDATE_MAX = 3
+CANDIDATE_MAX_CONFIDENCE = 0.70
+
+
+def _candidate_id(text: str, stamp: float) -> str:
+    raw = (str(text) + "|" + str(stamp)).encode("utf-8")
+    return "cand_" + hashlib.sha1(raw).hexdigest()[:10]
+
+
+def apply_memory_candidate(entries: Any, candidate: Any, *, match: Any = None,
+                           cosine: Any = 0.0, vector: Any = None,
+                           now: float | None = None,
+                           provenance: Any = None) -> dict[str, Any]:
+    """Route one LLM-proposed candidate through the deterministic policy.
+
+    The model only proposes text/source/confidence/kind; this helper decides
+    ADD/UPDATE/NOOP. A candidate can never DELETE a memory, even if it asks
+    to, and its confidence is capped below direct-user confidence.
+    """
+    if not isinstance(entries, list) or not isinstance(candidate, dict):
+        return {"op": "NOOP", "entry": None, "reason": "invalid_candidate"}
+    kind = str(candidate.get("kind") or "add").strip().lower()
+    if kind == "delete":
+        return {"op": "NOOP", "entry": None, "reason": "llm_delete_not_allowed"}
+    text = str(candidate.get("text") or "").strip()[:300]
+    if len(text) < 4:
+        return {"op": "NOOP", "entry": None, "reason": "candidate_too_short"}
+    source = normalize_source(candidate.get("source"))
+    if source not in ("told", "inferred"):
+        source = "inferred"
+    try:
+        confidence = min(CANDIDATE_MAX_CONFIDENCE,
+                         max(0.20, float(candidate.get("confidence", 0.5) or 0.5)))
+    except Exception:
+        confidence = 0.50
+    stamp = float(now if now is not None else time.time())
+    try:
+        similarity = _clamp(cosine)
+    except Exception:
+        similarity = 0.0
+    target = match if isinstance(match, dict) and not match.get("deleted") else None
+    conflict = bool(target and detect_conflict(str(target.get("text") or ""), text))
+    op = classify_write_op(target, {"text": text}, similarity,
+                           conflict=conflict or kind == "update")
+    if op == "DELETE":
+        op = "NOOP"
+    if op == "ADD":
+        entry = {
+            "id": _candidate_id(text, stamp),
+            "text": text,
+            "role": "user",
+            "vector": list(vector) if isinstance(vector, (list, tuple)) else [],
+            "ts": stamp,
+            "hits": 1,
+            "importance": round(_clamp(0.40 + 0.40 * confidence), 3),
+            "memory_source": source,
+            "memory_confidence": round(confidence, 4),
+            "memory_tier": "warm",
+            "conflict": False,
+            "candidate_origin": "llm",
+            "last_write_op": "ADD",
+            "last_write_ts": stamp,
+            "write_ops": {"ADD": 1},
+            "schema_congruence": 0.0,
+            "self_defining": False,
+            "inhibition": 0.0,
+            "suppression_count": 0,
+            "last_used": stamp,
+            "next_review_ts": stamp + 86400,
+            "review_count": 0,
+        }
+        if isinstance(provenance, dict):
+            entry["provenance"] = dict(provenance)
+        entries.append(entry)
+        return {"op": "ADD", "entry": entry, "reason": "candidate_add"}
+    if op == "UPDATE" and target is not None:
+        old_text = str(target.get("text") or "")
+        merge_version(target, old_text)
+        if text != old_text:
+            target["text"] = text
+            if isinstance(vector, (list, tuple)):
+                target["vector"] = list(vector)
+            target["vec_updated_ts"] = stamp
+        previous = target.get("memory_confidence")
+        try:
+            previous_value = float(previous) if previous is not None else confidence
+        except Exception:
+            previous_value = confidence
+        target["memory_confidence"] = round(
+            min(CANDIDATE_MAX_CONFIDENCE,
+                max(0.20, 0.5 * previous_value + 0.5 * confidence)), 4)
+        target["memory_source"] = merge_sources(target.get("memory_source"), source)
+        target["conflict"] = bool(conflict)
+        target["candidate_origin"] = "llm"
+        target["last_write_op"] = "UPDATE"
+        target["last_write_ts"] = stamp
+        ops = target.get("write_ops") if isinstance(target.get("write_ops"), dict) else {}
+        ops["UPDATE"] = int(ops.get("UPDATE", 0) or 0) + 1
+        target["write_ops"] = ops
+        return {"op": "UPDATE", "entry": target, "reason": "candidate_update"}
+    if target is not None:
+        target["last_used"] = stamp
+        target["hits"] = int(target.get("hits", 0) or 0) + 1
+        return {"op": "NOOP", "entry": target, "reason": "candidate_duplicate"}
+    return {"op": "NOOP", "entry": None, "reason": "candidate_noop"}
 
 
 def handle_delete_command(doc: Any, text: Any, now: float | None = None) -> dict[str, Any]:
