@@ -486,3 +486,13 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .persona-tabs.fold-grid .fold-icon svg{width:62%;height:62%}
 .persona-tabs.fold-grid .fold-face{gap:8px}
 .persona-tabs.fold-grid .fold-face small{font-size:clamp(9px,1.3vw,11px);color:var(--ink)}
+
+/* settings tiles: same desktop language as persona tabs (icon + caption, equal columns) */
+#view-settings .fold-grid{grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:10px;padding:0;margin:0 0 18px;border:0;border-radius:0;background:transparent;justify-content:stretch;align-items:stretch}
+#view-settings .fold-grid .fold-panel.folded{width:100%;height:auto;min-height:112px;max-width:none;max-height:none;aspect-ratio:auto;padding:14px 8px;border-radius:10px}
+#view-settings .fold-grid .fold-panel.folded .fold-face{gap:9px;width:100%;height:100%}
+#view-settings .fold-grid .fold-icon{width:clamp(36px,4.4vw,44px);height:clamp(36px,4.4vw,44px);border-radius:8px}
+#view-settings .fold-grid .fold-icon svg{width:62%;height:62%}
+#view-settings .fold-grid .fold-face small{display:block;font-size:clamp(9px,1.3vw,11px);color:var(--ink);max-width:100%}
+#view-settings .fold-grid .fold-panel.folded:hover{transform:translateY(-2px)}
+@media(max-width:640px){#view-settings .fold-grid{grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:8px}#view-settings .fold-grid .fold-panel.folded{min-height:96px;padding:10px 6px}}
