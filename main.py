@@ -1510,7 +1510,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.50")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.51")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3721,6 +3721,8 @@ class BioCorePlugin(Star):
                          "BioCore core backup")
                 register("/astrbot_plugin_biocore/page/restore", self.page_restore, ["POST"],
                          "BioCore core restore")
+                register("/astrbot_plugin_biocore/page/insight", self.page_insight, ["POST"],
+                         "BioCore manual cross-event insight")
                 register("/astrbot_plugin_biocore/page/consolidate", self.page_consolidate, ["POST"],
                          "BioCore memory consolidation")
                 register("/astrbot_plugin_biocore/page/memory/rollback/<path:session>/<entry_id>",
@@ -4146,6 +4148,33 @@ class BioCorePlugin(Star):
         await self._persist_plugin_config({key: bool(getattr(self, key))})
         logger.info("[biocore] setting %s=%s", key, getattr(self, key))
         return {"status": "ok", "data": {"key": key, "value": getattr(self, key)}}
+
+    async def page_insight(self):
+        """Manual cross-event insight button: bypass threshold/cooldown once."""
+        from quart import request
+        _ = await request.get_json(silent=True) or {}
+        events = self._event_archive(12)
+        if not events:
+            return {"status": "ok", "data": {"generated": False,
+                                              "insight": "",
+                                              "message": "还没有归档事件"}}
+        core = next(iter(self.cores.values()), None)
+        if core is None:
+            core = BioCore(dict(DEFAULT_PROFILE))
+        key = next(iter(self.cores), "") or ""
+        ev = types.SimpleNamespace(unified_msg_origin=key)
+        ok = await self._generate_insight(ev, core, events[-6:])
+        insight = ""
+        try:
+            if INSIGHT_ARCHIVE_PATH.exists():
+                lines = [x for x in INSIGHT_ARCHIVE_PATH.read_text(encoding="utf-8").splitlines() if x.strip()]
+                if lines:
+                    insight = str(json.loads(lines[-1]).get("insight") or "")
+        except Exception:
+            insight = ""
+        return {"status": "ok", "data": {"generated": bool(ok),
+                                          "insight": insight,
+                                          "events": len(events)}}
 
     async def page_api_config(self):
         from quart import request
