@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-2010" />
+<link rel="stylesheet" href="./styles.css?v=20261024-2023" />
 </head>
 <body>
 <div class="shell">
@@ -397,6 +397,7 @@
         <div class="setting-row"><div><b>敏感记忆保护</b><small>自动识别手机号/证件/银行卡/邮箱/密码等，召回时以 ••• 掩码交给模型；敏感记忆不跨会话共享。</small></div><label class="switch"><input type="checkbox" id="swSensitiveMemory" checked><span></span></label></div>
         <div class="setting-row"><div><b>混合检索（词法 + MMR）</b><small>embedding 余弦之外加入词法分，并用 MMR 减少近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
+        <div class="setting-row"><div><b>LLM 只用于回复+总结（严格）</b><small>默认开启：只保留“事件总结/记忆总结”两类 LLM 调用；人格编译、事件排序抽取、跨事件反思、图片描述改用确定性回退，不额外调用 LLM。关闭后恢复全部能力。</small></div><label class="switch"><input type="checkbox" id="swLlmOnlyReplySummary" checked><span></span></label></div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
@@ -442,5 +443,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-2010"></script><script src="./orb.js?v=20261024-2010"></script>
+<script src="./app.js?v=20261024-2023"></script><script src="./orb.js?v=20261024-2023"></script>
 </body></html>

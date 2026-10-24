@@ -1478,7 +1478,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.31")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.32")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1503,6 +1503,12 @@ class BioCorePlugin(Star):
         # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
         self.hybrid_retrieval = bool(self.config.get("hybrid_retrieval", True))
         self.llm_memory_candidates = bool(self.config.get("llm_memory_candidates", True))
+        # LLM scope: user requirement is "LLM only for reply + summary".
+        # When true, BioCore only calls the LLM for event/memory summaries;
+        # persona compile / event ranking / reflection / image caption are
+        # skipped (deterministic fallbacks where available).
+        self.llm_only_reply_summary = bool(
+            self.config.get("llm_only_reply_summary", True))
         self.first_run_persona_compile = bool(self.config.get("first_run_persona_compile", True))
         # Deprecated: [BC] sizing is owned by the interpretation layer now.
         # Kept only so existing config files do not break on load.
@@ -1612,6 +1618,16 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] persona read failed: %s", exc)
             return ""
 
+    def _llm_allowed(self, kind: str) -> bool:
+        """LLM scope gate: reply and summary only in strict mode."""
+        try:
+            strict = bool(getattr(self, "llm_only_reply_summary", False))
+        except Exception:
+            strict = False
+        if not strict:
+            return True
+        return str(kind or "") in ("reply", "summary")
+
     async def _compile_profile(self, event):
         text = await self._persona_text(event)
         if not text:
@@ -1624,6 +1640,13 @@ class BioCorePlugin(Star):
                     ensure_ascii=False, indent=1), encoding="utf-8")
             except Exception:
                 pass
+            return
+        if not self._llm_allowed("persona"):
+            # Strict scope: keep the existing/default numeric profile instead
+            # of spending an LLM call on persona compilation.
+            self.persona_text = text
+            self.profile = getattr(self, "profile", None) or dict(DEFAULT_PROFILE)
+            logger.info("[biocore] llm scope=reply+summary: skip persona compile")
             return
         try:
             provider = await self.context.get_using_provider_async(getattr(event, "unified_msg_origin", ""))
@@ -1694,7 +1717,7 @@ class BioCorePlugin(Star):
                 for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                             "kb_enabled", "cross_session_memory",
                             "sensitive_memory_protection", "hybrid_retrieval",
-                            "llm_memory_candidates"):
+                            "llm_memory_candidates", "llm_only_reply_summary"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
                 if isinstance(d.get("kb_names"), list) and "kb_names" not in self.config:
@@ -1713,6 +1736,8 @@ class BioCorePlugin(Star):
                 "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
                 "llm_memory_candidates": bool(
                     getattr(self, "llm_memory_candidates", True)),
+                "llm_only_reply_summary": bool(
+                    getattr(self, "llm_only_reply_summary", True)),
                 "inject_intent": bool(self.inject_intent),
                 "kb_enabled": bool(getattr(self, "kb_enabled", False)),
                 "kb_names": list(getattr(self, "kb_names", [])),
@@ -2314,6 +2339,20 @@ class BioCorePlugin(Star):
         events = self._event_archive(6)
         if len(events) < 3:
             return
+        if not self._llm_allowed("insight"):
+            # Deterministic reflection note instead of an extra LLM call.
+            try:
+                titles = [str(e.get("title") or "").strip() for e in events[-3:]]
+                titles = [t for t in titles if t]
+                if titles:
+                    self._append_insight({
+                        "ts": time.time(),
+                        "insight": ("最近发生：" + "；".join(titles))[:300],
+                        "emotion": str(core.labels.get("emotion") or "neutral") if core else "neutral",
+                    })
+            except Exception:
+                pass
+            return
         try:
             provider = await self.context.get_using_provider_async(
                 getattr(event, "unified_msg_origin", "") or "")
@@ -2755,6 +2794,10 @@ class BioCorePlugin(Star):
     async def _archive_ranked_events(self, event, core, entries):
         if not entries:
             return
+        if not self._llm_allowed("ranking"):
+            # Strict scope: only strong-event summaries (allowed "summary")
+            # run; no LLM ranking/extraction pass.
+            return
         try:
             provider = await self.context.get_using_provider_async(
                 getattr(event, "unified_msg_origin", "") or "")
@@ -2972,6 +3015,10 @@ class BioCorePlugin(Star):
     async def _image_context(self, event) -> str:
         refs = self._image_refs(event)
         if not refs:
+            return ""
+        if not self._llm_allowed("caption"):
+            # Strict scope: no image-caption LLM call; image memory falls back
+            # to the attachment placeholder only.
             return ""
         if not await self._ensure_image_service():
             return ""
@@ -3606,6 +3653,8 @@ class BioCorePlugin(Star):
             "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
             "llm_memory_candidates": bool(
                 getattr(self, "llm_memory_candidates", True)),
+            "llm_only_reply_summary": bool(
+                getattr(self, "llm_only_reply_summary", True)),
             "persona_loaded": bool(self.persona_text),
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
@@ -3653,7 +3702,8 @@ class BioCorePlugin(Star):
         key = str(data.get("key") or "").strip()
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                        "cross_session_memory", "sensitive_memory_protection",
-                       "hybrid_retrieval", "llm_memory_candidates"):
+                       "hybrid_retrieval", "llm_memory_candidates",
+                       "llm_only_reply_summary"):
             return {"status": "error", "message": "unknown setting"}
         setattr(self, key, bool(data.get("value")))
         self._save_settings()
