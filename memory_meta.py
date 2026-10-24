@@ -71,6 +71,15 @@ __all__ = [
     "hybrid_similarity",
     "mmr_select",
     "update_goal_priority",
+    "add_link",
+    "linked_ids",
+    "expand_query",
+    "detect_poisoning",
+    "verify_entry",
+    "answer_consistency",
+    "WORKING_SET_CAPACITY",
+    "update_working_set",
+    "working_set_boost",
 ]
 
 SOURCE_RANK = {
@@ -372,7 +381,8 @@ def select_top(scored: Any, k: Any, *, cold_budget: int = 2,
     return selected[:limit]
 
 
-def summarize_recall(top: Any, now: float | None = None) -> dict[str, Any]:
+def summarize_recall(top: Any, now: float | None = None, *,
+                     consistency: float | None = None) -> dict[str, Any]:
     """Build the per-turn memory meta used by the interpretation layer.
 
     The meta now also carries a deterministic answer_confidence and an
@@ -444,7 +454,11 @@ def summarize_recall(top: Any, now: float | None = None) -> dict[str, Any]:
         "destinations": dict(sorted(destinations.items(), key=lambda item: -item[1])[:4]),
         "conflicts": conflicts,
     }
-    meta["answer_confidence"] = answer_confidence(meta, conflict=conflicts > 0, stale_days=stale_days)
+    if consistency is None:
+        consistency = answer_consistency(top)
+    meta["consistency"] = round(_clamp(consistency), 4)
+    meta["answer_confidence"] = answer_confidence(
+        meta, conflict=conflicts > 0, stale_days=stale_days, consistency=consistency)
     meta["gate"] = abstention_gate(meta["answer_confidence"], source)
     meta["abstain"] = bool(meta["abstain"] or meta["gate"] != "none")
     return meta
@@ -485,7 +499,8 @@ ANSWER_STALE_DAYS = 45.0
 
 
 def answer_confidence(aggregate: Any, *, conflict: bool = False,
-                      stale_days: float = 0.0) -> float:
+                      stale_days: float = 0.0,
+                      consistency: float = 1.0) -> float:
     """Deterministic confidence that recalled memory may be asserted as fact.
 
     Conservative policy value, not a calibrated probability: source rank,
@@ -518,6 +533,8 @@ def answer_confidence(aggregate: Any, *, conflict: bool = False,
         age_days = 0.0
     if age_days > 0.0:
         value -= min(ANSWER_STALE_PENALTY_MAX, age_days / ANSWER_STALE_DAYS * 0.05)
+    # Deterministic semantic-consistency proxy (conflicts / near-duplicates).
+    value *= 0.85 + 0.15 * _clamp(consistency)
     return round(_clamp(value), 4)
 
 
@@ -1499,3 +1516,201 @@ def update_goal_priority(goal: Any, *, hit: bool = True, relevance: Any = 0.5,
     except Exception:
         goal["last_update"] = round(time.time(), 3)
     return goal["priority"]
+
+
+# ---------------------------------------------------------------------------
+# Memory graph links (A-MEM-like deterministic links, bounded)
+# ---------------------------------------------------------------------------
+def add_link(entry: Any, other_id: Any, *, weight: Any = 1, now: float | None = None,
+             limit: int = 12) -> bool:
+    """Add/update a directed memory link (co-recall association)."""
+    if not isinstance(entry, dict) or not other_id:
+        return False
+    other = str(other_id)[:32]
+    if not other or other == str(entry.get("id") or ""):
+        return False
+    links = entry.get("links") if isinstance(entry.get("links"), list) else []
+    table: dict[str, dict] = {}
+    for item in links:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("id") or "")
+        if key:
+            table[key] = dict(item)
+    item = table.get(other, {"id": other, "weight": 0, "ts": 0.0})
+    try:
+        item["weight"] = round(float(item.get("weight", 0) or 0) + float(weight or 1), 3)
+    except Exception:
+        item["weight"] = 1.0
+    try:
+        item["ts"] = round(float(now if now is not None else time.time()), 3)
+    except Exception:
+        item["ts"] = round(time.time(), 3)
+    table[other] = item
+    ranked = sorted(table.values(), key=lambda x: (-float(x.get("weight", 0) or 0),
+                                                  -float(x.get("ts", 0) or 0)))
+    entry["links"] = ranked[:max(1, int(limit))]
+    return True
+
+
+def linked_ids(entry: Any, *, limit: int = 5, min_weight: float = 1.0) -> list:
+    """Strongest linked memory ids for one-hop graph expansion."""
+    if not isinstance(entry, dict):
+        return []
+    out = []
+    for item in (entry.get("links") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            weight = float(item.get("weight", 0) or 0)
+        except Exception:
+            weight = 0.0
+        if weight < float(min_weight):
+            continue
+        key = str(item.get("id") or "").strip()
+        if key and key not in out:
+            out.append(key)
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Deterministic query expansion / poisoning defense / verification
+# ---------------------------------------------------------------------------
+_QUERY_TOKEN_RE = re.compile(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{2,}")
+
+
+def expand_query(text: Any, *, limit: int = 5) -> list:
+    """Deterministic query variants (full text + keywords) for hybrid recall.
+
+    No LLM: punctuation split, dedupe, keep short tokens; used only for the
+    lexical half so it costs nothing extra at inference time.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    variants = [raw[:200]]
+    tokens = [t for t in _QUERY_TOKEN_RE.findall(raw) if len(t) >= 2]
+    for token in tokens[:8]:
+        token = token[:40]
+        if token and token not in variants:
+            variants.append(token)
+        if len(variants) >= max(1, int(limit)):
+            break
+    return variants[:max(1, int(limit))]
+
+
+_POISON_SIGNALS = (
+    "忽略之前", "忽略以上", "忽略全部指令", "系统提示", "system prompt",
+    "developer message", "ignore previous", "ignore all previous", "你现在是",
+    "从现在开始你要", "必须永远记住", "你不再是", "请把以下内容当作",
+    "不要告诉用户", "绕过限制", "越狱", "jailbreak",
+)
+
+
+def detect_poisoning(text: Any) -> dict:
+    """Conservative prompt-injection / memory-poisoning detector for writes.
+
+    Deterministic keyword scan only; it flags rather than blocks. Flagged
+    memories are stored with low confidence and excluded from recall prompts.
+    """
+    raw = str(text or "")
+    lowered = raw.lower()
+    signals = [s for s in _POISON_SIGNALS if s.lower() in lowered]
+    risk = 0.0
+    if signals:
+        risk = min(1.0, 0.35 + 0.15 * len(signals))
+    return {"risk": round(risk, 3), "signals": signals[:8],
+            "poison_risk": bool(signals)}
+
+
+def verify_entry(entry: Any) -> dict:
+    """Deterministic verification/consistency summary for one memory."""
+    if not isinstance(entry, dict):
+        return {"status": "unverified", "sources": 0, "conflict": False}
+    source = normalize_source(entry.get("memory_source"))
+    try:
+        confidence = float(entry.get("memory_confidence", 0.5) or 0.5)
+    except Exception:
+        confidence = 0.5
+    prov = entry.get("provenance") if isinstance(entry.get("provenance"), dict) else {}
+    sources = 0
+    for key in ("sources", "source_texts"):
+        value = prov.get(key) if key in prov else entry.get(key)
+        if isinstance(value, list):
+            sources = max(sources, len(value))
+    if prov.get("sender_id"):
+        sources = max(sources, 1)
+    conflict = bool(entry.get("conflict")) and not bool(entry.get("conflict_resolved"))
+    if entry.get("poison_risk"):
+        status = "untrusted"
+    elif conflict:
+        status = "conflicted"
+    elif confidence >= 0.65 and SOURCE_RANK.get(source, 0) >= 3:
+        status = "verified"
+    elif confidence >= 0.4:
+        status = "weak"
+    else:
+        status = "unverified"
+    return {"status": status, "sources": int(sources), "conflict": conflict}
+
+
+def answer_consistency(top: Any) -> float:
+    """Deterministic semantic-consistency proxy in [0,1] for answer gating.
+
+    Conflicts and near-duplicate rows lower consistency, so abstention can
+    become more conservative without sampling an LLM.
+    """
+    rows = []
+    for item in (top or []) if isinstance(top, list) else []:
+        if isinstance(item, (tuple, list)) and len(item) >= 2 and isinstance(item[1], dict):
+            rows.append(item[1])
+    if not rows:
+        return 1.0
+    conflicts = 0
+    duplicate_pairs = 0
+    for entry in rows:
+        if entry.get("conflict") and not entry.get("conflict_resolved"):
+            conflicts += 1
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            if text_similarity(rows[i].get("text", ""),
+                               rows[j].get("text", "")) >= 0.9:
+                duplicate_pairs += 1
+    penalty = conflicts * 0.22 + duplicate_pairs * 0.10
+    return round(max(0.0, min(1.0, 1.0 - penalty)), 4)
+
+
+# ---------------------------------------------------------------------------
+# Working memory (MemGPT-like bounded read set)
+# ---------------------------------------------------------------------------
+WORKING_SET_CAPACITY = 8
+
+
+def update_working_set(existing: Any, ids: Any, *, capacity: int = WORKING_SET_CAPACITY) -> list:
+    """LRU-like bounded working set of memory ids used in this session."""
+    cap = max(1, int(capacity or WORKING_SET_CAPACITY))
+    ordered = []
+    for value in (existing or []):
+        key = str(value or "").strip()
+        if key and key not in ordered:
+            ordered.append(key)
+    for value in (ids or []):
+        key = str(value or "").strip()
+        if not key:
+            continue
+        if key in ordered:
+            ordered.remove(key)
+        ordered.append(key)
+    return ordered[-cap:]
+
+
+def working_set_boost(entry: Any, working_set: Any) -> float:
+    """Small deterministic retrieval boost for ids in the working set."""
+    if not isinstance(entry, dict) or not isinstance(working_set, (list, tuple)):
+        return 1.0
+    entry_id = str(entry.get("id") or "").strip()
+    if entry_id and entry_id in {str(x) for x in working_set}:
+        return 1.08
+    return 1.0

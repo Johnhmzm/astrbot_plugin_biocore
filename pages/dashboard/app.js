@@ -297,6 +297,7 @@
           ts:Number(e.ts||0), importance:Number(e.importance||0.5),
           centrality:0.5, recall_count:Number(e.hits||0), merge_count:0,
           emotion:String(e.encoding_emotion||"neutral")||"neutral",
+          emotion_known:!!String(e.encoding_emotion||"").trim(),
           memory_source:String(e.memory_source||""),
           memory_confidence:e.memory_confidence==null?null:Number(e.memory_confidence),
           last_recall:Number(e.last_used||e.ts||0),
@@ -316,7 +317,10 @@
       source:String(src.memory_source||src.source||"unknown").toLowerCase(),
       confidence:conf, tier:String(src.memory_tier||src.tier||"").toLowerCase(),
       conflict:!!src.conflict, lastOp:String(src.last_write_op||""),
-      versions:versions, summarized:!!src.summarized};
+      versions:versions, summarized:!!src.summarized,
+      sensitive:!!src.sensitive, poison:!!src.poison_risk,
+      links:Number(src.links||0), scope:String(src.scope||""),
+      verification:String(src.verification||"")};
   }
   function renderMemoryMeta(){
     const sel=$("memSessionFilter"), list=$("memEntryList"), empty=$("memEmpty"),
@@ -381,7 +385,12 @@
         unknownSrc?'<span class="mem-flag mem-flag-warn">'+esc(memSourceLabel(e.source))+'</span>':"",
         e.conflict?'<span class="mem-flag mem-flag-danger">冲突已更新</span>':"",
         e.versions>0?'<span class="mem-flag mem-flag-ok">可回滚 ×'+e.versions+'</span>':"",
-        e.summarized?'<span class="mem-flag">已总结</span>':""
+        e.summarized?'<span class="mem-flag">已总结</span>':"",
+        e.sensitive?'<span class="mem-flag mem-flag-warn">敏感</span>':"",
+        e.poison?'<span class="mem-flag mem-flag-danger">注入风险</span>':"",
+        e.verification==="verified"?'<span class="mem-flag mem-flag-ok">已验证</span>':"",
+        e.links>0?'<span class="mem-flag mem-flag-ok">关联 '+e.links+'</span>':"",
+        e.scope==="session"?'<span class="mem-flag">会话内</span>':""
       ].filter(Boolean).join("");
       const delLabel=armed&&armed.op==="delete"?"再点确认删除":"删除";
       const rbLabel=armed&&armed.op==="rollback"?"再点确认回滚":"回滚";
@@ -630,7 +639,9 @@
   function render(){
     const core=(data.cores&&data.cores[0])||demo.cores[0];
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
-    window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:memoryBallsFromIndex()};
+    const _memBalls=memoryBallsFromIndex();
+    if($("orbMemLegend")) $("orbMemLegend").textContent="记忆球 ×"+_memBalls.length+"：每条记忆一球 · 灰绿=未记录情绪 · 大小=重要度 · 悬停查看";
+    window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_memBalls};
     renderSessionMemory();
     renderMemoryMeta();
     renderRelationships();
@@ -1170,7 +1181,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.26";
+  const BIO_VERSION = "v1.2.27";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

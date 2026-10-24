@@ -579,7 +579,8 @@
       _balls.sort((p, q) => p.z - q.z);   // back to front
       _balls.forEach((b) => {
         const ev = b.ev;
-        const col = _ec[String(ev.emotion || "neutral")] || _ec.neutral;
+        let col = _ec[String(ev.emotion || "neutral")] || _ec.neutral;
+        if (ev._kind === "memory" && !ev.emotion_known) col = "142,148,158";
         const bodyHsl = _vividHsl(col, b.imp);   // saturated, slightly deep
         const ringHsl = { h: bodyHsl.h, s: bodyHsl.s, l: Math.min(60, bodyHsl.l + 7) };
         const bodyFill = "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
