@@ -320,8 +320,12 @@
         });
       });
     });
-    out.sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0));
-    return out.slice(0,60);
+    // One consolidation batch produces summary rows + summarized originals;
+    // show summary rows only to avoid duplicate balls for the same group.
+    const summaries=out.filter(x=>x.role==="summary");
+    const pool=summaries.length?summaries:out;
+    pool.sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0));
+    return pool.slice(0,60);
   }
   // Archived events are already event-summary artifacts (LLM ranked/summarized
   // before archiving), so they are valid "summarized" balls even when the raw
@@ -707,7 +711,17 @@
     const core=(data.cores&&data.cores[0])||demo.cores[0];
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
     const _memBalls=memoryBallsFromIndex();
-    const _ballPool=_memBalls.length?_memBalls:eventBallsFromArchive();
+    const _eventBalls=eventBallsFromArchive();
+    let _ballPool=_memBalls;
+    if(!_ballPool.length){
+      _ballPool=_eventBalls;
+    }else{
+      // Archived events are event summaries and should stay visible (e.g. the
+      // late-night confession ball); dedupe against memory-ball titles.
+      const _titles=_ballPool.map(b=>String(b.title||""));
+      const _extra=_eventBalls.filter(ev=>!_titles.some(t=>t&&(t.includes(ev.title)||String(ev.title||"").includes(t)))).slice(0,3);
+      _ballPool=_ballPool.concat(_extra);
+    }
     window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_ballPool};
     updateOrbLegend();
     renderSessionMemory();
@@ -1253,7 +1267,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.30";
+  const BIO_VERSION = "v1.2.31";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
