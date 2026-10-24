@@ -164,6 +164,167 @@ def _clip(x, lo=-1.0, hi=1.0):
         return lo
 
 
+def _memory_entry_id_of(entry) -> str:
+    """Stable per-entry id shared by the memory API and the dashboard index."""
+    if not isinstance(entry, dict):
+        return ""
+    eid = str(entry.get("id") or "").strip()
+    if eid:
+        return eid
+    text = str(entry.get("text") or "").strip()
+    return _sha256(text[:300])[:12] if text else ""
+
+
+def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
+                       max_entries: int = 200, max_tombstones: int = 20) -> list:
+    """Read-only, bounded memory index consumed by the dashboard.
+
+    Only contract fields are exposed. Deleted entries are omitted from the
+    entries list and surfaced through tombstones (soft deletes keep a
+    tombstone matching the hard-delete shape). Old entries without the new
+    metadata keep neutral values instead of failing.
+    """
+    sessions = []
+    try:
+        files = sorted(Path(memory_dir).glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        files = []
+    for path in files[:max(1, int(max_sessions))]:
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(doc, dict):
+            continue
+        entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+        rows = []
+        soft_deleted = []
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("deleted"):
+                soft_deleted.append(entry)
+                continue
+            if len(rows) >= max_entries:
+                continue
+            try:
+                ts = round(float(entry.get("ts", 0) or 0), 3)
+            except Exception:
+                ts = 0.0
+            try:
+                importance = round(float(entry.get("importance", 0.5) or 0.5), 3)
+            except Exception:
+                importance = 0.5
+            confidence = entry.get("memory_confidence")
+            try:
+                confidence = round(float(confidence), 4) if confidence is not None else None
+            except Exception:
+                confidence = None
+            destination = entry.get("destination")
+            provenance = entry.get("provenance")
+            rows.append({
+                "id": _memory_entry_id_of(entry),
+                "text": str(entry.get("text") or "")[:400],
+                "role": str(entry.get("role") or ""),
+                "ts": ts,
+                "importance": importance,
+                "hits": int(entry.get("hits", 0) or 0),
+                "memory_source": str(entry.get("memory_source") or ""),
+                "memory_confidence": confidence,
+                "memory_tier": str(entry.get("memory_tier") or ""),
+                "conflict": bool(entry.get("conflict")),
+                "last_write_op": str(entry.get("last_write_op") or ""),
+                "previous_versions": [str(v)[:400] for v in (entry.get("previous_versions") or [])][-8:],
+                "summarized": bool(entry.get("summarized")),
+                "destination": dict(destination) if isinstance(destination, dict) else None,
+                "provenance": dict(provenance) if isinstance(provenance, dict) else None,
+            })
+        tombstones = []
+        for item in (doc.get("tombstones") or [])[-max_tombstones:]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                tomb_ts = round(float(item.get("ts", 0) or 0), 3)
+            except Exception:
+                tomb_ts = 0.0
+            tombstones.append({
+                "id": str(item.get("id") or ""),
+                "ts": tomb_ts,
+                "text": str(item.get("text") or "")[:200],
+            })
+        for entry in soft_deleted[-max_tombstones:]:
+            try:
+                tomb_ts = round(float(entry.get("deleted_ts") or entry.get("ts", 0) or 0), 3)
+            except Exception:
+                tomb_ts = 0.0
+            tombstones.append({
+                "id": _memory_entry_id_of(entry),
+                "ts": tomb_ts,
+                "text": str(entry.get("text") or "")[:200],
+            })
+        sessions.append({
+            "session": str(path.stem),
+            "entries": rows,
+            "tombstones": tombstones[-max_tombstones:],
+        })
+    return sessions
+
+
+def _relationship_rows(user_dir: Path, *, max_users: int = 50,
+                       max_trajectory: int = 40) -> list:
+    """Read-only, bounded relationship index consumed by the dashboard."""
+    rows = []
+    try:
+        files = sorted(Path(user_dir).glob("*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except Exception:
+        files = []
+    for path in files[:max(1, int(max_users))]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        try:
+            trust = round(float(data.get("trust", 0.5) or 0.5), 4)
+        except Exception:
+            trust = 0.5
+        try:
+            interactions = int(data.get("interactions", 0) or 0)
+        except Exception:
+            interactions = 0
+        try:
+            last_seen = round(float(data.get("last_seen", 0) or 0), 3)
+        except Exception:
+            last_seen = 0.0
+        rel = data.get("relationship") if isinstance(data.get("relationship"), dict) else {}
+        state = rel.get("state") if isinstance(rel.get("state"), dict) else None
+        if not isinstance(state, dict):
+            try:
+                state = relationship_meta.relationship_state(trust=trust)
+            except Exception:
+                state = {"trust": trust, "closeness": 0.5, "conflict": 0.5,
+                         "repair": 0.0, "predictability": 0.5}
+        trajectory = rel.get("trajectory") if isinstance(rel.get("trajectory"), list) else []
+        rows.append({
+            "sender_id": str(data.get("sender_id") or ""),
+            "sender_name": str(data.get("sender_name") or ""),
+            "interactions": interactions,
+            "trust": trust,
+            "last_seen": last_seen,
+            "relationship": {
+                "state": {key: state.get(key) for key in
+                          ("trust", "closeness", "conflict", "repair", "predictability")},
+                "trajectory": [dict(x) for x in trajectory[-max_trajectory:] if isinstance(x, dict)],
+                "transactive_map": rel.get("transactive_map") if isinstance(rel.get("transactive_map"), dict) else {},
+                "destination_map": rel.get("destination_map") if isinstance(rel.get("destination_map"), dict) else {},
+            },
+        })
+    return rows
+
+
 PLUTCHIK_WHEEL = {
     "joy": ("joy", "trust", "anticipation", "surprise"),
     "trust": ("trust", "joy", "acceptance", "admiration"),
@@ -256,6 +417,7 @@ class BioCore:
         self.compound = ""
         self.regulation = "none"
         self.history = []
+        self.open_loops = []
         self.stimuli = []
         self.goals = [
             {"key": "relationship", "name": "和重要的人保持亲近", "keywords": ("喜欢", "爱", "陪", "关系", "信任", "靠近", "一起"),
@@ -324,6 +486,8 @@ class BioCore:
             self.stimuli = [x for x in d["stimuli"] if isinstance(x, dict)][-40:]
         if isinstance(d.get("history"), list):
             self.history = [x for x in d["history"] if isinstance(x, dict)][-80:]
+        if isinstance(d.get("open_loops"), list):
+            self.open_loops = [x for x in d["open_loops"] if isinstance(x, dict)][-20:]
         if isinstance(d.get("coping_history"), list):
             self.coping_history = [float(x) for x in d["coping_history"] if isinstance(x, (int, float))][-40:]
         if isinstance(d.get("event_anchors"), list):
@@ -614,6 +778,29 @@ class BioCore:
         else:
             self.meta_emotion = ""
 
+    def update_open_loops(self, text: str, now=None) -> None:
+        """Deterministic prospective-memory (open loops) update from one message."""
+        try:
+            stamp = float(now if now is not None else __import__("time").time())
+            loops = [x for x in (getattr(self, "open_loops", []) or []) if isinstance(x, dict)]
+            memory_meta.resolve_open_loops(loops, text, stamp)
+            for new_loop in memory_meta.detect_open_loops(text, stamp):
+                merged = False
+                for existing in loops:
+                    if str(existing.get("status") or "open") != "open":
+                        continue
+                    if memory_meta.text_similarity(
+                            existing.get("text", ""), new_loop.get("text", "")) >= memory_meta.OPEN_LOOP_MERGE_SIMILARITY:
+                        existing["last_mentioned_ts"] = stamp
+                        existing["mentioned"] = int(existing.get("mentioned", 1) or 1) + 1
+                        merged = True
+                        break
+                if not merged:
+                    loops.append(new_loop)
+            self.open_loops = loops[-int(memory_meta.OPEN_LOOP_MAX):]
+        except Exception:
+            pass
+
     def observe(self, text: str, embedding=None) -> None:
         self._decay_to_now()
         self._query_embedding = embedding
@@ -758,6 +945,10 @@ class BioCore:
         self.spiking = {"rate": round(0.02 + self.energy * 0.08, 3),
                         "variance": round(0.01 + self.stress * 0.05, 4),
                         "ei": round(0.2 + self.trust * 0.3, 3)}
+        try:
+            self.update_open_loops(t)
+        except Exception:
+            pass
         self.ticks += 1
         self.infer_labels(force=True)
 
@@ -1216,6 +1407,12 @@ class BioCore:
                 "appraisal": dict(self.appraisal),
                 "stimuli": list(self.stimuli)[-8:],
                 "history": list(self.history)[-80:],
+                "open_loops": [dict(x) for x in (getattr(self, "open_loops", []) or [])[-20:]
+                               if isinstance(x, dict)],
+                "open_loops_due": sum(1 for _loop in (getattr(self, "open_loops", []) or [])
+                                      if isinstance(_loop, dict)
+                                      and _loop.get("status") == "open"
+                                      and str(_loop.get("due_hint") or "") in ("soon", "tomorrow")),
                 "goal_focus": self.goal_focus,
                 "coping": round(float((self.appraisal or {}).get("coping", 0.5)), 3),
                 "event_anchors": list(self.event_anchors)[-5:],
@@ -1245,7 +1442,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.19")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.20")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3136,13 +3333,7 @@ class BioCorePlugin(Star):
 
     @staticmethod
     def _memory_entry_id(entry: dict) -> str:
-        if not isinstance(entry, dict):
-            return ""
-        eid = str(entry.get("id") or "").strip()
-        if eid:
-            return eid
-        text = str(entry.get("text") or "").strip()
-        return _sha256(text[:300])[:12] if text else ""
+        return _memory_entry_id_of(entry)
 
     @classmethod
     def _memory_find_entry(cls, entries, entry_id: str) -> dict | None:
@@ -3255,6 +3446,12 @@ class BioCorePlugin(Star):
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
             "memory": self._memory_stats(),
+            # Read-only dashboard contract (bounded): memory entries per
+            # session with provenance/confidence/write-op metadata, tombstone
+            # audit rows, and per-user relationship state/trajectory/maps.
+            "memory_index": _memory_index_rows(MEMORY_DIR),
+            "relationships": _relationship_rows(USER_DIR),
+            "last_memory_meta": dict(getattr(self, "_last_memory_meta", {}) or {}),
             "kb_config": {"enabled": bool(getattr(self, "kb_enabled", False)),
                           "names": list(getattr(self, "kb_names", []))},
             "kb_available": await self._kb_available(),
@@ -3557,6 +3754,16 @@ class BioCorePlugin(Star):
             base = 1.0 / (1.0 + math.exp(-(_b + 1.0)))
         except Exception:
             base = 0.5
+        # Minimal runtime versions of three mechanisms: schema-congruent
+        # (self-defining) memory, retrieval-induced forgetting, and regulation
+        # x memory. All deterministic; none rewrites memory content.
+        try:
+            schema = max(0.0, min(1.0, float(entry.get("schema_congruence", 0.0) or 0.0)))
+        except Exception:
+            schema = 0.0
+        inhibition = memory_meta.retrieval_inhibition(entry)
+        regulation = str(getattr(core, "regulation", "none") or "none") if core is not None else "none"
+        regulation_mod = memory_meta.regulation_memory_modifier(entry, regulation)
         # Causal chain: cosine relevance * biological salience/recency *
         # source/confidence/tier weight -> recall threshold and ranking.
         return (cosine * (0.40 + 0.60 * importance) * recency
@@ -3565,7 +3772,10 @@ class BioCorePlugin(Star):
                 * (1.0 + 0.10 * math.log1p(max(0, recall_count)))
                 * due
                 * (1.0 + 0.05 * math.log1p(max(0, assoc)))
-                * memory_meta.retrieval_weight(entry))
+                * memory_meta.retrieval_weight(entry)
+                * (1.0 + 0.10 * schema)
+                * (1.0 - 0.15 * inhibition)
+                * regulation_mod)
 
     def _memory_top_k(self, core) -> int:
         k = 4
@@ -3744,30 +3954,133 @@ class BioCorePlugin(Star):
         finally:
             self._consolidating = False
 
+
+    @staticmethod
+    def _memory_command_line(cmd: dict) -> str:
+        """Deterministic one-line data hint describing an executed memory command."""
+        cmd = cmd or {}
+        op = str(cmd.get("op") or "NOOP")
+        target = str(cmd.get("target") or "").strip()[:40]
+        if op == "PENDING":
+            return "- 待确认：用户要求删除关于「%s」的记忆；用户回复“确认”后才执行。" % target
+        if op == "DELETE":
+            return "- 已删除关于「%s」的记忆（软删除，可恢复）。" % target
+        if op == "RESTORE":
+            return "- 已恢复最近删除的一条记忆。"
+        if op == "ROLLBACK":
+            _text = str((cmd.get("entry") or {}).get("text") or "")[:40]
+            return "- 已把一条记忆回滚到上一版本：%s" % _text
+        reason = str(cmd.get("reason") or "")
+        if reason == "ambiguous":
+            return "- 删除请求匹配到多条记忆，未执行；需要用户说得更具体。"
+        if reason == "vague_target":
+            return "- 删除请求缺少具体对象，未执行；需要用户说明要删除哪条记忆。"
+        if reason == "no_match":
+            return "- 没有找到匹配的记忆，未删除。"
+        if reason == "no_restore_target":
+            return "- 没有可恢复的已删除记忆。"
+        if reason == "no_rollback_target":
+            return "- 没有可回滚的记忆修改。"
+        return ""
+
+    def _self_schema_texts(self, core) -> list:
+        """Bounded self-schema corpus for deterministic schema congruence."""
+        texts = []
+        try:
+            model = self.self_model or {}
+            for key in ("who_am_i", "narrative"):
+                value = str(model.get(key) or "").strip()
+                if value:
+                    texts.append(value)
+            for key in ("boundaries", "consistency"):
+                for item in (model.get(key) or []):
+                    item = str(item or "").strip()
+                    if item:
+                        texts.append(item)
+            if core is not None:
+                for key in ("core_self", "narrative_self"):
+                    value = str(getattr(core, key, "") or "").strip()
+                    if value:
+                        texts.append(value)
+                for item in (getattr(core, "autobiography", []) or [])[-8:]:
+                    if isinstance(item, dict):
+                        value = str(item.get("title") or item.get("meaning") or "").strip()
+                        if value:
+                            texts.append(value)
+        except Exception:
+            pass
+        return texts[:24]
+
+    def _apply_memory_encoding(self, entry, core, now, text="") -> None:
+        """Store deterministic encoding context: schema, regulation, affect."""
+        if not isinstance(entry, dict):
+            return
+        try:
+            schema = memory_meta.schema_congruence(
+                text or str(entry.get("text") or ""), self._self_schema_texts(core))
+            previous = 0.0
+            try:
+                previous = float(entry.get("schema_congruence", 0.0) or 0.0)
+            except Exception:
+                previous = 0.0
+            entry["schema_congruence"] = round(max(previous, schema), 4)
+            entry["self_defining"] = bool(
+                memory_meta.is_self_defining(entry, entry["schema_congruence"]))
+        except Exception:
+            pass
+        if core is not None:
+            try:
+                entry["encoding_regulation"] = str(getattr(core, "regulation", "none") or "none")
+                entry["encoding_emotion"] = str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")
+                entry["encoding_valence"] = round(float(getattr(core, "v", 0.0) or 0.0), 3)
+                entry["encoding_arousal"] = round(float(getattr(core, "a", 0.5) or 0.5), 3)
+            except Exception:
+                pass
+        entry.setdefault("inhibition", 0.0)
+        entry.setdefault("suppression_count", 0)
+
     async def _memory_recall(self, event, text: str, core=None, extra: str = "", vec=None, voice: str = "") -> str:
-        self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown", "abstain": False, "tiers": {}}
+        self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown",
+                                  "abstain": False, "tiers": {}, "answer_confidence": 0.0,
+                                  "gate": "none", "conflicts": 0}
         if not self.memory_dedup_embedding or not self._usable_memory_text(text):
-            return ""
-        if vec is None:
-            vec = await self._embed_text(text)
-        if not vec:
             return ""
         doc = self._load_memory(event)
         entries = doc.get("entries")
         if not isinstance(entries, list):
             entries = []
             doc["entries"] = entries
+        # Explicit memory write commands (DELETE/RESTORE/ROLLBACK) run before
+        # retrieval. A staged delete only executes on an explicit confirmation
+        # turn; the command text is never stored as a new memory.
+        try:
+            _cmd = memory_meta.handle_delete_command(doc, text, time.time())
+        except Exception:
+            _cmd = {"handled": False}
+        if _cmd.get("handled"):
+            self._save_memory(event, doc)
+            self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown",
+                                      "abstain": False, "tiers": {}, "answer_confidence": 0.0,
+                                      "gate": "none", "conflicts": 0,
+                                      "write_op": str(_cmd.get("op") or "NOOP")}
+            return self._memory_command_line(_cmd)
+        if vec is None:
+            vec = await self._embed_text(text)
+        if not vec:
+            return ""
         scored = []
+        retrieval_pairs = []
         duplicate = None
         now = time.time()
         _just_restabilized = set()
         for e in entries:
-            if e.get("summarized"):
+            if e.get("summarized") or e.get("deleted"):
                 continue
             if self._restabilize_if_expired(e, now):
                 _just_restabilized.add(id(e))
             cosine = self._cosine(vec, e.get("vector") or [])
             score = self._memory_score(core, e, cosine)
+            retrieval_pairs.append((e, cosine))
             if cosine >= 0.93:
                 duplicate = e
             # ACT-R partial matching + retrieval threshold (named constants).
@@ -3823,25 +4136,38 @@ class BioCorePlugin(Star):
             _ops[_write_op] = int(_ops.get(_write_op, 0) or 0) + 1
             duplicate["write_ops"] = _ops
             duplicate["provenance"] = self._memory_provenance(event, now)
+            duplicate["last_write_ts"] = now
+            self._apply_memory_encoding(duplicate, core, now, text)
+            if _write_op != "NOOP":
+                memory_meta.append_write_log(doc, op=_write_op, entry_id=duplicate.get("id", ""),
+                                             reason="conflict" if _conflict else "duplicate", ts=now)
         else:
             _importance = self._memory_importance(core, "user")
-            entries.append({"id": _sha256(str(text)[:300])[:12], "text": text[:1200], "role": "user", "vector": vec,
-                            "ts": now, "hits": 1,
-                            "sender_id": _sid, "sender_name": _sname,
-                            "attachments": self._attachments_from_messages(event),
-                            "image_caption": str(extra or "").strip()[:1600],
-                            "voice_text": str(voice or "").strip()[:1200],
-                            "provenance": self._memory_provenance(event, now),
-                            "importance": _importance,
-                            "memory_source": _source,
-                            "memory_confidence": memory_meta.initial_confidence(_source, _importance),
-                            "destination": memory_meta.build_destination(_sid, _sname),
-                            "conflict": False,
-                            "last_write_op": "ADD",
-                            "write_ops": {"ADD": 1},
-                            "memory_tier": "hot",
-                            "id": _sha256(str(text)[:300])[:12],
-                            "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
+            _new_entry = {"id": _sha256(str(text)[:300])[:12], "text": text[:1200],
+                          "role": "user", "vector": vec, "ts": now, "hits": 1,
+                          "sender_id": _sid, "sender_name": _sname,
+                          "attachments": self._attachments_from_messages(event),
+                          "image_caption": str(extra or "").strip()[:1600],
+                          "voice_text": str(voice or "").strip()[:1200],
+                          "provenance": self._memory_provenance(event, now),
+                          "importance": _importance,
+                          "memory_source": _source,
+                          "memory_confidence": memory_meta.initial_confidence(_source, _importance),
+                          "destination": memory_meta.build_destination(_sid, _sname),
+                          "conflict": False,
+                          "last_write_op": "ADD",
+                          "last_write_ts": now,
+                          "write_ops": {"ADD": 1},
+                          "memory_tier": "hot",
+                          "schema_congruence": 0.0,
+                          "self_defining": False,
+                          "inhibition": 0.0,
+                          "suppression_count": 0,
+                          "last_used": now, "next_review_ts": now + 86400, "review_count": 0}
+            self._apply_memory_encoding(_new_entry, core, now, text)
+            entries.append(_new_entry)
+            memory_meta.append_write_log(doc, op="ADD", entry_id=_new_entry["id"],
+                                         reason="new", ts=now)
             self._trim_memory(doc, core)
         self._save_memory(event, doc)
         self._schedule_consolidation(event, core)
@@ -3872,6 +4198,7 @@ class BioCorePlugin(Star):
                 e["next_review_ts"] = now + _days * 86400
                 _eid = _sha256(str(e.get("text", ""))[:300])[:12]
                 e["id"] = _eid
+                e["last_recall_regulation"] = str(getattr(core, "regulation", "none") or "none")
                 _ids.append(e)
             except Exception:
                 pass
@@ -3887,11 +4214,20 @@ class BioCorePlugin(Star):
                     _b[_aid] = int(_b.get(_aid, 0)) + 1
                 except Exception:
                     pass
+        # Retrieval-induced forgetting: similar memories that lost this
+        # competition become temporarily inhibited (they are not deleted and
+        # the inhibition decays over days).
+        try:
+            memory_meta.apply_retrieval_inhibition(
+                retrieval_pairs, [str(e.get("id") or "") for _score, e in top], now)
+        except Exception:
+            pass
         try:
             self._save_memory(event, doc)
         except Exception:
             pass
         self._last_memory_meta = memory_meta.summarize_recall(top, now)
+        _gate = str(self._last_memory_meta.get("gate") or "none")
         lines = []
         for score, e in top:
             role = "用户" if e.get("role") != "assistant" else "你"
@@ -3902,9 +4238,15 @@ class BioCorePlugin(Star):
             snippet = str(e.get("text", "")).strip().replace("\n", " ")
             if snippet:
                 lines.append("- %s：%s" % (role, snippet[:240]))
-        if not lines:
+        memory_text = "\n".join(lines)
+        # Forced abstention: uncertain memory content is withheld so the model
+        # cannot assert it as fact. The meta keeps count/confidence, so the
+        # interpretation layer still renders the uncertainty note.
+        if _gate == "force":
+            self._last_memory_meta["withheld"] = True
+            self._last_memory_meta["abstain"] = True
             return ""
-        return "\n".join(lines)
+        return memory_text
 
     async def _remember(self, event, text: str, role: str = "user", core=None):
         if not self.memory_dedup_embedding or not self._usable_memory_text(text):
@@ -3922,7 +4264,7 @@ class BioCorePlugin(Star):
             doc["entries"] = entries
         now = time.time()
         for e in entries:
-            if e.get("summarized"):
+            if e.get("summarized") or e.get("deleted"):
                 continue
             self._restabilize_if_expired(e, now)
             _cos = self._cosine(vec, e.get("vector") or [])
@@ -3967,6 +4309,9 @@ class BioCorePlugin(Star):
                         "provenance": _prov,
                         "importance": self._memory_importance(core, role),
                         "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
+        self._apply_memory_encoding(entries[-1], core, now, text)
+        memory_meta.append_write_log(doc, op="ADD", entry_id=str(entries[-1].get("id") or ""),
+                                     reason=role, ts=now)
         self._trim_memory(doc, core)
         self._save_memory(event, doc)
         self._schedule_consolidation(event, core)

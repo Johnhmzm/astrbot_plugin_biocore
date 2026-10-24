@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-1800" />
+<link rel="stylesheet" href="./styles.css?v=20261024-1815" />
 </head>
 <body>
 <div class="shell">
@@ -22,7 +22,7 @@
       <div class="side-line"><span class="dot" id="statusDot"></span><span id="linkState">连接中</span></div>
       <div class="side-line small"><span id="pluginBadge">BioCore</span></div>
     </div>
-    <div class="side-foot" id="sideVersion">v1.2.10 · tendency layer</div>
+    <div class="side-foot" id="sideVersion">v1.2.19 · tendency layer</div>
   </aside>
 
   <main class="main">
@@ -269,6 +269,35 @@
         <p class="api-note" id="summaryEmpty">还没有已总结的会话。事件总结生成后，这里才会出现对应会话。</p>
         <div id="sessionSummaryBlock"></div>
       </div>
+
+      <div class="section-title mt"><div><div class="eyebrow">MEMORY META</div><h2>记忆元数据</h2></div><span class="hint">来源 / 置信度 / 层级 / 冲突 / 墓碑</span></div>
+      <div class="panel">
+        <div class="event-toolbar">
+          <label><span>会话</span><select id="memSessionFilter" class="event-session"></select></label>
+          <span class="hint" id="memIndexNote">正在读取记忆索引…</span>
+        </div>
+        <div class="mem-tier-legend">
+          <span class="mem-legend-tag">来源：用户直述 / 图片语音 / 转述 / 检索 / 推断 / 未知</span>
+          <span class="mem-legend-tag">层级：HOT / WARM / COLD</span>
+          <span class="mem-legend-tag">删除 = 软删除并保留墓碑</span>
+        </div>
+        <p class="api-note" id="memEmpty">还没有可展示的记忆条目。</p>
+        <div id="memEntryList"></div>
+        <div class="mem-tombstones">
+          <small>TOMBSTONES / 已删除记忆（软删除，可审计）</small>
+          <div id="memTombstoneList"></div>
+        </div>
+      </div>
+
+      <div class="section-title mt"><div><div class="eyebrow">RELATIONSHIP</div><h2>用户关系</h2></div><span class="hint">亲近 / 冲突 / 修复 / 可预测</span></div>
+      <div class="panel">
+        <div class="event-toolbar">
+          <label><span>用户</span><select id="relUserFilter" class="event-session"></select></label>
+          <span class="hint" id="relStateHint">关系状态与最近轨迹</span>
+        </div>
+        <p class="api-note" id="relEmpty">还没有关系记录。</p>
+        <div id="relBody"></div>
+      </div>
     </section>
 
     <section class="view" id="view-settings">
@@ -365,6 +394,7 @@
         </div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
+        <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
         <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
       </div>
       <div class="section-title mt" data-settings-title="settingsVisual"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
@@ -386,7 +416,7 @@
         <div class="setting-row"><div><b>检查更新</b><small>对比 GitHub 仓库最新 metadata.yaml 版本；只检查提示，安装仍走 AstrBot 插件管理。</small></div><button type="button" class="btn" id="updateCheckBtn">检查更新</button></div>
         <div class="setting-row"><div><b>Gitee 镜像</b><small>owner/repo；填了之后检查更新会优先尝试 Gitee raw。留空只试 GitHub。</small></div><input id="giteeRepo" placeholder="Johnhmzm/astrbot_plugin_biocore" autocomplete="off"></div>
         <div class="api-actions"><button type="button" class="btn mini" id="giteeSaveBtn">保存镜像</button><span class="api-note" id="giteeState">未配置</span></div>
-        <p class="api-note" id="updateState">当前版本 v1.2.10 · 尚未检查</p>
+        <p class="api-note" id="updateState">当前版本 v1.2.19 · 尚未检查</p>
         <p class="api-note" id="updateNote">AstrBot 插件管理 → BioCore → 更新（需绑定 GitHub/Gitee 仓库）；或打开仓库手动下载。</p>
         <a class="btn mini" id="updateOpenRepo" href="https://github.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener">打开 GitHub 仓库</a>
         <a class="btn mini" id="updateOpenGitee" href="https://gitee.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener" style="display:none">打开 Gitee 仓库</a>
@@ -404,5 +434,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-1800"></script><script src="./orb.js?v=20261024-1800"></script>
+<script src="./app.js?v=20261024-1815"></script><script src="./orb.js?v=20261024-1815"></script>
 </body></html>

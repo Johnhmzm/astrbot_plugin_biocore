@@ -38,7 +38,28 @@
       {title:"未说出口的担心", event:"在出发前犹豫了一下，还是把担心咽了回去。", event_key:"自己-犹豫-咽下担心", session:"demo:session", ts:1793001500, time_span:{start_ts:1793001400,end_ts:1793001800}, importance:.63, centrality:.55, central_details:"没有说出口的担心。", peripheral_details:"", peripheral_retention:.05, peripheral_forgotten:true, meaning_to_her:"不想让对方担心。", reflection:"习惯把难受藏起来。", confidence:.81, modalities:[], source_check:{status:"ok"}},
       {title:"走廊里的小烟花", event:"和同伴在走廊里放了一支小烟花。", event_key:"同伴-烟花-放松", session:"demo:session", ts:1793002100, time_span:{start_ts:1793001900,end_ts:1793002200}, importance:.66, centrality:.48, central_details:"难得的放松。", peripheral_details:"烟花是蓝色的。", peripheral_retention:.52, peripheral_forgotten:false, meaning_to_her:"普通日子也值得庆祝。", reflection:"快乐要分给身边的人。", confidence:.7, modalities:["图片"], source_check:{status:"weak"}}
     ],
-    insights:[{insight:"被认真询问意愿，会更愿意承担任务。"}]
+    insights:[{insight:"被认真询问意愿，会更愿意承担任务。"}],
+    memory_index:[
+      {session:"demo:session", entries:[
+        {id:"a1b2c3d4e5f6", text:"对方说以后会先询问意愿，并记得说过的话。", role:"user", ts:1793000600, importance:.86, hits:4, memory_source:"direct", memory_confidence:.93, memory_tier:"hot", conflict:false, last_write_op:"UPDATE", previous_versions:["对方说以后会先问一句。"], summarized:false},
+        {id:"f6e5d4c3b2a1", text:"在出发前犹豫了一下，还是把担心咽了回去。", role:"user", ts:1793001500, importance:.63, hits:2, memory_source:"inferred", memory_confidence:.34, memory_tier:"warm", conflict:true, last_write_op:"UPDATE", previous_versions:["其实并不担心。","担心说出口会麻烦别人。"], summarized:false},
+        {id:"998877665544", text:"和同伴在走廊里放了一支小烟花。", role:"user", ts:1793002100, importance:.66, hits:1, memory_source:"media", memory_confidence:.70, memory_tier:"warm", conflict:false, last_write_op:"ADD", previous_versions:[], summarized:false}
+      ], tombstones:[{id:"deadbeef0001", ts:1793000900, text:"旧的一条已删除记忆（示例）。"}]}
+    ],
+    relationships:[
+      {sender_id:"demo-user", sender_name:"重要的人", interactions:18, trust:.57, last_seen:1793002100,
+       relationship:{state:{trust:.57,closeness:.61,conflict:.22,repair:.18,predictability:.74},
+         trajectory:[
+           {ts:1792998000,trust:.40,closeness:.45,conflict:.35,repair:0,predictability:.55},
+           {ts:1792999500,trust:.48,closeness:.50,conflict:.30,repair:.16,predictability:.66},
+           {ts:1793000600,trust:.55,closeness:.58,conflict:.24,repair:.12,predictability:.72},
+           {ts:1793001500,trust:.50,closeness:.55,conflict:.30,repair:0,predictability:.60},
+           {ts:1793002100,trust:.57,closeness:.61,conflict:.22,repair:.18,predictability:.74}
+         ],
+         transactive_map:{"老板":6,"担心":3,"承诺":2},
+         destination_map:{"demo-user":{sender_id:"demo-user",sender_name:"重要的人",count:3,last_ts:1793002100,latest_text:"对方说以后会先询问意愿。"}}
+       }}
+    ]
   };
   let data=null, timer=null;
   const map={neutral:"平静",joy:"开心",sadness:"难过",fear:"害怕",anger:"生气",surprise:"惊讶",trust:"信任",loneliness:"孤独",approach:"靠近",hold:"停住",withdraw:"退开",far:"远",near:"近",soft:"轻",blunt:"直",playful:"俏皮",quiet:"安静",short:"短",normal:"正常",open:"展开",low:"低",high:"高",calm:"松",tense:"紧",overloaded:"过载",be_heard:"被听见",space:"空间",vent:"吐槽",share:"分享",talk:"说话"};
@@ -181,8 +202,11 @@
       const cent=(ev.centrality==null?0.5:Number(ev.centrality)).toFixed(2);
       const when=ev.ts?new Date(Number(ev.ts)*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
       const status=String((ev.source_check&&ev.source_check.status)||"ok");
+      const evConf=(ev.confidence==null||ev.confidence==="")?null:Number(ev.confidence);
+      const warnFlags=(evConf!=null&&evConf<0.6?'<span class="mem-flag mem-flag-warn">低置信 '+evConf.toFixed(2)+'</span>':"")+
+        (status!=="ok"?'<span class="mem-flag mem-flag-warn">来源待核 '+esc(status)+'</span>':"");
       return '<div class="memory-card">'+
-        '<div class="memory-card-head"><span class="memory-level-tag">总结</span><b>'+esc(ev.title||"重要事件")+'</b><span class="hint">'+esc(when)+'</span></div>'+
+        '<div class="memory-card-head"><span class="memory-level-tag">总结</span><b>'+esc(ev.title||"重要事件")+'</b><span class="hint">'+esc(when)+'</span>'+warnFlags+'</div>'+
         '<p class="memory-event-text">'+esc(ev.event||"")+'</p>'+
         '<div class="memory-scores"><small>重要度 '+imp+'</small><small>centrality '+cent+'</small><small>来源 '+esc(status)+'</small></div>'+
         '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(ev.central_details||"")+'</small><small>意义：'+esc(ev.meaning_to_her||"")+'</small><small>反思：'+esc(ev.reflection||"")+'</small></div>'+
@@ -203,6 +227,286 @@
     }
   }
 
+
+  const MEM_SOURCE_LABELS={direct:"用户直述",media:"图片/语音",told:"转述",retrieved:"检索",inferred:"推断",unknown:"来源不明"};
+  const MEM_TIER_LABELS={hot:"HOT 热",warm:"WARM 温",cold:"COLD 冷"};
+  const MEM_REL_FIELDS=[["trust","信任"],["closeness","亲近"],["conflict","冲突"],["repair","修复"],["predictability","可预测"]];
+  let memSessionFilter=storeGet("bio_mem_session","");
+  let relUserFilter=storeGet("bio_rel_user","");
+  const memOps={}, memOpStates={};
+  const memKey=(session,id)=>String(session||"")+"|"+String(id||"");
+  function memWhen(ts){
+    const n=Number(ts||0);
+    if(!n) return "--";
+    try { return new Date(n*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); } catch(e){ return "--"; }
+  }
+  function memSourceLabel(src){ const k=String(src||"unknown").toLowerCase(); return MEM_SOURCE_LABELS[k]||k; }
+  function memTierLabel(tier){ const k=String(tier||"").toLowerCase(); return MEM_TIER_LABELS[k]||(k?k.toUpperCase():"—"); }
+  function memoryIndexValue(){
+    const d=data||{};
+    if(Array.isArray(d.memory_index)) return d.memory_index;
+    if(d.memory&&Array.isArray(d.memory.index)) return d.memory.index;
+    if(Array.isArray(d.memory_entries)){
+      const map=new Map();
+      d.memory_entries.forEach(e=>{
+        if(!e||typeof e!=="object") return;
+        const s=String(e.session||e.memory_session||"");
+        if(!map.has(s)) map.set(s,{session:s,entries:[],tombstones:[]});
+        map.get(s).entries.push(e);
+      });
+      return Array.from(map.values());
+    }
+    return null;
+  }
+  function relationshipsValue(){
+    const d=data||{};
+    if(Array.isArray(d.relationships)) return d.relationships;
+    if(Array.isArray(d.users)) return d.users;
+    if(d.users&&Array.isArray(d.users.items)) return d.users.items;
+    return null;
+  }
+  function normMemEntry(e){
+    const src=(e&&typeof e==="object")?e:{};
+    const conf=src.memory_confidence==null?(src.confidence==null?null:Number(src.confidence)):Number(src.memory_confidence);
+    const versions=Array.isArray(src.previous_versions)?src.previous_versions.length:Number(src.previous_versions||0);
+    return {id:String(src.id||src.entry_id||""), text:String(src.text||""),
+      role:String(src.role||"user"), ts:Number(src.ts||0),
+      importance:Number(src.importance||0), hits:Number(src.hits||0),
+      source:String(src.memory_source||src.source||"unknown").toLowerCase(),
+      confidence:conf, tier:String(src.memory_tier||src.tier||"").toLowerCase(),
+      conflict:!!src.conflict, lastOp:String(src.last_write_op||""),
+      versions:versions, summarized:!!src.summarized};
+  }
+  function renderMemoryMeta(){
+    const sel=$("memSessionFilter"), list=$("memEntryList"), empty=$("memEmpty"),
+          note=$("memIndexNote"), tomb=$("memTombstoneList"), stats=$("memoryMetaStats");
+    const sessions=memoryIndexValue();
+    if(!sel||!list) return;
+    if(sessions===null){
+      sel.innerHTML='<option value="">后端未提供</option>'; sel.disabled=true;
+      list.innerHTML="";
+      if(tomb) tomb.innerHTML="";
+      if(empty){ empty.style.display="block"; empty.textContent="当前后端版本未提供记忆明细（page/status.memory_index）；升级后自动显示，删除/回滚按钮也会随之出现。"; }
+      if(note) note.textContent="后端未提供记忆索引";
+      if(stats) stats.textContent="当前后端版本只返回记忆数量统计，未提供 source/confidence/tier/conflict/tombstone 明细。";
+      return;
+    }
+    const valid=sessions.filter(s=>s&&Array.isArray(s.entries));
+    if(!valid.length){
+      sel.innerHTML='<option value="">暂无记忆</option>'; sel.disabled=true;
+      list.innerHTML="";
+      if(tomb) tomb.innerHTML="";
+      if(empty){ empty.style.display="block"; empty.textContent="还没有可展示的记忆条目。"; }
+      if(note) note.textContent="0 个会话";
+      if(stats) stats.textContent="本地记忆：-- 条 / -- 会话（元数据为空）";
+      return;
+    }
+    let total=0, low=0, conflicts=0, summarized=0, tombstones=0;
+    valid.forEach(s=>{
+      (s.entries||[]).map(normMemEntry).forEach(e=>{
+        total++;
+        if(e.confidence!=null&&e.confidence<0.6) low++;
+        if(e.conflict) conflicts++;
+        if(e.summarized) summarized++;
+      });
+      tombstones+=(Array.isArray(s.tombstones)?s.tombstones.length:0);
+    });
+    if(stats) stats.textContent="元数据："+total+" 条 · 低置信 "+low+" · 冲突 "+conflicts+" · 已总结 "+summarized+" · 墓碑 "+tombstones+"。";
+    const sessionsSorted=valid.slice().sort((a,b)=>String(a.session||"").localeCompare(String(b.session||"")));
+    if(memSessionFilter && sessionsSorted.every(s=>String(s.session||"")!==memSessionFilter)) memSessionFilter="";
+    if(!memSessionFilter) memSessionFilter=String(sessionsSorted[0].session||"");
+    sel.disabled=sessionsSorted.length<2;
+    sel.innerHTML=sessionsSorted.map(s=>{
+      const key=String(s.session||"");
+      const label=key?shortSession(key):"（无会话）";
+      return '<option value="'+esc(key)+'">'+esc(label)+'</option>';
+    }).join("");
+    sel.value=memSessionFilter;
+    const current=valid.find(s=>String(s.session||"")===memSessionFilter)||valid[0];
+    const entries=(current.entries||[]).map(normMemEntry).filter(e=>e.id||e.text).sort((a,b)=>Number(b.ts||0)-Number(a.ts||0)).slice(0,40);
+    if(empty) empty.style.display=entries.length?"none":"block";
+    if(empty&&!entries.length) empty.textContent="这个会话还没有可展示的记忆条目。";
+    if(note) note.textContent="已索引 "+sessionsSorted.length+" 个会话 · 本会话 "+entries.length+" 条";
+    list.innerHTML=entries.map((e,idx)=>{
+      const key=memKey(current.session,e.id||("idx"+idx));
+      const armed=memOps[key]||null;
+      const stateText=memOpStates[key]||"";
+      const confText=e.confidence==null?"—":Number(e.confidence).toFixed(2);
+      const confW=(e.confidence==null?0:clamp(e.confidence))*100;
+      const lowConf=e.confidence!=null&&e.confidence<0.6;
+      const unknownSrc=e.source==="unknown"||e.source==="inferred";
+      const flags=[
+        lowConf?'<span class="mem-flag mem-flag-warn">低置信</span>':"",
+        unknownSrc?'<span class="mem-flag mem-flag-warn">'+esc(memSourceLabel(e.source))+'</span>':"",
+        e.conflict?'<span class="mem-flag mem-flag-danger">冲突已更新</span>':"",
+        e.versions>0?'<span class="mem-flag mem-flag-ok">可回滚 ×'+e.versions+'</span>':"",
+        e.summarized?'<span class="mem-flag">已总结</span>':""
+      ].filter(Boolean).join("");
+      const delLabel=armed&&armed.op==="delete"?"再点确认删除":"删除";
+      const rbLabel=armed&&armed.op==="rollback"?"再点确认回滚":"回滚";
+      const rbDisabled=e.versions>0?"":' disabled title="没有上一版本"';
+      return '<div class="mem-card" data-key="'+esc(key)+'">'+
+        '<div class="mem-card-head">'+
+          '<span class="mem-tier mem-tier-'+(e.tier||"unknown")+'">'+esc(memTierLabel(e.tier))+'</span>'+
+          '<span class="mem-source">来源 '+esc(memSourceLabel(e.source))+'</span>'+
+          flags+
+          '<span class="hint">'+esc(memWhen(e.ts))+' · #'+esc(String(e.id||"").slice(0,12)||"—")+'</span>'+
+        '</div>'+
+        '<p class="mem-text">'+esc(e.text||"")+'</p>'+
+        '<div class="mem-meta-row">'+
+          '<div class="mem-conf"><small>置信度</small><div class="mem-conf-track"><i style="width:'+confW.toFixed(0)+'%"></i></div><b>'+esc(confText)+'</b></div>'+
+          '<small>重要度 '+Number(e.importance||0).toFixed(2)+'</small>'+
+          '<small>召回 '+Number(e.hits||0)+' 次</small>'+
+          '<small>写入 '+esc(e.lastOp||"—")+'</small>'+
+        '</div>'+
+        '<div class="mem-actions">'+
+          '<button type="button" class="btn mini" data-mem-op="rollback" data-key="'+esc(key)+'" data-session="'+esc(String(current.session||""))+'" data-id="'+esc(e.id)+'"'+rbDisabled+'>'+rbLabel+'</button>'+
+          '<button type="button" class="btn mini danger" data-mem-op="delete" data-key="'+esc(key)+'" data-session="'+esc(String(current.session||""))+'" data-id="'+esc(e.id)+'"'+(e.id?"":' disabled title="缺少条目 ID，无法删除"')+'>'+delLabel+'</button>'+
+          '<span class="mem-op-state">'+esc(stateText)+'</span>'+
+        '</div>'+
+      '</div>';
+    }).join("");
+    const tombs=Array.isArray(current.tombstones)?current.tombstones:[];
+    if(tomb){
+      tomb.innerHTML=tombs.length?tombs.slice().reverse().slice(0,10).map(t=>{
+        const item=(t&&typeof t==="object")?t:{text:String(t||"")};
+        return '<div class="mem-tomb-row"><span class="mem-flag mem-flag-danger">已删除</span><small>'+esc(memWhen(item.ts))+' · #'+esc(String(item.id||"").slice(0,12))+'</small><span class="mem-tomb-text">'+esc(String(item.text||"").slice(0,160))+'</span></div>';
+      }).join(""):'<div class="empty-mini">这个会话没有墓碑记录。</div>';
+    }
+    if(!list.dataset.bound){
+      list.addEventListener("click",onMemAction);
+      list.dataset.bound="1";
+    }
+  }
+  function onMemAction(e){
+    const target=e.target||{};
+    const btn=target.closest?target.closest("[data-mem-op]"):null;
+    if(!btn) return;
+    const op=String(btn.dataset.memOp||"");
+    const key=String(btn.dataset.key||"");
+    const session=String(btn.dataset.session||"");
+    const id=String(btn.dataset.id||"");
+    if(!op||!key||!id) return;
+    const armed=memOps[key];
+    if(!armed||armed.op!==op){
+      memOps[key]={op:op,at:Date.now()};
+      memOpStates[key]=op==="delete"?"再点一次确认删除（5 秒内有效）":"再点一次确认回滚（5 秒内有效）";
+      renderMemoryMeta();
+      setTimeout(()=>{
+        const cur=memOps[key];
+        if(cur&&cur.op===op){ delete memOps[key]; if(memOpStates[key]&&/再点一次/.test(memOpStates[key])) delete memOpStates[key]; }
+        renderMemoryMeta();
+      },5000);
+      return;
+    }
+    delete memOps[key];
+    runMemOp(op,session,id,key);
+  }
+  async function runMemOp(op,session,id,key){
+    const setState=(t)=>{
+      memOpStates[key]=t;
+      const cards=[].slice.call(document.querySelectorAll("#memEntryList .mem-card"));
+      const card=cards.filter(c=>c.dataset.key===key)[0];
+      const el=card?card.querySelector(".mem-op-state"):null;
+      if(el) el.textContent=t;
+    };
+    if(!bridge){ setState("未连接 AstrBot 页面桥，无法操作"); return; }
+    setState(op==="delete"?"正在删除…":"正在回滚…");
+    try{
+      const path="page/memory/"+op+"/"+encodeURIComponent(session)+"/"+encodeURIComponent(id);
+      const raw=await bridge.apiPost(path,{});
+      const payload=raw&&raw.data?raw.data:raw;
+      if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"操作失败");
+      setState(op==="delete"?"已删除（保留墓碑）":"已回滚到上一版本");
+      setTimeout(()=>{ try{ load(); }catch(err){} },900);
+    }catch(err){
+      setState("失败："+String(err&&err.message||err));
+    }
+  }
+  function relSpark(traj){
+    const pts=(Array.isArray(traj)?traj:[]).slice(-24).map(p=>(p&&typeof p==="object")?p:{});
+    if(pts.length<2) return '<div class="empty-mini">轨迹点不足，暂时画不出趋势。</div>';
+    const w=260,h=56,pad=3;
+    const x=(i)=>pad+(w-2*pad)*i/(pts.length-1);
+    const y=(v)=>h-pad-(h-2*pad)*clamp(v);
+    const series=[["trust","var(--accent)"],["closeness","#54b58b"],["conflict","var(--danger)"]];
+    const paths=series.map(s=>{
+      const d=pts.map((p,i)=>{ const v=clamp(p[s[0]]==null?0:p[s[0]]); return (i?"L":"M")+x(i).toFixed(1)+" "+y(v).toFixed(1); }).join(" ");
+      return '<path d="'+d+'" fill="none" stroke="'+s[1]+'" stroke-width="1.6" stroke-linejoin="round"/>';
+    }).join("");
+    return '<svg class="rel-spark" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-hidden="true">'+paths+'</svg>';
+  }
+  function renderRelationships(){
+    const sel=$("relUserFilter"), body=$("relBody"), empty=$("relEmpty"), hint=$("relStateHint");
+    if(!sel||!body) return;
+    const users=relationshipsValue();
+    if(users===null){
+      sel.innerHTML='<option value="">后端未提供</option>'; sel.disabled=true;
+      body.innerHTML="";
+      if(empty){ empty.style.display="block"; empty.textContent="当前后端版本未提供关系状态与轨迹（page/status.relationships）；升级后自动显示。"; }
+      if(hint) hint.textContent="后端未提供关系记录";
+      return;
+    }
+    const valid=users.filter(u=>u&&typeof u==="object");
+    if(!valid.length){
+      sel.innerHTML='<option value="">暂无用户</option>'; sel.disabled=true;
+      body.innerHTML="";
+      if(empty){ empty.style.display="block"; empty.textContent="还没有关系记录。"; }
+      if(hint) hint.textContent="0 个用户";
+      return;
+    }
+    const keys=valid.map(u=>String(u.sender_id||u.sender_name||""));
+    if(relUserFilter&&keys.indexOf(relUserFilter)<0) relUserFilter="";
+    if(!relUserFilter) relUserFilter=keys[0];
+    sel.disabled=valid.length<2;
+    sel.innerHTML=valid.map(u=>{
+      const key=String(u.sender_id||u.sender_name||"");
+      const label=[u.sender_name,u.sender_id].filter(Boolean).join(" / ")||key||"用户";
+      return '<option value="'+esc(key)+'">'+esc(shortSession(label))+'</option>';
+    }).join("");
+    sel.value=relUserFilter;
+    const cur=valid.filter(u=>String(u.sender_id||u.sender_name||"")===relUserFilter)[0]||valid[0];
+    const rel=(cur.relationship&&typeof cur.relationship==="object")?cur.relationship:{};
+    const state=(rel.state&&typeof rel.state==="object")?rel.state:((cur.state&&typeof cur.state==="object")?cur.state:{});
+    const traj=Array.isArray(rel.trajectory)?rel.trajectory:[];
+    if(empty) empty.style.display="none";
+    const stateRows=MEM_REL_FIELDS.map(pair=>{
+      const v=clamp(state[pair[0]]==null?0:state[pair[0]]);
+      return '<div class="rel-state-item"><small>'+pair[1]+'</small><b>'+v.toFixed(2)+'</b><div class="rel-bar rel-bar-'+pair[0]+'"><i style="width:'+pct(v)+'"></i></div></div>';
+    }).join("");
+    const lastTraj=traj.slice(-3).reverse();
+    const trajRows=lastTraj.length?lastTraj.map(p=>{
+      return '<div class="rel-traj-row"><small>'+esc(memWhen(p.ts))+'</small>'+
+        MEM_REL_FIELDS.map(pair=>'<span>'+pair[1]+' '+Number(p[pair[0]]==null?0:p[pair[0]]).toFixed(2)+'</span>').join("")+
+        '</div>';
+    }).join(""):'<div class="empty-mini">还没有轨迹点。</div>';
+    const trans=(rel.transactive_map&&typeof rel.transactive_map==="object")?Object.entries(rel.transactive_map):[];
+    const transHtml=trans.length?trans.sort((a,b)=>Number(b[1])-Number(a[1])).slice(0,4).map(x=>'<span class="chip">'+esc(String(x[0]))+' ×'+Number(x[1]||0)+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    const dest=(rel.destination_map&&typeof rel.destination_map==="object")?Object.values(rel.destination_map):[];
+    const destHtml=dest.length?dest.slice(0,3).map(x=>'<span class="chip">'+esc(String((x&&(x.sender_name||x.sender_id))||"?"))+' ×'+Number((x&&x.count)||0)+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    const name=String(cur.sender_name||cur.sender_id||"用户");
+    if(hint) hint.textContent="交互 "+Number(cur.interactions||0)+" 次 · 最近 "+memWhen(cur.last_seen||cur.ts);
+    body.innerHTML='<div class="rel-card">'+
+      '<div class="rel-card-head"><b>'+esc(name)+'</b><span class="hint">'+esc(String(cur.sender_id||""))+'</span><span class="mem-flag">'+(traj.length?"轨迹 "+traj.length+" 点":"无轨迹")+'</span></div>'+
+      '<div class="rel-state-grid">'+stateRows+'</div>'+
+      '<div class="rel-trend"><div class="rel-trend-head"><small>最近轨迹</small><span class="rel-legend"><i class="rel-lg-trust"></i>信任<i class="rel-lg-close"></i>亲近<i class="rel-lg-conflict"></i>冲突</span></div>'+relSpark(traj)+trajRows+'</div>'+
+      '<div class="rel-maps"><div><small>常谈主题 / TRANSACTIVE</small><div class="chips">'+transHtml+'</div></div><div><small>信息来源 / DESTINATION</small><div class="chips">'+destHtml+'</div></div></div>'+
+    '</div>';
+  }
+  const _memSel=$("memSessionFilter");
+  if(_memSel) _memSel.addEventListener("change",()=>{
+    memSessionFilter=_memSel.value||"";
+    storeSet("bio_mem_session",memSessionFilter);
+    Object.keys(memOps).forEach(k=>{ delete memOps[k]; });
+    Object.keys(memOpStates).forEach(k=>{ delete memOpStates[k]; });
+    renderMemoryMeta();
+  });
+  const _relSel=$("relUserFilter");
+  if(_relSel) _relSel.addEventListener("change",()=>{
+    relUserFilter=_relSel.value||"";
+    storeSet("bio_rel_user",relUserFilter);
+    renderRelationships();
+  });
 
   function renderTree(tree) {
     const roots = (tree && Array.isArray(tree.roots)) ? tree.roots : [];
@@ -259,6 +563,8 @@
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
     window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[]};
     renderSessionMemory();
+    renderMemoryMeta();
+    renderRelationships();
     renderSelfPanels(s);
     $("pluginBadge").textContent=data.enabled?"BioCore · ON":"BioCore · OFF";
     $("heroTitle").textContent=L(it.emotion)+" · "+L(it.intent);
@@ -748,7 +1054,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.19";
+  const BIO_VERSION = "v1.2.20";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
