@@ -1510,7 +1510,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.48")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.49")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1565,6 +1565,20 @@ class BioCorePlugin(Star):
         # Event-driven insight trigger: fallback is a 24h ultra-long safety net,
         # not a periodic 6h main trigger anymore.
         self._insight_fallback_hours = max(INSIGHT_FALLBACK_HOURS, int(self.reflection_interval_hours))
+        # Tunable thresholds (defaults match the constants above; AstrBot plugin
+        # config exposes insight_min_new_events / insight_cooldown_minutes).
+        try:
+            self._insight_min_new_events = max(
+                1, int(self.config.get("insight_min_new_events", INSIGHT_MIN_NEW_EVENTS)
+                       or INSIGHT_MIN_NEW_EVENTS))
+        except Exception:
+            self._insight_min_new_events = INSIGHT_MIN_NEW_EVENTS
+        try:
+            self._insight_cooldown_minutes = max(
+                1, int(self.config.get("insight_cooldown_minutes", INSIGHT_COOLDOWN_SECONDS // 60)
+                       or (INSIGHT_COOLDOWN_SECONDS // 60)))
+        except Exception:
+            self._insight_cooldown_minutes = INSIGHT_COOLDOWN_SECONDS // 60
         try:
             self.stimulus_decay_seconds = max(30, int(self.config.get("stimulus_decay_seconds", 300) or 300))
             self.stimulus_habituation = max(0.0, float(self.config.get("stimulus_habituation", 0.75) or 0.75))
@@ -2570,7 +2584,8 @@ class BioCorePlugin(Star):
 
         Rules:
         - dedupe by event id + event ts (only events newer than last_event_ts count);
-        - 3 new important events (importance >= 0.6) AND cooldown >= 60 min;
+        - >= insight_min_new_events (default 3) new important events
+          (importance >= 0.6) AND cooldown >= insight_cooldown_minutes (default 60);
         - 24h ultra-long fallback can fire with at least 1 new important event.
         """
         current = time.time() if now is None else float(now)
@@ -2607,10 +2622,15 @@ class BioCorePlugin(Star):
             new_events.append(ev)
         count = len(new_events)
         elapsed = current - last_run if last_run > 0 else None
-        cooldown_ok = (last_run <= 0) or (elapsed is not None and elapsed >= INSIGHT_COOLDOWN_SECONDS)
+        _min_new = max(1, int(getattr(self, "_insight_min_new_events",
+                                      INSIGHT_MIN_NEW_EVENTS) or INSIGHT_MIN_NEW_EVENTS))
+        _cooldown_s = max(60, int(getattr(self, "_insight_cooldown_minutes",
+                                          INSIGHT_COOLDOWN_SECONDS // 60)
+                                  or (INSIGHT_COOLDOWN_SECONDS // 60)) * 60)
+        cooldown_ok = (last_run <= 0) or (elapsed is not None and elapsed >= _cooldown_s)
         fallback_ok = (last_run > 0 and elapsed is not None and
                        elapsed >= self._insight_fallback_hours * 3600)
-        ready = (count >= INSIGHT_MIN_NEW_EVENTS and cooldown_ok) or (count >= 1 and fallback_ok)
+        ready = (count >= _min_new and cooldown_ok) or (count >= 1 and fallback_ok)
         return {"ready": bool(ready), "new_count": count,
                 "new_events": new_events,
                 "last_run_ts": last_run, "last_event_ts": last_event_ts}

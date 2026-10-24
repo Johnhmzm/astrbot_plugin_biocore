@@ -3,7 +3,7 @@ display_name: 生物情绪核心
 desc: |
   生物情绪层：读取 AstrBot 人设并编译为数值档案，在每轮对话注入表达意图；不生成回复、不改写历史。
   提供情感状态、压力/能量/信任、记忆事件、表达意图和本地 Dashboard；数据保存在 AstrBot 插件数据目录，更新不丢档。
-version: 1.2.48
+version: 1.2.49
 author: Johnhmzm
 repo: https://github.com/Johnhmzm/astrbot_plugin_biocore
 short_desc: 生物情绪层：把状态翻译成表达意图、记忆事件和回复倾向。

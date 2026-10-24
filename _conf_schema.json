@@ -115,10 +115,22 @@
     "default": 0.75
   },
   "reflection_interval_hours": {
-    "description": "周期反思间隔小时",
-    "hint": "每隔这么久，如果事件档案足够，就自动生成跨事件反思；默认 6 小时。",
+    "description": "周期反思间隔小时（已废弃，仅兜底）",
+    "hint": "已不再是主触发：跨事件反思改为事件驱动（见 insight_min_new_events / insight_cooldown_minutes），在记忆压缩/事件归档时顺带执行。此值只用于抬高 24 小时超长兜底的最小间隔（生效值 = max(24, 本值) 小时）。",
     "type": "int",
     "default": 6
+  },
+  "insight_min_new_events": {
+    "description": "跨事件反思：新增重要事件阈值",
+    "hint": "自上次反思以来累计至少这么多条新的重要事件（importance≥0.6）才反思；默认 3，越小越积极。",
+    "type": "int",
+    "default": 3
+  },
+  "insight_cooldown_minutes": {
+    "description": "跨事件反思：最小冷却分钟",
+    "hint": "两次跨事件反思之间至少间隔这么久，防止事件密集期连续调用；默认 60 分钟。",
+    "type": "int",
+    "default": 60
   },
   "event_summary_delay_hours": {
     "description": "事件总结延迟小时",
