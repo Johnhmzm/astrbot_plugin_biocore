@@ -1245,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.16")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.17")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3138,7 +3138,11 @@ class BioCorePlugin(Star):
     def _memory_entry_id(entry: dict) -> str:
         if not isinstance(entry, dict):
             return ""
-        return str(entry.get("id") or "").strip()
+        eid = str(entry.get("id") or "").strip()
+        if eid:
+            return eid
+        text = str(entry.get("text") or "").strip()
+        return _sha256(text[:300])[:12] if text else ""
 
     async def page_memory_rollback(self, session: str, entry_id: str):
         """Rollback one memory entry to its previous version (dashboard API)."""
@@ -3150,6 +3154,15 @@ class BioCorePlugin(Star):
                 return {"status": "error", "message": "memory entry not found", "data": {}}
             if not memory_meta.rollback_entry(target):
                 return {"status": "error", "message": "no previous version", "data": {}}
+            try:
+                _vec = await self._embed_text(str(target.get("text", "")))
+                if _vec:
+                    target["vector"] = _vec
+                    target["needs_reindex"] = False
+                else:
+                    target["needs_reindex"] = True
+            except Exception:
+                target["needs_reindex"] = True
             target["rollback_ts"] = time.time()
             self._memory_save_doc_for_session(path, doc)
             return {"status": "ok", "data": {"session": session, "id": entry_id, "text": target.get("text", "")[:160]}}
