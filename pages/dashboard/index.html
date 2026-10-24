@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-2228" />
+<link rel="stylesheet" href="./styles.css?v=20261024-2243" />
 </head>
 <body>
 <div class="shell">
@@ -432,7 +432,13 @@
         <div class="setting-row"><div><b>混合检索（词法 + MMR）</b><small>embedding 余弦之外加入词法分，并用 MMR 减少近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
         <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><select id="personaSelect" class="event-session"></select></div>
-        <div class="setting-row"><div><b>LLM 只用于回复+总结（严格）</b><small>默认开启：只保留“事件总结/记忆总结”两类 LLM 调用；人格编译、事件排序抽取、跨事件反思、图片描述改用确定性回退，不额外调用 LLM。关闭后恢复全部能力。</small></div><label class="switch"><input type="checkbox" id="swLlmOnlyReplySummary" checked><span></span></label></div>
+        <p class="api-note">LLM 功能路由：每个功能独立开关，provider 默认「跟随主 LLM」，也可指定 AstrBot 中其他 provider；找不到覆盖 provider 时回退主 LLM。</p>
+        <div class="setting-row"><div><b>人格编译</b><small>首次使用/更换人设时用一次；关闭则沿用已保存的数值 profile。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_persona_compile_enabled"><span></span></label><select id="fn_persona_compile_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>事件总结</b><small>强事件发生时总结成事件档案；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>事件排序抽取</b><small>从聊天上下文 LLM 抽取/排序重要事件；默认关闭。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_ranking_enabled"><span></span></label><select id="fn_event_ranking_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>跨事件反思</b><small>定期从最近事件提炼更高层认识；默认关闭，关闭时用确定性摘要。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_insight_enabled"><span></span></label><select id="fn_insight_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>图片描述</b><small>调用视觉 provider 描述图片；默认关闭，且只走视觉 API，不混用文本 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_image_caption_enabled"><span></span></label><select id="fn_image_caption_provider" class="event-session"></select></div></div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
@@ -478,5 +484,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-2228"></script><script src="./orb.js?v=20261024-2228"></script>
+<script src="./app.js?v=20261024-2243"></script><script src="./orb.js?v=20261024-2243"></script>
 </body></html>

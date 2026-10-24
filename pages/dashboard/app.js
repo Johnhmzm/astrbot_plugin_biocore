@@ -251,6 +251,7 @@
   }
 
 
+  const LLM_FUNCTIONS=["persona_compile","event_summary","event_ranking","insight","memory_summary","image_caption"];
   const MEM_SOURCE_LABELS={direct:"用户直述",media:"图片/语音",told:"转述",retrieved:"检索",inferred:"推断",unknown:"未标注"};
   const MEM_TIER_LABELS={hot:"HOT 热",warm:"WARM 温",cold:"COLD 冷"};
   const MEM_REL_FIELDS=[["trust","信任"],["closeness","亲近"],["conflict","冲突"],["repair","修复"],["predictability","可预测"]];
@@ -799,6 +800,7 @@
     $("sessionList").innerHTML=cores.length?cores.map(c=>{const i=c.intent||{},ss=c.snapshot||{};return '<div class="session"><div class="session-name" title="'+esc(c.key)+'">'+esc(c.key)+'</div><div class="session-state">'+esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t</div></div>";}).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
     try{applyApiConfig();}catch(e){}
     try{applyPersonaSelect();}catch(e){}
+    try{applyLlmFunctions();}catch(e){}
   }
   function applyPersonaSelect(){
     const sel=$("personaSelect"); if(!sel) return;
@@ -806,6 +808,48 @@
     const cur=String(data.persona_id||"");
     sel.innerHTML='<option value="">跟随默认人设</option>'+ps.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.name||p.id||""))+'</option>').join("");
     sel.value=cur;
+  }
+  function applyLlmFunctions(){
+    const fns=(data&&data.llm_functions)||{};
+    const provs=(data&&data.llm_providers)||[];
+    LLM_FUNCTIONS.forEach(name=>{
+      const chk=$("fn_"+name+"_enabled");
+      const sel=$("fn_"+name+"_provider");
+      const cfg=fns[name]||{};
+      if(chk) chk.checked=cfg.enabled===true;
+      if(sel){
+        const vision = name==="image_caption";
+        const filtered = provs.filter(p=>{
+          const t=String((p&&p.type)||"").toLowerCase();
+          if(vision) return t.includes("img")||t.includes("image")||t.includes("vision");
+          return !(t.includes("embedding")||t.includes("tts")||t.includes("rerank")||t.includes("img")||t.includes("image")||t.includes("vision"));
+        });
+        const options = filtered.length ? filtered : provs;
+        sel.innerHTML='<option value="follow_llm">跟随主 LLM</option>'+options.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.model||p.id||""))+'</option>').join("");
+        sel.value=String(cfg.provider||"follow_llm");
+      }
+    });
+  }
+  function bindLlmFunctionRoute(name){
+    const chk=$("fn_"+name+"_enabled");
+    const sel=$("fn_"+name+"_provider");
+    const post=async(key,val,revert)=>{
+      if(!bridge){ revert(); if(window.alert) window.alert("静态预览模式无法保存设置，请从 AstrBot 插件视图打开。"); return; }
+      try{
+        const raw=await bridge.apiPost("page/toggle",{key:key,value:val});
+        const payload=raw&&raw.data?raw.data:raw;
+        if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
+        if(data) data.llm_functions=Object.assign({},data.llm_functions||{}, {[name]:Object.assign({},(data.llm_functions||{})[name]||{},{[key.slice(name.length+1)]:val})});
+      }catch(err){ revert(); if(window.alert) window.alert("LLM 功能设置保存失败："+String(err&&err.message||err)); }
+    };
+    if(chk) chk.addEventListener("change",()=>{
+      const val=!!chk.checked;
+      post(name+"_enabled",val,()=>{ chk.checked=!val; });
+    });
+    if(sel) sel.addEventListener("change",()=>{
+      const val=String(sel.value||"follow_llm");
+      post(name+"_provider",val,()=>{});
+    });
   }
   function setMetric(l,b,v){const n=clamp(v);$(l).textContent=n.toFixed(2);$(b).style.width=pct(n);}
   function switchView(name){
@@ -886,6 +930,7 @@
       if(window.alert) window.alert("人格来源保存失败："+String(err&&err.message||err));
     }
   });
+  LLM_FUNCTIONS.forEach(bindLlmFunctionRoute);
   const resetVisualBtn=$("resetVisualBtn");
   if(resetVisualBtn) resetVisualBtn.addEventListener("click",()=>{
     try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_show_memory_balls_important","bio_show_emotion_rings","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
@@ -1326,7 +1371,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.40";
+  const BIO_VERSION = "v1.2.41";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
