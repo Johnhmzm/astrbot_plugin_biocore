@@ -92,21 +92,27 @@
   },
   "image_llama_server": {
     "description": "图片服务 llama-server 路径",
-    "hint": "留空时使用内置默认路径；换机器请填写实际路径。",
+    "hint": "留空 = 不启用本地图片服务；换机器必须填写实际 llama-server 路径。",
     "type": "string",
     "default": ""
   },
   "image_llama_model": {
     "description": "图片服务 VLM 模型路径",
-    "hint": "留空时使用内置默认路径。",
+    "hint": "留空 = 不启用本地图片服务；换机器必须填写实际 VLM 模型路径。",
     "type": "string",
     "default": ""
   },
   "image_llama_mmproj": {
     "description": "图片服务 mmproj 路径",
-    "hint": "留空时使用内置默认路径。",
+    "hint": "可选；填写视觉投影 mmproj 路径，留空则不附加。",
     "type": "string",
     "default": ""
+  },
+  "image_service_port": {
+    "description": "本地图片服务端口",
+    "hint": "llama-server 启动端口，默认 8091；换机器或端口冲突时修改。",
+    "type": "int",
+    "default": 8091
   },
   "image_service_idle_seconds": {
     "description": "图片服务空闲回收秒数",

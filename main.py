@@ -1235,7 +1235,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "幻灭之梦", "Standalone BioCore emotion layer", "1.2.6")
+@register("astrbot_plugin_biocore", "幻灭之梦", "Standalone BioCore emotion layer", "1.2.7")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1620,12 +1620,18 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] image cache save failed: %s", exc)
 
-    def _image_health_ok(self) -> bool:
+    async def _image_health_ok(self) -> bool:
+        def _check() -> bool:
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{self.image_service_port}/v1/models",
+                    headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=2) as resp:
+                    return 200 <= int(resp.status) < 300
+            except Exception:
+                return False
         try:
-            req = urllib.request.Request(f"http://127.0.0.1:{self.image_service_port}/v1/models",
-                                         headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                return 200 <= int(resp.status) < 300
+            return await asyncio.to_thread(_check)
         except Exception:
             return False
 
@@ -1668,12 +1674,12 @@ class BioCorePlugin(Star):
 
     async def _ensure_image_service(self) -> bool:
         self._image_last_used = time.time()
-        if self._image_health_ok():
+        if await self._image_health_ok():
             return True
         if self._image_service_lock is None:
             self._image_service_lock = asyncio.Lock()
         async with self._image_service_lock:
-            if self._image_health_ok():
+            if await self._image_health_ok():
                 self._image_last_used = time.time()
                 return True
             try:
@@ -1694,7 +1700,7 @@ class BioCorePlugin(Star):
                                                     creationflags=flags)
                 logger.info("[biocore] image service starting pid=%s", self._image_proc.pid)
                 for _ in range(60):
-                    if self._image_health_ok():
+                    if await self._image_health_ok():
                         self._image_last_used = time.time()
                         self._image_idle_watch()
                         return True
@@ -3853,7 +3859,7 @@ class BioCorePlugin(Star):
         _base = str(getattr(req, "system_prompt", "") or "")
         _sid, _sname = self._speaker(event)
         _speaker = (("%s（%s）" % (_sname or "未知", _sid)) if _sid else (_sname or ""))
-        req.system_prompt = (_base + "\n\n" + interpretation.render_compact(
+        _compact = interpretation.render_compact(
             core,
             _mem.replace("[BioCore Memory]", "").strip(),
             _events.replace("[BioCore Events]", "").strip(),
@@ -3863,7 +3869,15 @@ class BioCorePlugin(Star):
             _kb,
             _speaker,
             _voice,
-        )).strip()
+        ).strip()
+        if _compact:
+            # Keep the system prompt stable (prefix-cache friendly) and attach
+            # the transient intent to this user turn instead of persisting it.
+            parts = getattr(req, "extra_user_content_parts", None)
+            if isinstance(parts, list):
+                parts.append({"type": "text", "text": _compact})
+            else:
+                req.system_prompt = (_base + "\n\n" + _compact).strip()
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse):
