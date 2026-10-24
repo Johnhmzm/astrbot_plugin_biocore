@@ -3,6 +3,8 @@
   const canvas = document.getElementById("orbCanvas");
   const signalCanvas = document.getElementById("signalCanvas");
   if (!canvas) return;
+  const orbTip = document.getElementById("orbTip");
+  const orbTipHost = orbTip ? orbTip.parentElement : null;
   const ctx = canvas.getContext("2d");
   const DPR = Math.min(2, window.devicePixelRatio || 1);
   const W = 520, H = 520;
@@ -107,11 +109,48 @@
       const rect = canvas.getBoundingClientRect();
       _mouse.x = (e.clientX - rect.left) * (W / Math.max(1, rect.width));
       _mouse.y = (e.clientY - rect.top) * (H / Math.max(1, rect.height));
+      _mouse.clientX = e.clientX;
+      _mouse.clientY = e.clientY;
       _mouse.inside = true;
     } catch (err) { _mouse.inside = false; }
   });
   canvas.addEventListener("pointerenter", () => { _hoverOrb = true; });
-  canvas.addEventListener("pointerleave", () => { _hoverOrb = false; _mouse.inside = false; });
+  canvas.addEventListener("pointerleave", () => { _hoverOrb = false; _mouse.inside = false; hideOrbTip(); });
+  const _tipEsc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  function hideOrbTip() {
+    if (!orbTip) return;
+    orbTip.classList.remove("show");
+    orbTip.hidden = true;
+  }
+  function updateOrbTip(hit) {
+    if (!orbTip) return;
+    const ev = hit.ev || {};
+    const title = String(ev.title || ev.event_key || "事件");
+    const when = hit.tsS > 0 ? new Date(hit.tsS * 1000).toLocaleString("zh-CN",
+      { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+    const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
+      " · 年龄 " + Math.round(hit.ageDays) + "d" +
+      (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
+      ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
+    const meaning = String(ev.meaning_to_her || ev.central_details || "");
+    orbTip.innerHTML = "<b>" + _tipEsc(title) + "</b>" +
+      (when ? '<div class="orb-tip-meta">' + _tipEsc(when) + "</div>" : "") +
+      '<div class="orb-tip-meta">' + _tipEsc(impLine) + "</div>" +
+      (meaning ? '<div class="orb-tip-body">' + _tipEsc(meaning) + "</div>" : "");
+    orbTip.hidden = false;
+    orbTip.classList.add("show");
+    if (!orbTipHost) return;
+    const r = orbTipHost.getBoundingClientRect();
+    const cx = _mouse.clientX == null ? r.left + r.width / 2 : _mouse.clientX;
+    const cy = _mouse.clientY == null ? r.top + r.height / 2 : _mouse.clientY;
+    const tw = orbTip.offsetWidth || 280, th = orbTip.offsetHeight || 80;
+    let x = cx - r.left + 14, y = cy - r.top + 14;
+    x = Math.max(8, Math.min(r.width - tw - 8, x));
+    y = Math.max(8, Math.min(r.height - th - 8, y));
+    orbTip.style.left = x + "px";
+    orbTip.style.top = y + "px";
+  }
 
   function palette() {
     const it = state.intent || {}, s = state.snapshot || {};
@@ -669,6 +708,7 @@
       ctx.restore();
     }
     // hover tooltip: title / time / importance / meaning, never on the ball
+    if (orbTip && (!_mouse.inside || !_memHit.length)) hideOrbTip();
     if (!_previewMode && _mouse.inside && _memHit.length) {
       let hit = null, best = Infinity;
       for (let k = 0; k < _memHit.length; k++) {
@@ -678,7 +718,10 @@
         if (dist <= reach && dist < best) { hit = hb; best = dist; }
       }
       canvas.style.cursor = hit ? "pointer" : "";
-      if (hit) {
+      if (orbTip) {
+        if (hit) updateOrbTip(hit); else hideOrbTip();
+      }
+      if (hit && !orbTip) {
         const ev = hit.ev || {};
         const title = String(ev.title || ev.event_key || "事件");
         const when = hit.tsS > 0 ? new Date(hit.tsS * 1000).toLocaleString("zh-CN",
