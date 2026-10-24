@@ -18,10 +18,32 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 
 No third-party Python dependency is required; `requirements.txt` is intentionally empty of packages. AstrBot-provided modules and the Python standard library are used.
 
+## Updating
+
+AstrBot's update button depends on how the installed copy was added:
+
+| Install method | Direct update from market / plugin page |
+|---|---|
+| Market install | Yes |
+| Repository install (GitHub/Gitee URL) | Yes, pulls from that repository |
+| Upload / zip install (`install_method=upload`) | No; AstrBot disables updates for upload-installed plugins |
+
+### If it was installed from a zip
+
+Do a one-time source migration, then future updates are normal:
+
+1. Keep `AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/`; do not delete it.
+2. In AstrBot WebUI -> Plugins -> Installed, use **Change plugin source / bind market source** and select the market record `Johnhmzm/astrbot_plugin_biocore`.
+3. If that action is unavailable, install/overwrite once from the market or from the repository URL `https://github.com/Johnhmzm/astrbot_plugin_biocore`.
+4. Reload the plugin. The install source becomes market/repository, and the update button works afterwards.
+
+Uninstalling is not required. If you do uninstall, leave **delete data** unchecked.
+
+
 ## What it does
 
 - On first run, compiles the active AstrBot persona into a numeric profile and stores it.
-- On every LLM request, injects a compact `[BioCore] ...` intent into the system prompt.
+- On every LLM request, attaches a compact `[BioCore] ...` intent to the current user turn as transient content (system prompt stays stable).
 - On LLM response, feeds the reply back into state, memory, goals and event archives.
 - Dashboard pages: overview, expression intent, persona/self, active sessions and settings.
 
