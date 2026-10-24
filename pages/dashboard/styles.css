@@ -449,6 +449,9 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 #view-persona .persona-tabpanel{display:none}
 #view-persona .persona-tabpanel.active{display:block}
 #view-persona .persona-tabs~.panel{margin-top:0}
+#view-sessions .session-tabpanel{display:none;margin-top:0}
+#view-sessions .session-tabpanel.active{display:block}
+#sessionTabs{margin:0 0 16px}
 
 /* persona tiles: flush with panels, equal columns, no leftover right gap */
 .persona-tabs.fold-grid{grid-template-columns:repeat(auto-fit,minmax(64px,1fr));gap:10px;padding:0;margin:0 0 16px;border:0;border-radius:0;background:transparent;justify-content:stretch;align-items:stretch}
