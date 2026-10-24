@@ -81,6 +81,35 @@
   const fmt=(v,d=2)=>(Number(v)>=0?"+":"")+Number(v||0).toFixed(d);
   const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const shortSession=(v)=>{const t=String(v||"");return t.length>36?t.slice(0,33)+"…":t;};
+  // AstrBot session keys look like "default:FriendMessage:2396952936"
+  // (event archive) or "default_FriendMessage_2396952936" (memory file stem).
+  // Render them as Chinese labels: 私聊 · <名字> / 群聊 · <群号>.
+  const SESSION_TYPE_LABELS={FriendMessage:"私聊",GroupMessage:"群聊",GuildMessage:"频道",TempMessage:"临时会话",OtherMessage:"其他"};
+  function parseSessionKey(key){
+    const raw=String(key||"").trim();
+    const norm=raw.replace(/:/g,"_");
+    const m=norm.match(/^(.*?)_(FriendMessage|GroupMessage|GuildMessage|TempMessage|OtherMessage)_(.+)$/);
+    if(m) return {platform:m[1],type:m[2],id:m[3]};
+    const seg=norm.split("_").filter(Boolean);
+    if(seg.length>=3) return {platform:seg[0],type:seg[1],id:seg.slice(2).join("_")};
+    return {platform:"",type:"",id:norm};
+  }
+  function _userNameById(id){
+    const rels=(data&&Array.isArray(data.relationships))?data.relationships:[];
+    for(const u of rels){
+      if(!u||typeof u!=="object") continue;
+      if(String(u.sender_id||"")===String(id||"")) return String(u.sender_name||"");
+    }
+    return "";
+  }
+  function sessionLabel(key){
+    const p=parseSessionKey(key);
+    const typeLabel=SESSION_TYPE_LABELS[p.type]||(p.type?p.type:"会话");
+    let name="";
+    if(p.type==="FriendMessage"||p.type==="TempMessage") name=_userNameById(p.id);
+    if(!name) name=p.id||String(key||"");
+    return name?(typeLabel+" · "+name):typeLabel;
+  }
   function storeGet(k, fallback){ try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch (e) { return fallback; } }
   function storeSet(k, v){ try { localStorage.setItem(k, String(v)); } catch (e) {} }
   // One-time migration: earlier builds defaulted the memory-node layer off and
@@ -210,7 +239,7 @@
     if(sel){
       sel.disabled=false;
       if(summarySessionFilter && sessions.indexOf(summarySessionFilter)<0) summarySessionFilter="";
-      sel.innerHTML=sessions.map(s=>'<option value="'+esc(s)+'">'+esc(shortSession(s))+'</option>').join("");
+      sel.innerHTML=sessions.map(s=>'<option value="'+esc(s)+'" title="'+esc(s)+'">'+esc(sessionLabel(s))+'</option>').join("");
       sel.value = summarySessionFilter || sessions[0];
       summarySessionFilter=sel.value;
     }
@@ -434,8 +463,8 @@
     sel.disabled=sessionsSorted.length<2;
     sel.innerHTML=sessionsSorted.map(s=>{
       const key=String(s.session||"");
-      const label=key?shortSession(key):"（无会话）";
-      return '<option value="'+esc(key)+'">'+esc(label)+'</option>';
+      const label=key?sessionLabel(key):"（无会话）";
+      return '<option value="'+esc(key)+'" title="'+esc(key)+'">'+esc(label)+'</option>';
     }).join("");
     sel.value=memSessionFilter;
     const current=valid.find(s=>String(s.session||"")===memSessionFilter)||valid[0];
@@ -839,7 +868,7 @@
       ["social",p.social_baseline],["dominance",p.da_baseline],["recovery",p.recovery_rate]
     ].map(x=>'<div><small>'+x[0]+'</small><b>'+(x[1]==null?"–":Number(x[1]).toFixed(2))+'</b></div>').join("");
     const cores=data.cores||[]; $("sessionCount").textContent=cores.length+" SESSIONS";
-    $("sessionList").innerHTML=cores.length?cores.map(c=>{const i=c.intent||{},ss=c.snapshot||{};return '<div class="session"><div class="session-name" title="'+esc(c.key)+'">'+esc(c.key)+'</div><div class="session-state">'+esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t</div></div>";}).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
+    $("sessionList").innerHTML=cores.length?cores.map(c=>{const i=c.intent||{},ss=c.snapshot||{};return '<div class="session"><div class="session-name" title="'+esc(c.key)+'">'+esc(sessionLabel(c.key))+'</div><div class="session-state">'+esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t</div></div>";}).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
     try{applyApiConfig();}catch(e){}
     try{applyPersonaSelect();}catch(e){ if(window.console&&console.warn) console.warn('[biocore] applyPersonaSelect failed:',e); }
     try{applyLlmFunctions();}catch(e){ if(window.console&&console.warn) console.warn('[biocore] applyLlmFunctions failed:',e); }
@@ -1450,7 +1479,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.52";
+  const BIO_VERSION = "v1.2.53";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
