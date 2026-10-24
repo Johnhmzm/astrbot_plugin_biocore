@@ -670,12 +670,14 @@
     }
     // hover tooltip: title / time / importance / meaning, never on the ball
     if (!_previewMode && _mouse.inside && _memHit.length) {
-      let hit = null, best = 18;
+      let hit = null, best = Infinity;
       for (let k = 0; k < _memHit.length; k++) {
         const hb = _memHit[k];
         const dist = Math.hypot(hb.x - _mouse.x, hb.y - _mouse.y);
-        if (dist <= Math.max(hb.r + 6, 12) && dist < best) { hit = hb; best = dist; }
+        const reach = Math.max(16, hb.r + 9);   // generous hover target, scales with ball/rings
+        if (dist <= reach && dist < best) { hit = hb; best = dist; }
       }
+      canvas.style.cursor = hit ? "pointer" : "";
       if (hit) {
         const ev = hit.ev || {};
         const title = String(ev.title || ev.event_key || "事件");

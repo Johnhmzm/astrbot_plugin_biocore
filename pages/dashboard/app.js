@@ -186,8 +186,8 @@
         '<p class="memory-event-text">'+esc(ev.event||"")+'</p>'+
         '<div class="memory-scores"><small>重要度 '+imp+'</small><small>centrality '+cent+'</small><small>来源 '+esc(status)+'</small></div>'+
         '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(ev.central_details||"")+'</small><small>意义：'+esc(ev.meaning_to_her||"")+'</small><small>反思：'+esc(ev.reflection||"")+'</small></div>'+
-        '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'">全部消息 · '+msgs.length+' 条</button>'+
-        '<div class="memory-messages" data-idx="'+idx+'" hidden>'+(msgs.length?msgs.map(_msgRow).join(""):'<div class="empty-mini">该事件没有归档时间窗，无法列出逐条消息。</div>')+'</div>'+
+        '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'" data-count="'+msgs.length+'">收起消息 · '+msgs.length+' 条</button>'+
+        '<div class="memory-messages" data-idx="'+idx+'">'+(msgs.length?msgs.map(_msgRow).join(""):'<div class="empty-mini">该事件没有归档时间窗，无法列出逐条消息。</div>')+'</div>'+
         '</div>';
     }).join("");
     if(!block.dataset.bound){
@@ -197,7 +197,7 @@
         const btn=target.closest(".js-msg-toggle");
         if(!btn) return;
         const box=block.querySelector('.memory-messages[data-idx="'+btn.dataset.idx+'"]');
-        if(box) box.hidden=!box.hidden;
+        if(box){ box.hidden=!box.hidden; const n=btn.dataset.count||""; btn.textContent=(box.hidden?"全部消息 · "+n+" 条":"收起消息 · "+n+" 条"); }
       });
       block.dataset.bound="1";
     }
