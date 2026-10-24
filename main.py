@@ -1506,7 +1506,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.42")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.43")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1693,6 +1693,26 @@ class BioCorePlugin(Star):
             return (not bool(_strict)) or str(kind or "") in ("reply", "summary")
         return self._function_cfg(kind)["enabled"]
 
+    def _provider_kind(self, provider) -> str:
+        """Classify a provider by id/model/type (chat / vision / embedding / tts / rerank)."""
+        try:
+            cfg = getattr(provider, "provider_config", {}) or {}
+            raw = " ".join(str(x or "") for x in (
+                cfg.get("id"), cfg.get("model"),
+                cfg.get("provider_type"), type(provider).__name__,
+            )).lower()
+        except Exception:
+            raw = ""
+        if any(x in raw for x in ("img", "image", "vision", "t2i", "dall", "stable", "midjourney", "exusiai-img")):
+            return "vision"
+        if any(x in raw for x in ("tts", "speech", "voice")):
+            return "tts"
+        if any(x in raw for x in ("embed", "bge", "text-embedding")):
+            return "embedding"
+        if "rerank" in raw:
+            return "rerank"
+        return "chat"
+
     async def _provider_for(self, kind: str, event=None):
         """Resolve the LLM provider for one function.
 
@@ -1711,8 +1731,12 @@ class BioCorePlugin(Star):
                 logger.warning("[biocore] provider lookup failed for %s (%s): %s", kind, _override, exc)
                 _p = None
             if _p is not None:
-                return _p
-            logger.warning("[biocore] llm function %s provider %s not found; fallback to main LLM", kind, _override)
+                if self._provider_kind(_p) == "chat":
+                    return _p
+                logger.warning("[biocore] llm function %s provider %s is not a chat provider; fallback to main LLM",
+                               kind, _override)
+            else:
+                logger.warning("[biocore] llm function %s provider %s not found; fallback to main LLM", kind, _override)
         try:
             return await self.context.get_using_provider_async(_umo)
         except Exception as exc:
@@ -1734,10 +1758,26 @@ class BioCorePlugin(Star):
             except Exception:
                 _pid = "exusiai-img"
         try:
-            return self.context.get_provider_by_id(_pid)
+            _vp = self.context.get_provider_by_id(_pid)
         except Exception as exc:
             logger.warning("[biocore] vision provider lookup failed (%s): %s", _pid, exc)
             return None
+        if _vp is not None and self._provider_kind(_vp) == "vision":
+            return _vp
+        if _vp is not None:
+            logger.warning("[biocore] image_caption provider %s is not a vision provider; ignored", _pid)
+        # Fall back to the configured default image provider, but never a text LLM.
+        try:
+            _cfg = self.context.get_config()
+            _ps = _cfg.get("provider_settings", {}) if isinstance(_cfg, dict) else {}
+            _def = str(_ps.get("default_image_caption_provider_id") or "")
+            if _def and _def != _pid:
+                _vp2 = self.context.get_provider_by_id(_def)
+                if _vp2 is not None and self._provider_kind(_vp2) == "vision":
+                    return _vp2
+        except Exception:
+            pass
+        return None
 
     async def _compile_profile(self, event):
         text = await self._persona_text(event)
@@ -4466,11 +4506,8 @@ class BioCorePlugin(Star):
                     self._save_memory(event, doc)
                 return
             doc["last_event_summary_ts"] = time.time()
-            if not self._llm_allowed("memory_summary"):
-                return
-            provider = await self._provider_for("memory_summary", event)
-            if provider is None:
-                return
+            _summary_use_llm = self._llm_allowed("memory_summary")
+            provider = await self._provider_for("memory_summary", event) if _summary_use_llm else None
             now = time.time()
             _segments = self._segment_event_texts(entries)
             if not _segments:
@@ -4513,14 +4550,19 @@ class BioCorePlugin(Star):
                 texts = memory_meta.dedupe_texts(_raw_texts, threshold=0.88, limit=8)
                 if len(texts) < 2:
                     continue
-                prompt = interpretation.memory_summary_prompt(texts)
                 payload = {"summary": "", "candidates": []}
-                try:
-                    resp = await provider.text_chat(prompt=prompt)
-                    payload = interpretation.parse_memory_summary_payload(
-                        str(getattr(resp, "completion_text", "") or ""))
-                except Exception as exc:
-                    logger.warning("[biocore] memory summary failed: %s", exc)
+                if _summary_use_llm and provider is not None:
+                    prompt = interpretation.memory_summary_prompt(texts)
+                    try:
+                        resp = await provider.text_chat(prompt=prompt)
+                        payload = interpretation.parse_memory_summary_payload(
+                            str(getattr(resp, "completion_text", "") or ""))
+                    except Exception as exc:
+                        logger.warning("[biocore] memory summary failed: %s", exc)
+                else:
+                    # Deterministic extractive summary from embedding-grouped and
+                    # deduped representatives; no LLM involved.
+                    payload["summary"] = "；".join(texts[:5])[:180]
                 summary = str(payload.get("summary") or "")
                 candidates = payload.get("candidates") or []
                 if not getattr(self, "llm_memory_candidates", True):
