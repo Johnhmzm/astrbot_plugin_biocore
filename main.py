@@ -38,6 +38,11 @@ try:
 except Exception:
     import interpretation
 
+try:
+    from . import memory_meta
+except Exception:
+    import memory_meta
+
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
 _BASE_DATA_DIR = PLUGIN_DIR.parents[1] if len(PLUGIN_DIR.parents) > 1 else PLUGIN_DIR
@@ -1235,7 +1240,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.10")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.11")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3656,11 +3661,13 @@ class BioCorePlugin(Star):
             # ACT-R partial matching + retrieval threshold (named constants).
             if cosine >= PARTIAL_MATCH_THRESHOLD and score >= RETRIEVAL_THRESHOLD:
                 scored.append((score, e))
+        _sid, _sname = self._speaker(event)
+        _source = memory_meta.source_for_input(text=text, extra=extra, voice=voice)
         if duplicate is not None:
+            _entry_age = max(0.0, (now - float(duplicate.get("ts", now) or now)) / 86400.0)
             duplicate["ts"] = now
             duplicate["last_used"] = now
             duplicate["hits"] = int(duplicate.get("hits", 0)) + 1
-            _sid, _sname = self._speaker(event)
             if _sid:
                 duplicate["sender_id"] = _sid
             if _sname:
@@ -3669,9 +3676,19 @@ class BioCorePlugin(Star):
                 duplicate["image_caption"] = str(extra).strip()[:1600]
             if voice:
                 duplicate["voice_text"] = str(voice).strip()[:1200]
+            duplicate["memory_source"] = memory_meta.merge_sources(duplicate.get("memory_source"), _source)
+            duplicate["memory_confidence"] = memory_meta.update_confidence(
+                duplicate.get("memory_confidence"),
+                duplicate["memory_source"],
+                hits=int(duplicate.get("hits", 0) or 0),
+                review_count=int(duplicate.get("review_count", 0) or 0),
+                age_days=_entry_age,
+            )
+            if not isinstance(duplicate.get("destination"), dict):
+                duplicate["destination"] = memory_meta.build_destination(_sid, _sname)
             duplicate["provenance"] = self._memory_provenance(event, now)
         else:
-            _sid, _sname = self._speaker(event)
+            _importance = self._memory_importance(core, "user")
             entries.append({"text": text[:1200], "role": "user", "vector": vec,
                             "ts": now, "hits": 1,
                             "sender_id": _sid, "sender_name": _sname,
@@ -3679,7 +3696,11 @@ class BioCorePlugin(Star):
                             "image_caption": str(extra or "").strip()[:1600],
                             "voice_text": str(voice or "").strip()[:1200],
                             "provenance": self._memory_provenance(event, now),
-                            "importance": self._memory_importance(core, "user"),
+                            "importance": _importance,
+                            "memory_source": _source,
+                            "memory_confidence": memory_meta.initial_confidence(_source, _importance),
+                            "destination": memory_meta.build_destination(_sid, _sname),
+                            "conflict": False,
                             "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
             self._trim_memory(doc, core)
         self._save_memory(event, doc)
