@@ -480,3 +480,9 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .orb-tip b{display:block;font-size:13px;line-height:1.35;margin-bottom:3px}
 .orb-tip .orb-tip-meta{color:var(--faint);font-size:10px;line-height:1.5;margin-bottom:2px}
 .orb-tip .orb-tip-body{color:var(--muted);font-size:11px;line-height:1.55;margin-top:4px;word-break:break-word}
+
+/* persona tiles: icon/label scale up so the 7 tabs stay readable */
+.persona-tabs.fold-grid .fold-icon{width:clamp(34px,4.6vw,44px);height:clamp(34px,4.6vw,44px);border-radius:8px}
+.persona-tabs.fold-grid .fold-icon svg{width:62%;height:62%}
+.persona-tabs.fold-grid .fold-face{gap:8px}
+.persona-tabs.fold-grid .fold-face small{font-size:clamp(9px,1.3vw,11px);color:var(--ink)}
