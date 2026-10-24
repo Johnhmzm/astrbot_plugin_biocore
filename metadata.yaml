@@ -1,6 +1,6 @@
 name: astrbot_plugin_biocore
 display_name: BioCore Emotion
 desc: Standalone biological emotion layer; reads AstrBot persona once, compiles numeric profile, injects intent and feedback.
-version: v1.2.3
+version: v1.2.4
 author: local
-repo: https://github.com/Johnhmzm/astrbot_plugin_biocore
+repo: https://gitee.com/johnhim/astrbot_plugin_biocore

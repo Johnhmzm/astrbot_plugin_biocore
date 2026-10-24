@@ -725,6 +725,17 @@
   }
   const BIO_VERSION = "v1.2.3";
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
+  const GITEE_KEY = "bio_gitee_repo";
+  let giteeRepo = String(storeGet(GITEE_KEY, "johnhim/astrbot_plugin_biocore") || "").trim();
+  function applyGiteeRepo(){
+    const input = $("giteeRepo"), state = $("giteeState"), link = $("updateOpenGitee");
+    if (input) input.value = giteeRepo;
+    if (state) state.textContent = giteeRepo ? ("已配置 " + giteeRepo) : "未配置";
+    if (link) {
+      link.style.display = giteeRepo ? "" : "none";
+      if (giteeRepo) link.href = "https://gitee.com/" + giteeRepo;
+    }
+  }
   function _semverParts(v){
     return String(v || "").replace(/^v/i, "").split(/[.+-]/).slice(0, 3).map(n => parseInt(n, 10) || 0);
   }
@@ -743,11 +754,11 @@
     }
     st.textContent = "检查中…";
     st.style.color = "";
-    const sources = [
-      "https://api.github.com/repos/" + BIO_REPO_SLUG + "/contents/metadata.yaml",
-      "https://cdn.jsdelivr.net/gh/" + BIO_REPO_SLUG + "@main/metadata.yaml",
-      "https://raw.githubusercontent.com/" + BIO_REPO_SLUG + "/main/metadata.yaml"
-    ];
+    const sources = [];
+    if (giteeRepo) sources.push("https://gitee.com/" + giteeRepo + "/raw/main/metadata.yaml");
+    sources.push("https://api.github.com/repos/" + BIO_REPO_SLUG + "/contents/metadata.yaml");
+    sources.push("https://cdn.jsdelivr.net/gh/" + BIO_REPO_SLUG + "@main/metadata.yaml");
+    sources.push("https://raw.githubusercontent.com/" + BIO_REPO_SLUG + "/main/metadata.yaml");
     for (const url of sources) {
       try {
         const ctl = new AbortController();
@@ -778,6 +789,15 @@
   }
   const _updateBtn = $("updateCheckBtn");
   if (_updateBtn) _updateBtn.addEventListener("click", () => checkBioUpdate(false));
+  const _giteeSave = $("giteeSaveBtn");
+  if (_giteeSave) _giteeSave.addEventListener("click", () => {
+    const input = $("giteeRepo");
+    giteeRepo = String(input && input.value || "").trim().replace(/^https?:\/\/gitee\.com\//i, "").replace(/\/$/, "");
+    storeSet(GITEE_KEY, giteeRepo);
+    applyGiteeRepo();
+    checkBioUpdate(false);
+  });
+  applyGiteeRepo();
   setTimeout(() => checkBioUpdate(true), 1500);
   setupPersonaTabs();
   setupFolds();
