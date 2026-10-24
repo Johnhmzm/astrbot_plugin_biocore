@@ -711,6 +711,19 @@
       }
     });
   }
+  function setupSettingsTabs(){
+    const bar=$("settingsTabs"); if(!bar) return;
+    const tabs=[...bar.querySelectorAll(".settings-tab")];
+    if(!tabs.length) return;
+    const activate=(name)=>{ tabs.forEach(t=>t.classList.toggle("active",t.dataset.settingsTarget===name)); };
+    tabs.forEach(t=>t.addEventListener("click",()=>{
+      const id=t.dataset.settingsTarget||"";
+      const el=$(id);
+      if(el && el.scrollIntoView) el.scrollIntoView({behavior:"smooth",block:"start"});
+      activate(id);
+    }));
+    activate(tabs[0].dataset.settingsTarget||"settingsApi");
+  }
   function setupPersonaTabs(){
     const bar=$("personaTabs"); if(!bar) return;
     const tabs=[...bar.querySelectorAll(".persona-tab")];
@@ -799,6 +812,7 @@
   });
   applyGiteeRepo();
   setTimeout(() => checkBioUpdate(true), 1500);
+  setupSettingsTabs();
   setupPersonaTabs();
   setupFolds();
   arrangeFoldGrid();
