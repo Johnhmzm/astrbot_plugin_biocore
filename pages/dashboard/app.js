@@ -1245,6 +1245,23 @@
     }
   });
 
+
+  const insightNowBtn = $("insightNowBtn");
+  if (insightNowBtn) insightNowBtn.addEventListener("click", async () => {
+    const st = $("insightState");
+    if (!bridge) { if (st) st.textContent = "未连接 AstrBot 页面桥"; return; }
+    if (st) st.textContent = "正在生成跨事件反思…";
+    try {
+      const raw = await bridge.apiPost("page/insight", {});
+      const payload = raw && raw.data ? raw.data : raw;
+      if (!payload || payload.status === "error") throw new Error((payload && payload.message) || "insight failed");
+      const text = String(payload.insight || "").trim();
+      if (st) st.textContent = text ? ("已生成：" + text.slice(0, 80)) : (payload.message || "没有生成新反思");
+    } catch (e) {
+      if (st) st.textContent = "反思失败：" + String(e && e.message || e);
+    }
+  });
+
   try { const v = new URLSearchParams(location.search).get('view'); if (v) switchView(v); } catch (e) {}
   const foldSvg = (d) => '<svg viewBox="0 0 24 24" aria-hidden="true">' + d + '</svg>';
   const foldIcons = [
@@ -1382,7 +1399,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.50";
+  const BIO_VERSION = "v1.2.51";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
