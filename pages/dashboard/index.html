@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-2023" />
+<link rel="stylesheet" href="./styles.css?v=20261024-2048" />
 </head>
 <body>
 <div class="shell">
@@ -259,20 +259,20 @@
 
     <section class="view" id="view-sessions">
       <div class="section-title"><div><div class="eyebrow">SESSIONS</div><h2>活动会话</h2></div><span class="hint" id="sessionCount">0 SESSIONS</span></div>
-      <div class="sessions" id="sessionList"></div>
-
-      <div class="section-title mt"><div><div class="eyebrow">SESSION MEMORY</div><h2>会话记忆</h2></div><span class="hint">会话 → 记忆 → 总结 → 重要事件 → 全部消息</span></div>
-      <div class="panel">
-        <div class="event-toolbar">
-          <label><span>会话</span><select id="summarySession" class="event-session"></select></label>
-          <span class="hint" id="summaryHint">还没有已总结的会话</span>
-        </div>
-        <p class="api-note" id="summaryEmpty">还没有已总结的会话。事件总结生成后，这里才会出现对应会话。</p>
-        <div id="sessionSummaryBlock"></div>
+      <div class="persona-tabs fold-grid" id="sessionTabs">
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="records">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h16M4 20h10"/></svg></span><small>会话记录</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="memory">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg></span><small>记忆元数据</small></span>
+        </button>
       </div>
-
-      <div class="section-title mt"><div><div class="eyebrow">MEMORY META</div><h2>记忆元数据</h2></div><span class="hint">来源 / 置信度 / 层级 / 冲突 / 墓碑</span></div>
-      <div class="panel">
+      <div class="panel session-tabpanel" id="sessionPanelRecords" data-session-tab="records">
+        <div class="panel-head"><h3>会话记录</h3><span class="hint">SESSION LIST</span></div>
+        <div class="sessions" id="sessionList"></div>
+      </div>
+      <div class="panel session-tabpanel" id="sessionPanelMemory" data-session-tab="memory">
+        <div class="panel-head"><h3>记忆元数据</h3><span class="hint">来源 / 置信度 / 层级 / 冲突 / 墓碑</span></div>
         <div class="event-toolbar">
           <label><span>会话</span><select id="memSessionFilter" class="event-session"></select></label>
           <span class="hint" id="memIndexNote">正在读取记忆索引…</span>
@@ -288,6 +288,16 @@
           <small>TOMBSTONES / 已删除记忆（软删除，可审计；点“恢复”可撤销）</small>
           <div id="memTombstoneList"></div>
         </div>
+      </div>
+
+      <div class="section-title mt"><div><div class="eyebrow">SESSION MEMORY</div><h2>会话记忆</h2></div><span class="hint">会话 → 记忆 → 总结 → 重要事件 → 全部消息</span></div>
+      <div class="panel">
+        <div class="event-toolbar">
+          <label><span>会话</span><select id="summarySession" class="event-session"></select></label>
+          <span class="hint" id="summaryHint">还没有已总结的会话</span>
+        </div>
+        <p class="api-note" id="summaryEmpty">还没有已总结的会话。事件总结生成后，这里才会出现对应会话。</p>
+        <div id="sessionSummaryBlock"></div>
       </div>
 
       <div class="section-title mt"><div><div class="eyebrow">RELATIONSHIP</div><h2>用户关系</h2></div><span class="hint">亲近 / 冲突 / 修复 / 可预测</span></div>
@@ -443,5 +453,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-2023"></script><script src="./orb.js?v=20261024-2023"></script>
+<script src="./app.js?v=20261024-2048"></script><script src="./orb.js?v=20261024-2048"></script>
 </body></html>

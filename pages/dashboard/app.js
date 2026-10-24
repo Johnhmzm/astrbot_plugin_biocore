@@ -1270,7 +1270,23 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.32";
+  function setupSessionTabs(){
+    const bar=$("sessionTabs"); if(!bar) return;
+    const tabs=[...bar.querySelectorAll(".persona-tab")];
+    const panels=[...document.querySelectorAll("#view-sessions .session-tabpanel")];
+    if(!tabs.length) return;
+    const activate=(name)=>{
+      tabs.forEach(t=>t.classList.toggle("active",!!name&&t.dataset.sessionTab===name));
+      panels.forEach(p=>p.classList.toggle("active",!!name&&p.dataset.sessionTab===name));
+    };
+    // Default: everything folded; first click opens one small square.
+    activate(null);
+    tabs.forEach(t=>t.addEventListener("click",()=>{
+      const name=t.dataset.sessionTab||"records";
+      if(t.classList.contains("active")) activate(null); else activate(name);
+    }));
+  }
+  const BIO_VERSION = "v1.2.33";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1349,6 +1365,7 @@
   setTimeout(() => checkBioUpdate(true), 1500);
   setupSettingsTabs();
   setupPersonaTabs();
+  setupSessionTabs();
   setupFolds();
   arrangeFoldGrid();
   if (document.readyState === 'complete') load(); else window.addEventListener('load', () => load());
