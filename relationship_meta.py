@@ -8,10 +8,63 @@ interaction history for the biological layer.
 
 from __future__ import annotations
 
+import re
 from typing import Any
+
+__all__ = [
+    "RELATIONSHIP_SCHEMA_VERSION",
+    "MAX_TRAJECTORY",
+    "relationship_state",
+    "append_trajectory",
+    "build_transactive_map",
+    "build_destination_map",
+    "update_relationship_record",
+    "summarize_relationship",
+]
 
 RELATIONSHIP_SCHEMA_VERSION = 1
 MAX_TRAJECTORY = 80
+
+_STOPWORDS = {
+    "这个",
+    "那个",
+    "什么",
+    "怎么",
+    "就是",
+    "不是",
+    "可以",
+    "我们",
+    "你们",
+    "他们",
+    "自己",
+    "现在",
+    "然后",
+    "因为",
+    "所以",
+    "但是",
+    "还是",
+    "已经",
+    "没有",
+    "一个",
+    "一下",
+    "觉得",
+    "知道",
+    "时候",
+    "真的",
+    "非常",
+    "特别",
+    "the",
+    "and",
+    "that",
+    "this",
+    "with",
+    "from",
+    "have",
+    "will",
+    "just",
+}
+
+_TOKEN_RE = re.compile(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}")
 
 
 def _clamp(value: Any, low: float = 0.0, high: float = 1.0) -> float:
@@ -81,25 +134,13 @@ def append_trajectory(
     return points[-max_len:]
 
 
-
-
-_STOPWORDS = {
-    "这个", "那个", "什么", "怎么", "就是", "不是", "可以", "我们", "你们",
-    "他们", "自己", "现在", "然后", "因为", "所以", "但是", "还是", "已经",
-    "没有", "一个", "一下", "觉得", "知道", "时候", "真的", "非常", "特别",
-    "the", "and", "that", "this", "with", "from", "have", "will", "just",
-}
-
-
 def _tokens(text: str) -> list[str]:
-    import re
-    raw = re.findall(r"[A-Za-z0-9_]{2,}|[\u4e00-\u9fff]{2,}", str(text or ""))
     result = []
-    for token in raw:
-        t = token.strip().lower()
-        if len(t) < 2 or t in _STOPWORDS:
+    for token in _TOKEN_RE.findall(str(text or "")):
+        normalized = token.strip().lower()
+        if len(normalized) < 2 or normalized in _STOPWORDS:
             continue
-        result.append(t)
+        result.append(normalized)
     return result
 
 
@@ -114,14 +155,12 @@ def build_transactive_map(entries: Any, limit: int = 24) -> dict[str, int]:
     if not isinstance(entries, list):
         return counts
     for entry in entries[-200:]:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("summarized"):
+        if not isinstance(entry, dict) or entry.get("summarized"):
             continue
         for token in _tokens(str(entry.get("text", ""))):
             counts[token] = counts.get(token, 0) + 1
-    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:max(1, int(limit))]
-    return {k: int(v) for k, v in ranked}
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return {key: int(value) for key, value in ranked[:max(1, int(limit))]}
 
 
 def build_destination_map(entries: Any, limit: int = 24) -> dict[str, dict[str, Any]]:
@@ -140,20 +179,23 @@ def build_destination_map(entries: Any, limit: int = 24) -> dict[str, dict[str, 
         if not sender_id and not sender_name:
             continue
         key = sender_id or sender_name
-        item = result.setdefault(key, {
-            "sender_id": sender_id,
-            "sender_name": sender_name,
-            "count": 0,
-            "last_ts": 0.0,
-            "latest_text": "",
-        })
+        item = result.setdefault(
+            key,
+            {
+                "sender_id": sender_id,
+                "sender_name": sender_name,
+                "count": 0,
+                "last_ts": 0.0,
+                "latest_text": "",
+            },
+        )
         item["count"] = int(item.get("count", 0) or 0) + 1
         ts = float(entry.get("ts", 0) or 0)
         if ts >= float(item.get("last_ts", 0) or 0):
             item["last_ts"] = ts
             item["latest_text"] = str(entry.get("text", ""))[:160]
-    ranked = sorted(result.items(), key=lambda item: (-int(item[1].get("count", 0)), item[0]))[:max(1, int(limit))]
-    return {k: v for k, v in ranked}
+    ranked = sorted(result.items(), key=lambda item: (-int(item[1].get("count", 0)), item[0]))
+    return {key: value for key, value in ranked[:max(1, int(limit))]}
 
 
 def update_relationship_record(
@@ -167,14 +209,16 @@ def update_relationship_record(
     """Create/update the bounded relationship record stored with the user."""
     prev = previous if isinstance(previous, dict) else {}
     trajectory = append_trajectory(prev.get("trajectory"), state, ts)
-    record = {
+    return {
         "schema_version": RELATIONSHIP_SCHEMA_VERSION,
-        "state": {k: round(_clamp(state.get(k, 0.5)), 4) for k in ("trust", "closeness", "conflict", "repair", "predictability")},
+        "state": {
+            key: round(_clamp(state.get(key, 0.5)), 4)
+            for key in ("trust", "closeness", "conflict", "repair", "predictability")
+        },
         "trajectory": trajectory,
         "transactive_map": transactive_map if isinstance(transactive_map, dict) else prev.get("transactive_map", {}),
         "destination_map": destination_map if isinstance(destination_map, dict) else prev.get("destination_map", {}),
     }
-    return record
 
 
 def summarize_relationship(relationship: Any) -> str:
@@ -185,7 +229,13 @@ def summarize_relationship(relationship: Any) -> str:
     if not isinstance(state, dict):
         return ""
     parts = []
-    labels = (("trust", "信任"), ("closeness", "亲近"), ("conflict", "冲突"), ("repair", "修复"), ("predictability", "可预测"))
+    labels = (
+        ("trust", "信任"),
+        ("closeness", "亲近"),
+        ("conflict", "冲突"),
+        ("repair", "修复"),
+        ("predictability", "可预测"),
+    )
     for key, label in labels:
         if key in state:
             parts.append(f"{label}={_clamp(state.get(key)):.2f}")

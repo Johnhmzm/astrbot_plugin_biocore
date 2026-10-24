@@ -1245,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.17")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.18")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3144,12 +3144,21 @@ class BioCorePlugin(Star):
         text = str(entry.get("text") or "").strip()
         return _sha256(text[:300])[:12] if text else ""
 
+    @classmethod
+    def _memory_find_entry(cls, entries, entry_id: str) -> dict | None:
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if isinstance(entry, dict) and cls._memory_entry_id(entry) == entry_id:
+                return entry
+        return None
+
     async def page_memory_rollback(self, session: str, entry_id: str):
         """Rollback one memory entry to its previous version (dashboard API)."""
         try:
             path, doc = self._memory_doc_for_session(session)
             entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
-            target = next((e for e in entries if isinstance(e, dict) and self._memory_entry_id(e) == entry_id), None)
+            target = self._memory_find_entry(entries, entry_id)
             if target is None:
                 return {"status": "error", "message": "memory entry not found", "data": {}}
             if not memory_meta.rollback_entry(target):
@@ -3174,7 +3183,7 @@ class BioCorePlugin(Star):
         try:
             path, doc = self._memory_doc_for_session(session)
             entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
-            target = next((e for e in entries if isinstance(e, dict) and self._memory_entry_id(e) == entry_id), None)
+            target = self._memory_find_entry(entries, entry_id)
             if target is None:
                 return {"status": "error", "message": "memory entry not found", "data": {}}
             doc["tombstones"] = (doc.get("tombstones") if isinstance(doc.get("tombstones"), list) else [])[-100:]
@@ -3548,6 +3557,8 @@ class BioCorePlugin(Star):
             base = 1.0 / (1.0 + math.exp(-(_b + 1.0)))
         except Exception:
             base = 0.5
+        # Causal chain: cosine relevance * biological salience/recency *
+        # source/confidence/tier weight -> recall threshold and ranking.
         return (cosine * (0.40 + 0.60 * importance) * recency
                 * (0.65 + 0.35 * retention)
                 * (0.85 + 0.15 * base)
@@ -3880,39 +3891,7 @@ class BioCorePlugin(Star):
             self._save_memory(event, doc)
         except Exception:
             pass
-        _top_meta = []
-        for _score, e in top:
-            try:
-                _top_meta.append({
-                    "source": memory_meta.normalize_source(e.get("memory_source")),
-                    "confidence": float(e.get("memory_confidence", 0.6) or 0.6),
-                    "tier": e.get("memory_tier") or memory_meta.memory_tier(e, now),
-                })
-            except Exception:
-                pass
-        if _top_meta:
-            _avg_conf = sum(float(x.get("confidence", 0.0)) for x in _top_meta) / len(_top_meta)
-            _src = memory_meta.source_precedence(*(x.get("source") for x in _top_meta))
-            _tiers = {}
-            for x in _top_meta:
-                t = str(x.get("tier") or "cold")
-                _tiers[t] = int(_tiers.get(t, 0) or 0) + 1
-            _dests = {}
-            for _score, e in top:
-                d = e.get("destination") if isinstance(e, dict) else None
-                if not isinstance(d, dict):
-                    continue
-                _name = str(d.get("sender_name") or d.get("sender_id") or "").strip()
-                if _name:
-                    _dests[_name] = int(_dests.get(_name, 0) or 0) + 1
-            self._last_memory_meta = {
-                "count": len(_top_meta),
-                "confidence": round(max(0.0, min(1.0, _avg_conf)), 4),
-                "source": _src,
-                "abstain": memory_meta.should_abstain(_avg_conf, _src),
-                "tiers": _tiers,
-                "destinations": dict(sorted(_dests.items(), key=lambda item: -item[1])[:4]),
-            }
+        self._last_memory_meta = memory_meta.summarize_recall(top, now)
         lines = []
         for score, e in top:
             role = "用户" if e.get("role") != "assistant" else "你"
