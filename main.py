@@ -1245,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.14")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.15")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3718,7 +3718,13 @@ class BioCorePlugin(Star):
                 duplicate["destination"] = memory_meta.build_destination(_sid, _sname)
             _conflict = memory_meta.detect_conflict(duplicate.get("text", ""), text)
             if _conflict:
-                memory_meta.merge_version(duplicate, str(duplicate.get("text", "")))
+                _old_text = str(duplicate.get("text", ""))
+                memory_meta.merge_version(duplicate, _old_text)
+                _new_text = str(text or "").strip()[:1200]
+                if _new_text and _new_text != _old_text:
+                    duplicate["text"] = _new_text
+                    duplicate["vector"] = vec
+                    duplicate["vec_updated_ts"] = now
                 duplicate["conflict"] = True
                 try:
                     duplicate["memory_confidence"] = min(float(duplicate.get("memory_confidence", 0.5) or 0.5), 0.55)
@@ -3817,12 +3823,21 @@ class BioCorePlugin(Star):
             for x in _top_meta:
                 t = str(x.get("tier") or "cold")
                 _tiers[t] = int(_tiers.get(t, 0) or 0) + 1
+            _dests = {}
+            for _score, e in top:
+                d = e.get("destination") if isinstance(e, dict) else None
+                if not isinstance(d, dict):
+                    continue
+                _name = str(d.get("sender_name") or d.get("sender_id") or "").strip()
+                if _name:
+                    _dests[_name] = int(_dests.get(_name, 0) or 0) + 1
             self._last_memory_meta = {
                 "count": len(_top_meta),
                 "confidence": round(max(0.0, min(1.0, _avg_conf)), 4),
                 "source": _src,
                 "abstain": memory_meta.should_abstain(_avg_conf, _src),
                 "tiers": _tiers,
+                "destinations": dict(sorted(_dests.items(), key=lambda item: -item[1])[:4]),
             }
         lines = []
         for score, e in top:

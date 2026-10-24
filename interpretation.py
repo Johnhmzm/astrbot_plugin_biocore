@@ -117,6 +117,10 @@ def user_block(user: dict) -> str:
             float(state.get("conflict", 0.5) or 0.5),
             float(state.get("repair", 0.0) or 0.0),
             float(state.get("predictability", 0.5) or 0.5))
+    trans = rel.get("transactive_map") if isinstance(rel, dict) else None
+    if isinstance(trans, dict) and trans:
+        topics = sorted(trans.items(), key=lambda item: (-int(item[1]), str(item[0])))[:3]
+        base += "；常谈 " + "、".join(str(k)[:12] for k, _ in topics)
     return base
 
 
@@ -169,6 +173,9 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
             str(mm.get("source", "unknown") or "unknown")[:12])
         if mm.get("abstain"):
             cp += " mem=uncertain"
+        _dests = mm.get("destinations")
+        if isinstance(_dests, dict) and _dests:
+            cp += " memwho=" + ",".join("%s×%s" % (str(k)[:20], int(v)) for k, v in list(_dests.items())[:3])
     if eb:
         cp += " | ev=" + eb
     if sb:
