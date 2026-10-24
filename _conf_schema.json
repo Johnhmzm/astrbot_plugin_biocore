@@ -41,6 +41,12 @@
     "type": "bool",
     "default": true
   },
+  "llm_only_reply_summary": {
+    "description": "LLM 只用于回复+总结（严格）",
+    "hint": "默认开启。只允许事件总结/记忆总结调用 LLM；人格数值编译、事件排序抽取、跨事件反思、图片描述都不再额外调用 LLM（用确定性回退）。关闭后恢复全部 LLM 能力。",
+    "type": "bool",
+    "default": true
+  },
   "cross_session_memory": {
     "description": "跨会话记忆（谨慎开启）",
     "hint": "默认关闭。开启后同一发送者在其他会话的记忆可在当前会话被召回，并标注“其他会话”；仅按发送者隔离，群聊场景请确认隐私边界后再开。",

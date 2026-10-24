@@ -850,6 +850,7 @@
   bindBehaviorToggle("swSensitiveMemory","sensitive_memory_protection");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
+  bindBehaviorToggle("swLlmOnlyReplySummary","llm_only_reply_summary");
   const swCrossSession=$("swCrossSession");
   if(swCrossSession) swCrossSession.addEventListener("change",async e=>{
     const val=!!e.target.checked;
@@ -947,6 +948,8 @@
     if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
     const swLlmCand = $("swLlmCandidates");
     if (swLlmCand) swLlmCand.checked = data.llm_memory_candidates !== false;
+    const swLlmScope = $("swLlmOnlyReplySummary");
+    if (swLlmScope) swLlmScope.checked = data.llm_only_reply_summary !== false;
     if (th) th.value = Number(comp.threshold || 6000);
     if (mx) mx.value = Number(comp.max_chars || 800);
     const ms = $("memoryStats");
@@ -1267,7 +1270,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.31";
+  const BIO_VERSION = "v1.2.32";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
