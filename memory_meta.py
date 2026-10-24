@@ -63,22 +63,20 @@ _SOURCE_WEIGHT = {
 
 _TIER_WEIGHT = {"hot": 1.03, "warm": 1.0, "cold": 0.97}
 
-_CONFLICT_MARKERS = (
+_STRONG_CORRECTION_MARKERS = (
     "改成",
     "改为",
     "其实是",
     "更正",
     "纠正",
-    "不是",
-    "不再",
-    "取消",
-    "推迟",
     "换到",
     "变成",
     "update",
     "correction",
     "instead",
 )
+
+_WEAK_NEGATION_MARKERS = ("不是", "不再", "取消", "推迟")
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -270,8 +268,10 @@ def detect_conflict(old_text: str, new_text: str) -> bool:
     new = str(new_text or "").strip().lower()
     if not old or not new or old == new:
         return False
-    has_marker = any(marker in new for marker in _CONFLICT_MARKERS)
-    return has_marker and not any(ch.isdigit() for ch in new)
+    if any(marker in new for marker in _STRONG_CORRECTION_MARKERS):
+        return True
+    has_weak = any(marker in new for marker in _WEAK_NEGATION_MARKERS)
+    return has_weak and not any(ch.isdigit() for ch in new)
 
 
 def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> None:
