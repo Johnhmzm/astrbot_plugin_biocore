@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-1570" />
+<link rel="stylesheet" href="./styles.css?v=20261024-1580" />
 </head>
 <body>
 <div class="shell">
@@ -231,8 +231,6 @@
     </section>
 
     <section class="view" id="view-settings">
-      <div class="section-title"><div><div class="eyebrow">API ACCESS</div><h2>API 接入 · 覆盖项</h2></div><span class="hint">ASTRBOT 优先</span></div>
-      <div class="notice">行为参数（注入意图 / 记忆 / 知识库 / 语音 / 图片 / 衰减常数）统一在 AstrBot 插件管理 → BioCore 配置里设置；这里只保留 BioCore 自己的 API 覆盖、记忆压缩、可视化和备份，避免两处重复。</div>
       <div class="settings-tabs fold-grid" id="settingsTabs">
         <button type="button" class="settings-tab fold-panel folded active" data-settings-target="settingsApi">
           <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></svg></span><small>API</small></span>
@@ -250,7 +248,9 @@
           <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4z"/><path d="M9 3h6l2 4H7l2-4Z"/><path d="M9 13h6"/></svg></span><small>备份</small></span>
         </button>
       </div>
-      <div class="panel settings api-panel" id="settingsApi">
+      <div class="section-title" data-settings-title="settingsApi"><div><div class="eyebrow">API ACCESS</div><h2>API 接入 · 覆盖项</h2></div><span class="hint">ASTRBOT 优先</span></div>
+      <div class="panel settings settings-panel api-panel active" id="settingsApi">
+      <div class="notice">行为参数（注入意图 / 记忆 / 知识库 / 语音 / 图片 / 衰减常数）统一在 AstrBot 插件管理 → BioCore 配置里设置；这里只保留 BioCore 自己的 API 覆盖、记忆压缩、可视化和备份，避免两处重复。</div>
         <div class="api-savebar">
           <div><b>API 接入</b><span id="apiSaveStateTop">默认读取 AstrBot，确认后保存</span></div>
           <div class="api-savebar-actions">
@@ -315,8 +315,8 @@
         </div>
         </div>
       </div>
-      <div class="section-title mt"><div><div class="eyebrow">MEMORY</div><h2>记忆压缩</h2></div><span class="hint">默认关闭</span></div>
-      <div class="panel settings" id="settingsMemory">
+      <div class="section-title mt" data-settings-title="settingsMemory"><div><div class="eyebrow">MEMORY</div><h2>记忆压缩</h2></div><span class="hint">默认关闭</span></div>
+      <div class="panel settings settings-panel" id="settingsMemory">
         <div class="setting-row"><div><b>启用记忆压缩</b><small>超过阈值后压缩旧记忆。</small></div><label class="switch"><input type="checkbox" id="swCompress"><span></span></label></div>
         <div class="api-grid">
           <label><span>触发阈值 / 字符</span><input id="compressThreshold" type="number" min="1000" step="500" value="6000"></label>
@@ -326,8 +326,8 @@
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
         <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
       </div>
-      <div class="section-title mt"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
-      <div class="panel settings" id="settingsVisual">
+      <div class="section-title mt" data-settings-title="settingsVisual"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
+      <div class="panel settings settings-panel" id="settingsVisual">
         <div class="setting-row"><div><b>评价粒子</b><small>三圈环形粒子，随 arousal/stress 扩张或收敛，颜色跟随情绪色。</small></div><label class="switch"><input type="checkbox" id="swShowNoise" checked><span></span></label></div>
         <div class="setting-row"><div><b>粒子连线</b><small>连接同环相邻粒子，仅 attention 高或悬停球体时淡入。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪节点</b><small>与情绪环表达重叠，默认关闭；需要调试时再开启。</small></div><label class="switch"><input type="checkbox" id="swShowNodes" checked><span></span></label></div>
@@ -340,8 +340,8 @@
         <div class="setting-row"><div><b>强度</b><small>调整球体周围信号的整体幅度。</small></div><input type="range" id="orbIntensity" min="0" max="100" value="65"></div>
         <p class="save-state" id="saveState">球体显示开关即时保存到本地浏览器（不写后端配置）</p>
       </div>
-      <div class="section-title mt"><div><div class="eyebrow">VERSION</div><h2>版本更新</h2></div><span class="hint">GitHub repository</span></div>
-      <div class="panel settings" id="settingsVersion">
+      <div class="section-title mt" data-settings-title="settingsVersion"><div><div class="eyebrow">VERSION</div><h2>版本更新</h2></div><span class="hint">GitHub repository</span></div>
+      <div class="panel settings settings-panel" id="settingsVersion">
         <div class="setting-row"><div><b>检查更新</b><small>对比 GitHub 仓库最新 metadata.yaml 版本；只检查提示，安装仍走 AstrBot 插件管理。</small></div><button type="button" class="btn" id="updateCheckBtn">检查更新</button></div>
         <div class="setting-row"><div><b>Gitee 镜像</b><small>owner/repo；填了之后检查更新会优先尝试 Gitee raw。留空只试 GitHub。</small></div><input id="giteeRepo" placeholder="Johnhmzm/astrbot_plugin_biocore" autocomplete="off"></div>
         <div class="api-actions"><button type="button" class="btn mini" id="giteeSaveBtn">保存镜像</button><span class="api-note" id="giteeState">未配置</span></div>
@@ -350,8 +350,8 @@
         <a class="btn mini" id="updateOpenRepo" href="https://github.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener">打开 GitHub 仓库</a>
         <a class="btn mini" id="updateOpenGitee" href="https://gitee.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener" style="display:none">打开 Gitee 仓库</a>
       </div>
-      <div class="section-title mt"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
-      <div class="panel settings" id="settingsBackup">
+      <div class="section-title mt" data-settings-title="settingsBackup"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
+      <div class="panel settings settings-panel" id="settingsBackup">
         <div class="setting-row"><div><b>下载核心备份</b><small>插件代码 + data/ 打包成 zip，可用于迁移或恢复。</small></div><button type="button" class="btn" id="backupBtn">下载备份</button></div>
         <p class="api-note" id="backupState">备份包含 API Key、persona、memory、states，不要外发。</p>
         <div class="setting-row"><div><b>加载核心备份</b><small>选择备份 zip；连续点击两次确认，会覆盖当前 data/。</small></div></div>
@@ -363,5 +363,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-1570"></script><script src="./orb.js?v=20261024-1570"></script>
+<script src="./app.js?v=20261024-1580"></script><script src="./orb.js?v=20261024-1580"></script>
 </body></html>

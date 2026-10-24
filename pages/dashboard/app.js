@@ -715,12 +715,13 @@
     const bar=$("settingsTabs"); if(!bar) return;
     const tabs=[...bar.querySelectorAll(".settings-tab")];
     if(!tabs.length) return;
-    const activate=(name)=>{ tabs.forEach(t=>t.classList.toggle("active",t.dataset.settingsTarget===name)); };
+    const activate=(name)=>{
+      tabs.forEach(t=>t.classList.toggle("active",t.dataset.settingsTarget===name));
+      document.querySelectorAll("#view-settings .settings-panel").forEach(p=>p.classList.toggle("active",p.id===name));
+      document.querySelectorAll("#view-settings .section-title[data-settings-title]").forEach(t=>t.classList.toggle("active",t.dataset.settingsTitle===name));
+    };
     tabs.forEach(t=>t.addEventListener("click",()=>{
-      const id=t.dataset.settingsTarget||"";
-      const el=$(id);
-      if(el && el.scrollIntoView) el.scrollIntoView({behavior:"smooth",block:"start"});
-      activate(id);
+      activate(t.dataset.settingsTarget||"settingsApi");
     }));
     activate(tabs[0].dataset.settingsTarget||"settingsApi");
   }
