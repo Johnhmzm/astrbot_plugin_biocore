@@ -123,6 +123,10 @@ LLM_FUNCTION_DEFAULTS = {
     "memory_summary": True,
     "image_caption": False,
 }
+INSIGHT_MIN_NEW_EVENTS = 3
+INSIGHT_COOLDOWN_SECONDS = 60 * 60
+INSIGHT_FALLBACK_HOURS = 24
+
 LLM_FUNCTION_ALIASES = {
     "persona": "persona_compile",
     "ranking": "event_ranking",
@@ -1506,7 +1510,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.47")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.48")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1558,6 +1562,9 @@ class BioCorePlugin(Star):
             self.reflection_interval_hours = max(1, int(self.config.get("reflection_interval_hours", 6) or 6))
         except Exception:
             self.reflection_interval_hours = 6
+        # Event-driven insight trigger: fallback is a 24h ultra-long safety net,
+        # not a periodic 6h main trigger anymore.
+        self._insight_fallback_hours = max(INSIGHT_FALLBACK_HOURS, int(self.reflection_interval_hours))
         try:
             self.stimulus_decay_seconds = max(30, int(self.config.get("stimulus_decay_seconds", 300) or 300))
             self.stimulus_habituation = max(0.0, float(self.config.get("stimulus_habituation", 0.75) or 0.75))
@@ -2533,64 +2540,173 @@ class BioCorePlugin(Star):
         except Exception:
             pass
 
-    def _maybe_periodic_reflection(self, event, core) -> None:
+    def _insight_state_path(self):
         try:
-            if time.time() - float(getattr(self, "_last_reflection", 0.0)) < float(getattr(self, "reflection_interval_hours", 6)) * 3600:
-                return
-            self._last_reflection = time.time()
-            asyncio.create_task(self._archive_cross_event_insight(event, core))
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
+        return DATA_DIR / "insight_trigger.json"
 
-    async def _archive_cross_event_insight(self, event, core):
-        events = self._event_archive(6)
-        if len(events) < 3:
-            return
-        if not self._llm_allowed("insight"):
-            # Deterministic reflection note instead of an extra LLM call.
-            try:
-                titles = [str(e.get("title") or "").strip() for e in events[-3:]]
-                titles = [t for t in titles if t]
-                if titles:
-                    self._append_insight({
-                        "ts": time.time(),
-                        "insight": ("最近发生：" + "；".join(titles))[:300],
-                        "emotion": str(core.labels.get("emotion") or "neutral") if core else "neutral",
-                    })
-            except Exception:
-                pass
-            return
+    def _load_insight_state(self) -> dict:
         try:
+            path = self._insight_state_path()
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {"last_run_ts": 0.0, "last_event_ts": 0.0, "seen_ids": []}
+
+    def _save_insight_state(self, state: dict) -> None:
+        try:
+            self._insight_state_path().write_text(
+                json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("[biocore] insight trigger state save failed: %s", exc)
+
+    def _insight_trigger_decision(self, state: dict, events: list, now: float | None = None) -> dict:
+        """Decide whether the unified insight entry should fire.
+
+        Rules:
+        - dedupe by event id + event ts (only events newer than last_event_ts count);
+        - 3 new important events (importance >= 0.6) AND cooldown >= 60 min;
+        - 24h ultra-long fallback can fire with at least 1 new important event.
+        """
+        current = time.time() if now is None else float(now)
+        st = state if isinstance(state, dict) else {}
+        try:
+            last_run = float(st.get("last_run_ts", 0.0) or 0.0)
+        except Exception:
+            last_run = 0.0
+        try:
+            last_event_ts = float(st.get("last_event_ts", 0.0) or 0.0)
+        except Exception:
+            last_event_ts = 0.0
+        seen = st.get("seen_ids") if isinstance(st.get("seen_ids"), list) else []
+        seen_set = {str(x) for x in seen}
+        new_events = []
+        for ev in (events or []):
+            if not isinstance(ev, dict):
+                continue
+            try:
+                imp = float(ev.get("importance", 0) or 0)
+            except Exception:
+                imp = 0.0
+            if imp < 0.6:
+                continue
+            eid = str(ev.get("id") or "")
+            try:
+                ets = float(ev.get("ts", 0) or 0)
+            except Exception:
+                ets = 0.0
+            if eid and eid in seen_set:
+                continue
+            if ets and ets <= last_event_ts:
+                continue
+            new_events.append(ev)
+        count = len(new_events)
+        elapsed = current - last_run if last_run > 0 else None
+        cooldown_ok = (last_run <= 0) or (elapsed is not None and elapsed >= INSIGHT_COOLDOWN_SECONDS)
+        fallback_ok = (last_run > 0 and elapsed is not None and
+                       elapsed >= self._insight_fallback_hours * 3600)
+        ready = (count >= INSIGHT_MIN_NEW_EVENTS and cooldown_ok) or (count >= 1 and fallback_ok)
+        return {"ready": bool(ready), "new_count": count,
+                "new_events": new_events,
+                "last_run_ts": last_run, "last_event_ts": last_event_ts}
+
+    async def _maybe_archive_insight(self, event, core, trigger: str = "event_archive"):
+        """Unified, event-driven insight entry (compression / event archive)."""
+        try:
+            state = self._load_insight_state()
+            events = self._event_archive(50)
+            decision = self._insight_trigger_decision(state, events)
+            if not decision["ready"]:
+                logger.info("[biocore] insight trigger skipped (%s): new=%s cooldown/fallback not met",
+                            trigger, decision["new_count"])
+                return False
+            new_events = decision["new_events"]
+            now = time.time()
+            latest_ts = max([decision["last_event_ts"]] +
+                            [float(e.get("ts", 0) or 0) for e in events] or [0.0])
+            seen = [str(e.get("id") or "") for e in events if str(e.get("id") or "")]
+            self._save_insight_state({
+                "last_run_ts": now,
+                "last_event_ts": latest_ts,
+                "seen_ids": seen[-100:],
+            })
+            recent = (events[-6:] if len(events) >= 3 else new_events[-6:])
+            await self._generate_insight(event, core, recent)
+            logger.info("[biocore] insight triggered (%s): new=%s events=%s",
+                        trigger, decision["new_count"], len(recent))
+            return True
+        except Exception as exc:
+            logger.warning("[biocore] insight trigger failed: %s", exc)
+            return False
+
+    async def _generate_insight(self, event, core, events):
+        """Generate one insight from the given events (LLM if enabled, else deterministic note)."""
+        try:
+            events = [e for e in (events or []) if isinstance(e, dict)]
+            if not events:
+                return False
+            if not self._llm_allowed("insight"):
+                try:
+                    titles = [str(e.get("title") or "").strip() for e in events[-6:]]
+                    titles = [t for t in titles if t]
+                    if titles:
+                        self._append_insight({
+                            "ts": time.time(),
+                            "insight": ("最近发生：" + "；".join(titles))[:300],
+                            "emotion": str(getattr(core, "labels", {}).get("emotion") or "neutral") if core else "neutral",
+                        })
+                        return True
+                except Exception:
+                    pass
+                return False
             provider = await self._provider_for("insight", event)
             if provider is None:
-                return
-            prompt = interpretation.insight_prompt(events)
+                return False
+            prompt = interpretation.insight_prompt(events[-6:])
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             insight = interpretation.parse_insight(raw)
-            if insight:
-                self._append_insight({"ts": time.time(), "insight": insight,
-                                      "emotion": str(core.labels.get("emotion") or "neutral") if core else "neutral"})
-                try:
-                    if core is not None:
-                        tree = getattr(core, "reflection_tree", None)
-                        if not isinstance(tree, dict):
-                            tree = {"roots": [], "count": 0}
-                        node = {"ts": time.time(), "insight": insight,
-                                "emotion": str(core.labels.get("emotion") or "neutral"), "children": []}
-                        roots = tree.get("roots") or []
-                        if roots:
-                            roots[-1].setdefault("children", []).append(node)
-                        else:
-                            roots.append(node)
-                        tree["roots"] = roots[-10:]
-                        tree["count"] = int(tree.get("count", 0)) + 1
-                        core.reflection_tree = tree
-                except Exception:
-                    pass
-                logger.info("[biocore] cross-event insight archived")
+            if not insight:
+                return False
+            self._append_insight({
+                "ts": time.time(), "insight": insight,
+                "emotion": str(getattr(core, "labels", {}).get("emotion") or "neutral") if core else "neutral",
+            })
+            try:
+                if core is not None:
+                    tree = getattr(core, "reflection_tree", None)
+                    if not isinstance(tree, dict):
+                        tree = {"roots": [], "count": 0}
+                    node = {"ts": time.time(), "insight": insight,
+                            "emotion": str(getattr(core, "labels", {}).get("emotion") or "neutral"),
+                            "children": []}
+                    roots = tree.get("roots") or []
+                    if roots:
+                        roots[-1].setdefault("children", []).append(node)
+                    else:
+                        roots.append(node)
+                    tree["roots"] = roots[-10:]
+                    tree["count"] = int(tree.get("count", 0)) + 1
+                    core.reflection_tree = tree
+            except Exception:
+                pass
+            logger.info("[biocore] cross-event insight archived")
+            return True
         except Exception as exc:
-            logger.warning("[biocore] cross-event insight failed: %s", exc)
+            logger.warning("[biocore] insight generation failed: %s", exc)
+            return False
+
+    async def _archive_cross_event_insight(self, event, core):
+        """Compatibility wrapper for direct callers: uses the last 6 events."""
+        events = self._event_archive(6)
+        if len(events) < 3:
+            return
+        await self._generate_insight(event, core, events[-6:])
 
     def _segment_event_texts(self, entries) -> list:
         try:
@@ -3125,6 +3241,7 @@ class BioCorePlugin(Star):
                 logger.info("[biocore] deterministic event archived: %s score=%.2f", title, score)
         except Exception as exc:
             logger.warning("[biocore] deterministic event ranking failed: %s", exc)
+        await self._maybe_archive_insight(event, core, "event_archive")
 
     async def _archive_ranked_events(self, event, core, entries):
         """Deterministic embedding/rule event extraction (LLM is never used here).
@@ -3200,6 +3317,7 @@ class BioCorePlugin(Star):
             record["boundary_score"] = _bnd.get("boundary_score", 0.0)
             record["parent_event_id"] = _bnd.get("parent_event_id", "")
             self._append_event_archive(record)
+            await self._maybe_archive_insight(event, core, "event_archive")
             self._update_self_narrative(title, reflection or meaning)
             logger.info("[biocore] strong event archived: %s", title)
         except Exception as exc:
@@ -4491,7 +4609,7 @@ class BioCorePlugin(Star):
                 if time.time() - float(getattr(self, "_last_event_archive", 0.0)) > 300:
                     self._last_event_archive = time.time()
                     await self._archive_ranked_events(event, core, entries)
-                    await self._archive_cross_event_insight(event, core)
+                    await self._maybe_archive_insight(event, core, "compression")
                 return
             changed = False
             for group in groups:
@@ -4606,7 +4724,7 @@ class BioCorePlugin(Star):
                 changed = True
             if changed:
                 await self._archive_ranked_events(event, core, entries)
-                await self._archive_cross_event_insight(event, core)
+                await self._maybe_archive_insight(event, core, "compression")
                 self._trim_memory(doc, core)
                 self._save_memory(event, doc)
                 logger.info("[biocore] memory consolidated groups=%s entries=%s", len(groups), len(entries))
@@ -5355,7 +5473,6 @@ class BioCorePlugin(Star):
         except Exception:
             pass
         _events = self._event_context(event)
-        self._maybe_periodic_reflection(event, core)
         _kb = ""
         if getattr(self, "kb_enabled", False) and getattr(self, "kb_names", None) and self._usable_memory_text(text):
             try:
