@@ -452,6 +452,14 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 #view-sessions .session-tabpanel{display:none;margin-top:0}
 #view-sessions .session-tabpanel.active{display:block}
 #sessionTabs{margin:0 0 16px}
+/* session tiles: compact fixed squares (persona tiles stretch to full width) */
+#sessionTabs.persona-tabs.fold-grid{grid-template-columns:repeat(auto-fill,76px);gap:10px;justify-content:flex-start}
+#sessionTabs .persona-tab.fold-panel.folded{width:76px;height:76px;min-height:76px;aspect-ratio:auto;max-width:none;padding:8px;border-radius:18px}
+#sessionTabs .fold-icon{width:28px;height:28px;border-radius:6px}
+#sessionTabs .fold-icon svg{width:60%;height:60%}
+#sessionTabs .fold-face{gap:5px}
+#sessionTabs .fold-face small{font-size:10px;max-width:68px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:640px){#sessionTabs.persona-tabs.fold-grid{grid-template-columns:repeat(auto-fill,64px);gap:7px}#sessionTabs .persona-tab.fold-panel.folded{width:64px;height:64px;min-height:64px;padding:6px}#sessionTabs .fold-icon{width:24px;height:24px}#sessionTabs .fold-face small{font-size:9px;max-width:56px}}
 
 /* persona tiles: flush with panels, equal columns, no leftover right gap */
 .persona-tabs.fold-grid{grid-template-columns:repeat(auto-fit,minmax(64px,1fr));gap:10px;padding:0;margin:0 0 16px;border:0;border-radius:0;background:transparent;justify-content:stretch;align-items:stretch}

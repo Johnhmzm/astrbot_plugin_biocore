@@ -884,7 +884,11 @@
     summarySessionFilter = summarySel.value || "";
     renderSessionMemory();
   });
-  $("refreshBtn").addEventListener("click",load);
+  // Top "刷新" must reload the page (HTML/JS/CSS); load() only re-fetches
+  // page/status data and cannot pick up UI/asset updates.
+  $("refreshBtn").addEventListener("click",()=>{
+    try{ location.reload(); }catch(e){ load(); }
+  });
   $("themeToggle").addEventListener("click",()=>{
     const dark = document.documentElement.dataset.theme !== "dark";
     applyTheme(dark); storeSet("bio_theme", dark ? "dark" : "light");
@@ -1286,7 +1290,7 @@
       if(t.classList.contains("active")) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.33";
+  const BIO_VERSION = "v1.2.34";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
