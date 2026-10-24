@@ -474,3 +474,9 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .msg-val{color:var(--ink);text-align:right;font-variant-numeric:tabular-nums}
 .msg-text{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:900px){.msg-row{grid-template-columns:36px 44px 1fr 30px}.msg-text{display:none}}
+.orb-stage{position:relative}
+.orb-tip{position:absolute;z-index:8;display:none;max-width:320px;padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);box-shadow:0 12px 28px rgba(0,0,0,.22);pointer-events:none;font:12px/1.55 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif}
+.orb-tip.show{display:block}
+.orb-tip b{display:block;font-size:13px;line-height:1.35;margin-bottom:3px}
+.orb-tip .orb-tip-meta{color:var(--faint);font-size:10px;line-height:1.5;margin-bottom:2px}
+.orb-tip .orb-tip-body{color:var(--muted);font-size:11px;line-height:1.55;margin-top:4px;word-break:break-word}
