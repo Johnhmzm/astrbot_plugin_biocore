@@ -733,6 +733,26 @@
   if($("swShowNodeLinks"))$("swShowNodeLinks").addEventListener("change",e=>{visual.nodeLinks=e.target.checked;visualSave();});
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
+  function bindBehaviorToggle(id,key){
+    const el=$(id);
+    if(!el) return;
+    el.addEventListener("change",async e=>{
+      const val=!!e.target.checked;
+      if(!bridge){ e.target.checked=!val; if(window.alert) window.alert("静态预览模式无法保存设置，请从 AstrBot 插件视图打开。"); return; }
+      try{
+        const raw=await bridge.apiPost("page/toggle",{key:key,value:val});
+        const payload=raw&&raw.data?raw.data:raw;
+        if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
+        if(data) data[key]=val;
+      }catch(err){
+        e.target.checked=!val;
+        if(window.alert) window.alert("设置保存失败："+String(err&&err.message||err));
+      }
+    });
+  }
+  bindBehaviorToggle("swSensitiveMemory","sensitive_memory_protection");
+  bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
+  bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
   const swCrossSession=$("swCrossSession");
   if(swCrossSession) swCrossSession.addEventListener("change",async e=>{
     const val=!!e.target.checked;
@@ -824,6 +844,12 @@
     if (swc) swc.checked = !!comp.enabled;
     const swCross = $("swCrossSession");
     if (swCross) swCross.checked = !!data.cross_session_memory;
+    const swSensitive = $("swSensitiveMemory");
+    if (swSensitive) swSensitive.checked = data.sensitive_memory_protection !== false;
+    const swHybrid = $("swHybridRetrieval");
+    if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
+    const swLlmCand = $("swLlmCandidates");
+    if (swLlmCand) swLlmCand.checked = data.llm_memory_candidates !== false;
     if (th) th.value = Number(comp.threshold || 6000);
     if (mx) mx.value = Number(comp.max_chars || 800);
     const ms = $("memoryStats");
@@ -1144,7 +1170,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.25";
+  const BIO_VERSION = "v1.2.26";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

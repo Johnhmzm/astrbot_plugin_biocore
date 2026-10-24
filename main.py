@@ -635,6 +635,18 @@ class BioCore:
             key = str(g.get("key") or "")
             scores[key] = round(self._goal_evidence(g, t, ctx), 3)
         self.goal_scores = scores
+        # Deterministic priority learning: repeated evidence raises a goal,
+        # neglect decays it slowly (bounded EMA; no LLM involved).
+        try:
+            for g in getattr(self, "goals", []) or []:
+                if not isinstance(g, dict):
+                    continue
+                _key = str(g.get("key") or "")
+                _rel = float(scores.get(_key, 0.0) or 0.0)
+                memory_meta.update_goal_priority(
+                    g, hit=(_rel > 0.05), relevance=_rel)
+        except Exception:
+            pass
         best = max(scores.values()) if scores else 0.0
         self.appraisal["goal_relevance"] = round(best, 3)
         self._resolve_goal_conflict(scores)
@@ -670,6 +682,11 @@ class BioCore:
                     continue
                 g["progress"] = round(max(0.0, min(1.0, float(g.get("progress", 0.0) or 0.0) + gain)), 4)
                 g["last_update"] = round(__import__("time").time(), 3)
+                try:
+                    memory_meta.update_goal_priority(
+                        g, hit=(gain >= 0.0), relevance=min(1.0, rel + max(0.0, gain)))
+                except Exception:
+                    pass
                 break
         except Exception:
             pass
@@ -1454,7 +1471,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.25")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.26")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1472,6 +1489,13 @@ class BioCorePlugin(Star):
         # Opt-in: recall the same sender's memories from their other sessions.
         # Default off because cross-session sharing has privacy implications.
         self.cross_session_memory = bool(self.config.get("cross_session_memory", False))
+        # Privacy: mask PII/credential values before memory reaches the prompt,
+        # and never share sensitive memories across sessions.
+        self.sensitive_memory_protection = bool(
+            self.config.get("sensitive_memory_protection", True))
+        # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
+        self.hybrid_retrieval = bool(self.config.get("hybrid_retrieval", True))
+        self.llm_memory_candidates = bool(self.config.get("llm_memory_candidates", True))
         self.first_run_persona_compile = bool(self.config.get("first_run_persona_compile", True))
         # Deprecated: [BC] sizing is owned by the interpretation layer now.
         # Kept only so existing config files do not break on load.
@@ -1661,7 +1685,9 @@ class BioCorePlugin(Star):
                 # toggles in settings.json only apply when config does not define
                 # the key (otherwise they silently overrode plugin config).
                 for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
-                            "kb_enabled", "cross_session_memory"):
+                            "kb_enabled", "cross_session_memory",
+                            "sensitive_memory_protection", "hybrid_retrieval",
+                            "llm_memory_candidates"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
                 if isinstance(d.get("kb_names"), list) and "kb_names" not in self.config:
@@ -1675,6 +1701,11 @@ class BioCorePlugin(Star):
                 "proactive_reply": bool(self.proactive_reply),
                 "memory_dedup_embedding": bool(self.memory_dedup_embedding),
                 "cross_session_memory": bool(getattr(self, "cross_session_memory", False)),
+                "sensitive_memory_protection": bool(
+                    getattr(self, "sensitive_memory_protection", True)),
+                "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
+                "llm_memory_candidates": bool(
+                    getattr(self, "llm_memory_candidates", True)),
                 "inject_intent": bool(self.inject_intent),
                 "kb_enabled": bool(getattr(self, "kb_enabled", False)),
                 "kb_names": list(getattr(self, "kb_names", [])),
@@ -2624,6 +2655,48 @@ class BioCorePlugin(Star):
             pass
         return None
 
+    def _find_global_duplicate_event(self, event_key: str, body: str, ts: float):
+        """Cross-session event identity: same normalized key + body within window."""
+        try:
+            if not EVENT_ARCHIVE_PATH.exists():
+                return None
+            event_key = self._normalize_event_key(str(event_key or ""), "")
+            lines = EVENT_ARCHIVE_PATH.read_text(encoding="utf-8").splitlines()
+            for line in reversed(lines[-200:]):
+                try:
+                    prev = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(prev, dict):
+                    continue
+                prev_key = self._normalize_event_key(
+                    str(prev.get("event_key") or prev.get("title") or ""),
+                    str(prev.get("title") or ""))
+                if not prev_key:
+                    continue
+                try:
+                    gap = abs(float(ts) - float(prev.get("ts", 0) or 0))
+                except Exception:
+                    gap = 0.0
+                if gap > EVENT_DUP_WINDOW_SECONDS:
+                    continue
+                if prev_key == event_key:
+                    return prev
+                if self._text_similarity(prev_key, event_key) >= EVENT_KEY_SIM_THRESHOLD:
+                    if self._text_similarity(str(body or ""),
+                                             str(prev.get("event") or "")) >= 0.45:
+                        return prev
+        except Exception:
+            pass
+        return None
+
+    def _find_any_duplicate_event(self, session: str, event_key: str, body: str, ts: float):
+        """Same-session duplicate first, then cross-session global duplicate."""
+        prev = self._find_duplicate_event(session, event_key, body, ts)
+        if prev is not None:
+            return prev
+        return self._find_global_duplicate_event(event_key, body, ts)
+
     def _merge_archive_duplicate(self, prev: dict, record: dict) -> None:
         """Merge a duplicate event into the existing archive row atomically."""
         try:
@@ -2777,8 +2850,8 @@ class BioCorePlugin(Star):
                         "latest_ts": round(_valid_ts[-1], 3),
                         "source_count": len(texts),
                     }
-                _dup = self._find_duplicate_event(record.get("session") or "", _ekey, _body,
-                                                  record.get("ts") or time.time())
+                _dup = self._find_any_duplicate_event(record.get("session") or "", _ekey, _body,
+                                                     record.get("ts") or time.time())
                 if _dup is not None:
                     record["duplicate_of"] = str(_dup.get("id") or "")
                     self._merge_archive_duplicate(_dup, record)
@@ -2848,8 +2921,8 @@ class BioCorePlugin(Star):
                 "strength": round(max(0.5, min(1.0, intensity)), 3),
                 "source_texts": texts[:12],
             }
-            _dup = self._find_duplicate_event(record.get("session") or "", _ekey, ev,
-                                              record.get("ts") or time.time())
+            _dup = self._find_any_duplicate_event(record.get("session") or "", _ekey, ev,
+                                                 record.get("ts") or time.time())
             if _dup is not None:
                 record["duplicate_of"] = str(_dup.get("id") or "")
                 self._merge_archive_duplicate(_dup, record)
@@ -3521,6 +3594,11 @@ class BioCorePlugin(Star):
             "proactive_reply": self.proactive_reply,
             "memory_dedup_embedding": self.memory_dedup_embedding,
             "cross_session_memory": bool(getattr(self, "cross_session_memory", False)),
+            "sensitive_memory_protection": bool(
+                getattr(self, "sensitive_memory_protection", True)),
+            "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
+            "llm_memory_candidates": bool(
+                getattr(self, "llm_memory_candidates", True)),
             "persona_loaded": bool(self.persona_text),
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
@@ -3567,7 +3645,8 @@ class BioCorePlugin(Star):
         data = await request.get_json(silent=True) or {}
         key = str(data.get("key") or "").strip()
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
-                       "cross_session_memory"):
+                       "cross_session_memory", "sensitive_memory_protection",
+                       "hybrid_retrieval", "llm_memory_candidates"):
             return {"status": "error", "message": "unknown setting"}
         setattr(self, key, bool(data.get("value")))
         self._save_settings()
@@ -3804,7 +3883,9 @@ class BioCorePlugin(Star):
             return False
 
 
-    def _memory_score(self, core, entry: dict, cosine: float) -> float:
+    def _memory_score(self, core, entry: dict, cosine: float, *,
+                      query_text: str = "", hybrid: bool = False,
+                      sensitive_protect: bool = False) -> float:
         importance = float(entry.get("importance", 0.5) or 0.5)
         age = max(0.0, time.time() - float(entry.get("ts", 0) or 0))
         # ACT-R-style power-law recency rather than pure exponential.
@@ -3846,6 +3927,18 @@ class BioCorePlugin(Star):
         inhibition = memory_meta.retrieval_inhibition(entry)
         regulation = str(getattr(core, "regulation", "none") or "none") if core is not None else "none"
         regulation_mod = memory_meta.regulation_memory_modifier(entry, regulation)
+        # Hybrid lexical half (no LLM): exact tokens surface even when the
+        # embedding provider is weak; MMR diversification happens in select_top.
+        lexical_mod = 1.0
+        if hybrid and query_text:
+            try:
+                lexical_mod = 1.0 + 0.12 * memory_meta.lexical_overlap(
+                    query_text, str(entry.get("text") or ""))
+            except Exception:
+                lexical_mod = 1.0
+        sensitive_mod = 1.0
+        if sensitive_protect:
+            sensitive_mod = memory_meta.sensitivity_weight(entry)
         # Causal chain: cosine relevance * biological salience/recency *
         # source/confidence/tier weight -> recall threshold and ranking.
         return (cosine * (0.40 + 0.60 * importance) * recency
@@ -3857,7 +3950,9 @@ class BioCorePlugin(Star):
                 * memory_meta.retrieval_weight(entry)
                 * (1.0 + 0.10 * schema)
                 * (1.0 - 0.15 * inhibition)
-                * regulation_mod)
+                * regulation_mod
+                * lexical_mod
+                * sensitive_mod)
 
     def _memory_top_k(self, core) -> int:
         k = 4
@@ -3995,6 +4090,8 @@ class BioCorePlugin(Star):
                     logger.warning("[biocore] memory summary failed: %s", exc)
                 summary = str(payload.get("summary") or "")
                 candidates = payload.get("candidates") or []
+                if not getattr(self, "llm_memory_candidates", True):
+                    candidates = []
                 if not summary:
                     continue
                 vec = await self._embed_text(summary)
@@ -4026,6 +4123,7 @@ class BioCorePlugin(Star):
                 }
                 _summary_source = "inferred"
                 _summary_conf = memory_meta.initial_confidence(_summary_source, importance)
+                _summary_sens = memory_meta.classify_sensitivity(summary)
                 entries.append({"id": _sum_id, "text": summary[:1200], "role": "summary",
                                 "vector": vec, "ts": now, "hits": 1,
                                 "importance": importance, "last_used": now,
@@ -4038,7 +4136,10 @@ class BioCorePlugin(Star):
                                 "self_defining": False, "inhibition": 0.0,
                                 "suppression_count": 0,
                                 "encoding_regulation": str(getattr(core, "regulation", "none") or "none"),
-                                "encoding_emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")})
+                                "encoding_emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral"),
+                                "sensitive": bool(_summary_sens.get("sensitive")),
+                                "pii_types": list(_summary_sens.get("types") or []),
+                                "sensitivity": float(_summary_sens.get("score") or 0.0)})
                 memory_meta.append_write_log(doc, op="ADD", entry_id=_sum_id,
                                              reason="summary", ts=now)
                 # LLM proposes candidate facts; the deterministic policy here
@@ -4168,6 +4269,14 @@ class BioCorePlugin(Star):
                 entry["encoding_arousal"] = round(float(getattr(core, "a", 0.5) or 0.5), 3)
             except Exception:
                 pass
+        try:
+            sensitivity = memory_meta.classify_sensitivity(
+                text or str(entry.get("text") or ""))
+            entry["sensitive"] = bool(sensitivity.get("sensitive"))
+            entry["pii_types"] = list(sensitivity.get("types") or [])
+            entry["sensitivity"] = float(sensitivity.get("score") or 0.0)
+        except Exception:
+            pass
         entry.setdefault("inhibition", 0.0)
         entry.setdefault("suppression_count", 0)
 
@@ -4361,7 +4470,10 @@ class BioCorePlugin(Star):
             if self._restabilize_if_expired(e, now):
                 _just_restabilized.add(id(e))
             cosine = self._cosine(vec, e.get("vector") or [])
-            score = self._memory_score(core, e, cosine)
+            score = self._memory_score(
+                core, e, cosine, query_text=text,
+                hybrid=bool(getattr(self, "hybrid_retrieval", True)),
+                sensitive_protect=bool(getattr(self, "sensitive_memory_protection", True)))
             retrieval_pairs.append((e, cosine))
             if cosine >= 0.93:
                 duplicate = e
@@ -4491,7 +4603,9 @@ class BioCorePlugin(Star):
         self._save_memory(event, doc)
         self._schedule_consolidation(event, core)
         scored.sort(key=lambda x: x[0], reverse=True)
-        top = memory_meta.select_top(scored, self._memory_top_k(core))
+        top = memory_meta.select_top(
+            scored, self._memory_top_k(core),
+            lambda_=(0.72 if getattr(self, "hybrid_retrieval", True) else 1.0))
         # Nader reconsolidation + Ebbinghaus review: recalling an item makes
         # it labile, strengthens it slightly, and schedules the next review.
         _intervals = [1, 2, 4, 7, 15, 30, 60]
@@ -4562,6 +4676,9 @@ class BioCorePlugin(Star):
                     _etext = str(_entry.get("text") or "").strip()
                     if not _etext or _etext in _known_texts:
                         continue
+                    if _entry.get("sensitive"):
+                        # Sensitive memories are never promoted across sessions.
+                        continue
                     _evec = _entry.get("vector") or []
                     _ecos = self._cosine(vec, _evec) if _evec else 0.0
                     if _ecos < PARTIAL_MATCH_THRESHOLD:
@@ -4608,6 +4725,8 @@ class BioCorePlugin(Star):
                 if who:
                     role = who
             snippet = str(e.get("text", "")).strip().replace("\n", " ")
+            if snippet and getattr(self, "sensitive_memory_protection", True) and e.get("sensitive"):
+                snippet = memory_meta.mask_sensitive(snippet)
             if snippet:
                 lines.append("- %s：%s" % (role, snippet[:240]))
         lines.extend(_foreign_lines)

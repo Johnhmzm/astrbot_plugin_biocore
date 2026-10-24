@@ -63,6 +63,14 @@ __all__ = [
     "CANDIDATE_MAX",
     "CANDIDATE_MAX_CONFIDENCE",
     "apply_memory_candidate",
+    "SENSITIVE_MASK",
+    "classify_sensitivity",
+    "mask_sensitive",
+    "sensitivity_weight",
+    "lexical_overlap",
+    "hybrid_similarity",
+    "mmr_select",
+    "update_goal_priority",
 ]
 
 SOURCE_RANK = {
@@ -316,11 +324,13 @@ def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> No
     entry["previous_versions"] = versions[-max(1, int(limit)):]
 
 
-def select_top(scored: Any, k: Any, *, cold_budget: int = 2) -> list:
+def select_top(scored: Any, k: Any, *, cold_budget: int = 2,
+               lambda_: float = 1.0) -> list:
     """Select top memories with a small cold-tier budget.
 
     Hot/warm entries are preferred; cold entries fill remaining slots up to
-    cold_budget. This is a read budget, not an eviction.
+    cold_budget. This is a read budget, not an eviction. lambda_<1 applies
+    MMR diversification to the selected set (same membership, reordered).
     """
     try:
         limit = max(0, int(k))
@@ -339,6 +349,16 @@ def select_top(scored: Any, k: Any, *, cold_budget: int = 2) -> list:
             cold.append(item)
         else:
             warm_or_better.append(item)
+    try:
+        lam = float(lambda_ if lambda_ is not None else 1.0)
+    except Exception:
+        lam = 1.0
+    if lam < 1.0 and len(warm_or_better) > limit:
+        # MMR over a bounded pool (limit*3) so membership can change while the
+        # per-turn cost stays small; tier/cold budget below is unchanged.
+        pool_size = max(limit * 3, limit + 2)
+        pool = warm_or_better[:pool_size]
+        warm_or_better = mmr_select(pool, len(pool), lambda_=lam)
     selected = warm_or_better[:limit]
     remaining = max(0, limit - len(selected))
     selected.extend(cold[:min(remaining, max(0, int(cold_budget)))])
@@ -1305,3 +1325,177 @@ def resolve_open_loops(loops: Any, text: Any, now: float | None = None) -> int:
             loop["resolved_ts"] = round(current, 3)
             changed += 1
     return changed
+
+
+# ---------------------------------------------------------------------------
+# Sensitive / PII memory protection (deterministic, no LLM)
+# ---------------------------------------------------------------------------
+SENSITIVE_MASK = "•••"
+_PII_PATTERNS = (
+    ("id_card", re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)")),
+    ("bank_card", re.compile(r"(?<!\d)\d{16,19}(?!\d)")),
+    ("phone", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")),
+    ("email", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
+    ("ip", re.compile(r"(?<!\d)(?:\d{1,3}\.){3}\d{1,3}(?!\d)")),
+)
+_SENSITIVE_KEYWORDS = {
+    "credential": ("密码", "口令", "token", "api key", "apikey", "密钥", "验证码", "secret"),
+    "address": ("家庭住址", "住址", "门牌", "小区", "详细地址"),
+    "medical": ("医院", "诊断", "处方", "病历", "确诊", "抑郁症", "焦虑症"),
+    "financial": ("工资", "存款", "欠款", "借款", "信用卡", "余额", "还款"),
+    "intimate": ("裸照", "床照", "性行为", "接吻", "私密照"),
+}
+_CREDENTIAL_MASK_RE = re.compile(
+    r"(密码|口令|token|api[_ ]?key|密钥|验证码|secret)[：:=\s]*[^\s，。；;]{1,32}",
+    re.I,
+)
+
+
+def classify_sensitivity(text: Any) -> dict[str, Any]:
+    """Deterministic privacy classification for one memory text.
+
+    Regex patterns cover id/bank/phone/email/ip; keyword buckets cover
+    credentials, address, medical, financial and intimate content. It is a
+    conservative tagger, not a replacement for a real PII detector.
+    """
+    raw = str(text or "")
+    types = []
+    score = 0.0
+    for name, pattern in _PII_PATTERNS:
+        try:
+            if pattern.search(raw):
+                types.append(name)
+                score += 0.35
+        except Exception:
+            continue
+    for name, words in _SENSITIVE_KEYWORDS.items():
+        if any(word in raw for word in words):
+            types.append(name)
+            score += 0.20
+    deduped = sorted(set(types))
+    return {"sensitive": bool(deduped), "types": deduped,
+            "score": round(min(1.0, score), 3)}
+
+
+def mask_sensitive(text: Any) -> str:
+    """Mask PII/credential values before memory text reaches a prompt."""
+    out = str(text or "")
+    for _name, pattern in _PII_PATTERNS:
+        try:
+            out = pattern.sub(SENSITIVE_MASK, out)
+        except Exception:
+            continue
+    out = _CREDENTIAL_MASK_RE.sub(lambda m: m.group(1) + "：" + SENSITIVE_MASK, out)
+    return out
+
+
+def sensitivity_weight(entry: Any) -> float:
+    """Retrieval weight penalty for sensitive memories (0.7 when tagged)."""
+    if not isinstance(entry, dict):
+        return 1.0
+    return 0.70 if entry.get("sensitive") else 1.0
+
+
+# ---------------------------------------------------------------------------
+# Hybrid lexical retrieval + MMR diversification (deterministic)
+# ---------------------------------------------------------------------------
+def lexical_overlap(query: Any, text: Any) -> float:
+    """Character-bigram overlap used as the lexical half of hybrid recall."""
+    return text_similarity(query, text)
+
+
+def hybrid_similarity(cosine: Any, query: Any, text: Any, *, lexical_weight: float = 0.15) -> float:
+    """Blend embedding cosine with deterministic lexical overlap."""
+    try:
+        emb = _clamp(cosine)
+    except Exception:
+        emb = 0.0
+    lex = lexical_overlap(query, text)
+    weight = max(0.0, min(0.5, float(lexical_weight or 0.0)))
+    return round(max(0.0, min(1.0, (1.0 - weight) * emb + weight * lex)), 4)
+
+
+def mmr_select(scored: Any, limit: Any, *, lambda_: float = 0.72) -> list:
+    """Greedy maximal-marginal-relevance reordering over selected rows.
+
+    Preserves membership (tier/cold-budget logic stays in select_top) and
+    only reorders for diversity: lambda=1 -> pure relevance, lower -> fewer
+    near-duplicate memories in the top-k.
+    """
+    if not isinstance(scored, list):
+        return []
+    try:
+        k = max(0, int(limit))
+    except Exception:
+        k = 0
+    if k <= 0:
+        return []
+    pool = []
+    for item in scored:
+        if not isinstance(item, (tuple, list)) or len(item) < 2:
+            continue
+        entry = item[1]
+        if not isinstance(entry, dict):
+            continue
+        try:
+            rel = float(item[0])
+        except Exception:
+            rel = 0.0
+        pool.append((rel, entry))
+    lam = max(0.0, min(1.0, float(lambda_ if lambda_ is not None else 0.72)))
+    selected = []
+    while pool and len(selected) < k:
+        best_index = None
+        best_value = None
+        for index, (rel, entry) in enumerate(pool):
+            redundancy = 0.0
+            if selected:
+                try:
+                    redundancy = max(lexical_overlap(str(entry.get("text", "")),
+                                                     str(other.get("text", "")))
+                                    for _rel, other in selected)
+                except Exception:
+                    redundancy = 0.0
+            value = lam * rel - (1.0 - lam) * redundancy * max(0.1, rel)
+            if best_value is None or value > best_value:
+                best_value = value
+                best_index = index
+        if best_index is None:
+            break
+        selected.append(pool.pop(best_index))
+    return selected[:k]
+
+
+# ---------------------------------------------------------------------------
+# Goal priority learning (deterministic EMA)
+# ---------------------------------------------------------------------------
+def update_goal_priority(goal: Any, *, hit: bool = True, relevance: Any = 0.5,
+                        now: float | None = None) -> float:
+    """Bounded priority learning for one goal (no LLM).
+
+    A hit moves priority toward 0.55+0.45*relevance; a non-hit decays slowly,
+    so repeated evidence raises a goal and neglect lowers it. Values stay in
+    [0.2, 0.98] to avoid brittle hard 0/1 priorities.
+    """
+    if not isinstance(goal, dict):
+        return 0.5
+    try:
+        current = float(goal.get("priority", 0.5) or 0.5)
+    except Exception:
+        current = 0.5
+    try:
+        rel = _clamp(relevance)
+    except Exception:
+        rel = 0.5
+    if hit:
+        target = min(0.98, 0.55 + 0.45 * rel)
+        current = current * 0.88 + target * 0.12
+    else:
+        current = current * 0.985
+    current = max(0.20, min(0.98, current))
+    goal["priority"] = round(current, 4)
+    try:
+        goal["last_update"] = round(float(now if now is not None else time.time()), 3)
+    except Exception:
+        goal["last_update"] = round(time.time(), 3)
+    return goal["priority"]
