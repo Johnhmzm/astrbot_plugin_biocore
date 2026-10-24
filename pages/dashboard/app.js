@@ -819,13 +819,11 @@
       if(chk) chk.checked=cfg.enabled===true;
       if(sel){
         const vision = name==="image_caption";
-        const filtered = provs.filter(p=>{
-          const t=String((p&&p.type)||"").toLowerCase();
-          if(vision) return t.includes("img")||t.includes("image")||t.includes("vision");
-          return !(t.includes("embedding")||t.includes("tts")||t.includes("rerank")||t.includes("img")||t.includes("image")||t.includes("vision"));
-        });
-        const options = filtered.length ? filtered : provs;
-        sel.innerHTML='<option value="follow_llm">跟随主 LLM</option>'+options.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.model||p.id||""))+'</option>').join("");
+        const filtered = provs.filter(p=> vision ? _providerKind(p)==="vision" : _providerKind(p)==="chat");
+        const options = filtered.length ? filtered
+          : (vision ? [] : provs.filter(p=>_providerKind(p)!=="vision"));
+        const followLabel = vision ? "跟随图片 API（默认视觉 provider）" : "跟随主 LLM";
+        sel.innerHTML='<option value="follow_llm">'+followLabel+'</option>'+options.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.model||p.id||""))+'</option>').join("");
         sel.value=String(cfg.provider||"follow_llm");
       }
     });
@@ -1371,7 +1369,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.41";
+  const BIO_VERSION = "v1.2.42";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

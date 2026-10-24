@@ -1506,7 +1506,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.41")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.42")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2940,11 +2940,134 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] duplicate merge failed: %s", exc)
 
+    async def _archive_ranked_events_deterministic(self, event, core, entries):
+        """Deterministic event candidate generation + embedding ranking.
+
+        Used when the LLM event_ranking function is off (the default): split
+        recent messages into event segments, score them with importance /
+        self-schema congruence / embedding novelty / commitment cues, and
+        archive the top candidates. The LLM is still optional via event_summary.
+        """
+        try:
+            segments = self._segment_event_texts(entries)
+            if not segments:
+                return
+            now = time.time()
+            recent_events = self._event_archive(10)
+            candidates = []
+            for seg_texts in segments:
+                seg_text = "\n".join(str(t) for t in seg_texts if str(t).strip()).strip()
+                if len(seg_text) < 8:
+                    continue
+                seg_set = {str(t).strip() for t in seg_texts if str(t).strip()}
+                seg_entries = [e for e in entries
+                               if str(e.get("text", "")).strip() in seg_set]
+                imp = 0.5
+                vecs = []
+                for e in seg_entries:
+                    try:
+                        imp = max(imp, float(e.get("importance", 0.5) or 0.5))
+                    except Exception:
+                        pass
+                    _v = e.get("vector") if isinstance(e.get("vector"), list) else []
+                    if _v:
+                        vecs.append(_v)
+                try:
+                    schema = memory_meta.schema_congruence(
+                        seg_text, self._self_schema_texts(core))
+                except Exception:
+                    schema = 0.0
+                vec = []
+                if vecs:
+                    try:
+                        dim = len(vecs[0])
+                        vec = [sum(float(v[i]) for v in vecs if i < len(v)) / len(vecs)
+                               for i in range(dim)]
+                    except Exception:
+                        vec = []
+                if not vec:
+                    try:
+                        vec = await self._embed_text(seg_text[:600])
+                    except Exception:
+                        vec = []
+                novelty = 0.6
+                max_cos = 0.0
+                for ev in recent_events:
+                    _ev = ev.get("event_embedding") if isinstance(ev, dict) else None
+                    if isinstance(_ev, list) and _ev:
+                        max_cos = max(max_cos, self._cosine(vec, _ev))
+                if vec and max_cos > 0:
+                    novelty = max(0.0, min(1.0, 1.0 - max_cos))
+                cues = sum(1 for w in ("承诺", "答应", "喜欢", "讨厌", "对不起", "谢谢",
+                                        "以后", "永远", "骗", "害怕", "难过", "别")
+                           if w in seg_text)
+                cue_score = min(1.0, cues / 3.0)
+                score = 0.35 * imp + 0.25 * schema + 0.20 * novelty + 0.20 * cue_score
+                if imp < 0.55 or score < 0.45:
+                    continue
+                candidates.append((score, seg_text, seg_entries, vec, schema, imp))
+            candidates.sort(key=lambda x: x[0], reverse=True)
+            for score, body, seg_entries, vec, schema, imp in candidates[:2]:
+                title = body.replace("\n", " ").strip()[:28] or "对话事件"
+                _ekey = self._normalize_event_key(title, title)
+                prov = self._event_provenance(event, entries, ts=now)
+                check = self._source_check(body, [str(t) for t in seg_entries],
+                                           provenance=prov, record_ts=now)
+                dup = self._find_any_duplicate_event(
+                    str(getattr(event, "unified_msg_origin", "") or ""), _ekey, body, now)
+                if dup is not None:
+                    continue
+                _imp = round(max(0.55, min(1.0, imp * 0.7 + score * 0.3)), 3)
+                record = {
+                    "id": "evt_" + str(int(now)) + "_" + str(abs(hash(title + body)) % 100000),
+                    "ts": now,
+                    "session": str(getattr(event, "unified_msg_origin", "") or ""),
+                    "title": title,
+                    "event": body[:600],
+                    "event_key": _ekey,
+                    "centrality": round(max(0.0, min(1.0, schema)), 3),
+                    "central_details": body[:400],
+                    "peripheral_details": "",
+                    "meaning_to_her": "",
+                    "reflection": "",
+                    "emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral") if core else "neutral",
+                    "importance": _imp,
+                    "appraisal": dict(core.appraisal) if core is not None else {},
+                    "confidence": round(max(0.2, min(1.0, 0.55 + 0.45 * float(check.get("overlap", 0)))), 3),
+                    "source_count": len(seg_entries),
+                    "source_check": check,
+                    "provenance": prov,
+                    "attachments": [],
+                    "modalities": [],
+                    "recall_count": 0,
+                    "last_recall": now,
+                    "strength": _imp,
+                    "source_texts": list(seg_texts)[:12],
+                    "ranking_mode": "deterministic_embedding",
+                }
+                if vec:
+                    record["event_embedding"] = [round(float(x), 5) for x in vec]
+                try:
+                    times = [float(e.get("ts", 0) or 0) for e in seg_entries]
+                    times = [t for t in times if t > 0]
+                    if times:
+                        record["time_span"] = {"start_ts": round(min(times), 3),
+                                               "end_ts": round(max(times), 3),
+                                               "span_seconds": round(max(times) - min(times), 3)}
+                except Exception:
+                    pass
+                self._append_event_archive(record)
+                logger.info("[biocore] deterministic event archived: %s score=%.2f", title, score)
+        except Exception as exc:
+            logger.warning("[biocore] deterministic event ranking failed: %s", exc)
+
     async def _archive_ranked_events(self, event, core, entries):
         if not entries:
             return
         if not self._llm_allowed("event_ranking"):
-            # Per-function switch: only the enabled functions call the LLM.
+            # No LLM ranking: keep the event pipeline alive with deterministic
+            # segment generation + embedding/novelty/salience ranking.
+            await self._archive_ranked_events_deterministic(event, core, entries)
             return
         try:
             provider = await self._provider_for("event_ranking", event)
