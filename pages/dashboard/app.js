@@ -799,8 +799,8 @@
     const cores=data.cores||[]; $("sessionCount").textContent=cores.length+" SESSIONS";
     $("sessionList").innerHTML=cores.length?cores.map(c=>{const i=c.intent||{},ss=c.snapshot||{};return '<div class="session"><div class="session-name" title="'+esc(c.key)+'">'+esc(c.key)+'</div><div class="session-state">'+esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t</div></div>";}).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
     try{applyApiConfig();}catch(e){}
-    try{applyPersonaSelect();}catch(e){}
-    try{applyLlmFunctions();}catch(e){}
+    try{applyPersonaSelect();}catch(e){ if(window.console&&console.warn) console.warn('[biocore] applyPersonaSelect failed:',e); }
+    try{applyLlmFunctions();}catch(e){ if(window.console&&console.warn) console.warn('[biocore] applyLlmFunctions failed:',e); }
   }
   function applyPersonaSelect(){
     const sel=$("personaSelect"); if(!sel) return;
@@ -808,6 +808,14 @@
     const cur=String(data.persona_id||"");
     sel.innerHTML='<option value="">跟随默认人设</option>'+ps.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.name||p.id||""))+'</option>').join("");
     sel.value=cur;
+  }
+  function _providerKind(p){
+    const s=(((p&&p.id)||"")+" "+((p&&p.model)||"")+" "+((p&&p.type)||"")).toLowerCase();
+    if(/(img|image|vision|t2i|dall|stable|midjourney|exusiai-img)/.test(s)) return "vision";
+    if(/(tts|speech|voice)/.test(s)) return "tts";
+    if(/(embed|bge|text-embedding)/.test(s)) return "embedding";
+    if(/rerank/.test(s)) return "rerank";
+    return "chat";
   }
   function applyLlmFunctions(){
     const fns=(data&&data.llm_functions)||{};
@@ -1369,7 +1377,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.43";
+  const BIO_VERSION = "v1.2.44";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
