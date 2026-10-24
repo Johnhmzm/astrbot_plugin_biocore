@@ -723,7 +723,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.3";
+  const BIO_VERSION = "v1.2.4";
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
   let giteeRepo = String(storeGet(GITEE_KEY, "johnhim/astrbot_plugin_biocore") || "").trim();
