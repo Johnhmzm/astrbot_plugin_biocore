@@ -1447,7 +1447,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.21")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.22")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1580,31 +1580,13 @@ class BioCorePlugin(Star):
             if provider is None:
                 self.profile = dict(DEFAULT_PROFILE)
                 return
-            system = "你是人格参数编译器。只输出 JSON，不要解释。"
-            prompt = text + """
-
-返回 JSON：
-{"O":0-1,"C":0-1,"E":0-1,"A":0-1,"N":0-1,
- "stress_reactivity":0-1,"recovery_rate":0-1,
- "social_baseline":0-1,"energy_baseline":0-1,
- "curiosity_baseline":0-1,"safety_baseline":0-1,
- "da_baseline":0-1,"oa_baseline":0-1,"ht_baseline":0-1,
- "autonomy_gain":0-1.5,"baseline_v":-1..1,"baseline_a":0-1,
- "learning_rate":0.01-0.12}
-只输出 JSON。"""
+            # Prompt construction and output validation belong to the
+            # interpretation layer; this wiring only calls it.
+            system = interpretation.persona_compile_system()
+            prompt = interpretation.persona_compile_prompt(text)
             resp = await provider.text_chat(prompt=prompt, system_prompt=system)
             raw = str(getattr(resp, "completion_text", "") or "")
-            lo, hi = raw.find("{"), raw.rfind("}")
-            if lo >= 0 and hi > lo:
-                data = json.loads(raw[lo:hi + 1])
-                merged = dict(DEFAULT_PROFILE)
-                for k in merged:
-                    if k in data:
-                        merged[k] = _clip(data[k], -1 if k == "baseline_v" else 0,
-                                          1.5 if k == "autonomy_gain" else 1)
-                self.profile = merged
-            else:
-                self.profile = dict(DEFAULT_PROFILE)
+            self.profile = interpretation.parse_persona_profile(raw, DEFAULT_PROFILE)
         except Exception as exc:
             logger.warning("[biocore] persona compile failed: %s", exc)
             self.profile = dict(DEFAULT_PROFILE)
@@ -2272,9 +2254,7 @@ class BioCorePlugin(Star):
             prompt = interpretation.insight_prompt(events)
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
-            m = re.search(r"\{.*\}", raw, re.S)
-            data = json.loads(m.group(0)) if m else {}
-            insight = str(data.get("insight") or "").strip()[:500]
+            insight = interpretation.parse_insight(raw)
             if insight:
                 self._append_insight({"ts": time.time(), "insight": insight,
                                       "emotion": str(core.labels.get("emotion") or "neutral") if core else "neutral"})
@@ -2695,11 +2675,8 @@ class BioCorePlugin(Star):
             prompt = interpretation.event_ranking_prompt(texts)
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
-            m = re.search(r"\[.*\]", raw, re.S)
-            if not m:
-                return
-            items = json.loads(m.group(0))
-            if not isinstance(items, list):
+            items = interpretation.parse_event_ranking(raw)
+            if not items:
                 return
             ranked = []
             for ev in items:
@@ -2807,8 +2784,7 @@ class BioCorePlugin(Star):
             prompt = interpretation.event_summary_prompt(texts)
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
-            m = re.search(r"\{.*\}", raw, re.S)
-            data = json.loads(m.group(0)) if m else {}
+            data = interpretation.parse_event_summary(raw)
             title = str(data.get("title") or summary or "重要事件").strip()[:80]
             ev = str(data.get("event") or summary or "").strip()[:600]
             meaning = str(data.get("meaning_to_her") or "").strip()[:400]
@@ -2897,14 +2873,15 @@ class BioCorePlugin(Star):
                 cfg = self.context.get_config()
                 provider_settings = cfg.get("provider_settings", {}) if isinstance(cfg, dict) else {}
                 provider_id = str(provider_settings.get("default_image_caption_provider_id") or "exusiai-img")
-                prompt = str(provider_settings.get("image_caption_prompt") or
-                             "请客观描述这张图片，供角色扮演聊天使用。")
+                prompt = interpretation.image_caption_prompt(
+                    provider_settings.get("image_caption_prompt"))
                 provider = self.context.get_provider_by_id(provider_id)
                 if provider is not None:
                     for ref in missing[:3]:
                         try:
                             resp = await provider.text_chat(prompt=prompt, image_urls=[ref])
-                            caption = str(getattr(resp, "completion_text", "") or "").strip()
+                            caption = interpretation.parse_image_caption(
+                                str(getattr(resp, "completion_text", "") or ""))
                         except Exception as exc:
                             logger.warning("[biocore] image caption failed: %s", exc)
                             caption = ""
@@ -3908,11 +3885,11 @@ class BioCorePlugin(Star):
                 texts = [str(entries[i].get("text", "")).strip() for i in group if str(entries[i].get("text", "")).strip()]
                 if len(texts) < 2:
                     continue
-                prompt = ("把下面这些长期记忆合并成一条不超过 180 字的中文摘要。"
-                          "保留人物、关系、偏好、承诺、事件和情绪变化；不要编造；只输出摘要。\n\n" + "\n".join("- " + t[:500] for t in texts))
+                prompt = interpretation.memory_summary_prompt(texts)
                 try:
                     resp = await provider.text_chat(prompt=prompt)
-                    summary = str(getattr(resp, "completion_text", "") or "").strip()
+                    summary = interpretation.parse_memory_summary(
+                        str(getattr(resp, "completion_text", "") or ""))
                 except Exception as exc:
                     logger.warning("[biocore] memory summary failed: %s", exc)
                     summary = ""
@@ -3945,10 +3922,23 @@ class BioCorePlugin(Star):
                         "message_refs": list(_p.get("message_refs") or [])[:6],
                     } for _p in _src_prov][-24:],
                 }
-                entries.append({"text": summary[:1200], "role": "summary", "vector": vec,
-                                "ts": now, "hits": 1, "importance": importance,
-                                "last_used": now, "summary_id": _sum_id,
-                                "provenance": _summary_prov})
+                _summary_source = "inferred"
+                _summary_conf = memory_meta.initial_confidence(_summary_source, importance)
+                entries.append({"id": _sum_id, "text": summary[:1200], "role": "summary",
+                                "vector": vec, "ts": now, "hits": 1,
+                                "importance": importance, "last_used": now,
+                                "summary_id": _sum_id, "provenance": _summary_prov,
+                                "memory_source": _summary_source,
+                                "memory_confidence": _summary_conf,
+                                "memory_tier": "warm", "conflict": False,
+                                "last_write_op": "ADD", "last_write_ts": now,
+                                "write_ops": {"ADD": 1}, "schema_congruence": 0.0,
+                                "self_defining": False, "inhibition": 0.0,
+                                "suppression_count": 0,
+                                "encoding_regulation": str(getattr(core, "regulation", "none") or "none"),
+                                "encoding_emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")})
+                memory_meta.append_write_log(doc, op="ADD", entry_id=_sum_id,
+                                             reason="summary", ts=now)
                 changed = True
             if changed:
                 await self._archive_ranked_events(event, core, entries)
@@ -4276,8 +4266,9 @@ class BioCorePlugin(Star):
         _gate = str(self._last_memory_meta.get("gate") or "none")
         lines = []
         for score, e in top:
-            role = "用户" if e.get("role") != "assistant" else "你"
-            if e.get("role") != "assistant":
+            _entry_role = str(e.get("role") or "user")
+            role = "你(已总结)" if _entry_role == "summary" else ("你" if _entry_role == "assistant" else "用户")
+            if _entry_role not in ("assistant", "summary"):
                 who = str(e.get("sender_name") or e.get("sender_id") or "").strip()
                 if who:
                     role = who
@@ -4423,6 +4414,13 @@ class BioCorePlugin(Star):
             _speaker,
             _voice,
             memory_meta=getattr(self, "_last_memory_meta", {}) or {},
+            open_loops=getattr(core, "open_loops", None),
+            open_loops_due=sum(
+                1 for _loop in (getattr(core, "open_loops", None) or [])
+                if isinstance(_loop, dict)
+                and str(_loop.get("status") or "open") == "open"
+                and str(_loop.get("due_hint") or "") in ("soon", "tomorrow")),
+            answer_confidence=(getattr(self, "_last_memory_meta", {}) or {}).get("answer_confidence"),
         ).strip()
         if _compact:
             # Keep the system prompt stable (prefix-cache friendly) and attach
