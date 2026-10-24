@@ -83,7 +83,7 @@
   const shortSession=(v)=>{const t=String(v||"");return t.length>36?t.slice(0,33)+"…":t;};
   function storeGet(k, fallback){ try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch (e) { return fallback; } }
   function storeSet(k, v){ try { localStorage.setItem(k, String(v)); } catch (e) {} }
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","0")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -290,6 +290,11 @@
         if(!e||typeof e!=="object") return;
         const text=String(e.text||"").trim();
         if(!text) return;
+        // Balls are generated only AFTER consolidation/summarization: raw
+        // per-turn memories do not become balls; summarized originals and the
+        // summary rows (role=summary) do.
+        const role=String(e.role||"");
+        if(!(e.summarized===true || role==="summary")) return;
         out.push({
           _kind:"memory", id:String(e.id||text.slice(0,12)),
           title:text.slice(0,28), event:text.slice(0,140),
@@ -302,6 +307,7 @@
           memory_source:String(e.memory_source||""),
           memory_confidence:e.memory_confidence==null?null:Number(e.memory_confidence),
           last_recall:Number(e.last_used||e.ts||0),
+          summarized:true, role:role,
         });
       });
     });
@@ -318,10 +324,18 @@
   }
   function updateOrbLegend(){
     if(!$("orbMemLegend")) return;
+    if(!visual.memoryNodes){
+      $("orbMemLegend").textContent="中心球 = 当前情绪球（只有一个）· 记忆节点已关闭，可在 设置 → 球体图层 开启";
+      return;
+    }
     const st=window.__biocoreState||{};
     const all=Array.isArray(st.memories)?st.memories:[];
     const shown=importantMemoryBalls(all).slice(0,10);
-    const suffix=visual.memoryBallsImportant?"仅重要记忆（重要度≥0.60 或自指）":"全部记忆（最多 10）";
+    if(!shown.length){
+      $("orbMemLegend").textContent="还没有总结后的记忆球：记忆经过巩固/总结后才生成（设置 → 记忆与隐私 可“立即压缩”触发）";
+      return;
+    }
+    const suffix=visual.memoryBallsImportant?"总结后重要记忆（重要度≥0.60 或自指）":"总结后记忆（最多 10）";
     $("orbMemLegend").textContent="记忆球 ×"+shown.length+"："+suffix+" · 球大小=重要度 · 外环数=情绪强度 · 悬停查看";
   }
   function normMemEntry(e){
@@ -1202,7 +1216,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.28";
+  const BIO_VERSION = "v1.2.29";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
