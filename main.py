@@ -1245,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.13")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.14")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3663,6 +3663,7 @@ class BioCorePlugin(Star):
             self._consolidating = False
 
     async def _memory_recall(self, event, text: str, core=None, extra: str = "", vec=None, voice: str = "") -> str:
+        self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown", "abstain": False, "tiers": {}}
         if not self.memory_dedup_embedding or not self._usable_memory_text(text):
             return ""
         if vec is None:
@@ -3715,8 +3716,17 @@ class BioCorePlugin(Star):
             )
             if not isinstance(duplicate.get("destination"), dict):
                 duplicate["destination"] = memory_meta.build_destination(_sid, _sname)
+            _conflict = memory_meta.detect_conflict(duplicate.get("text", ""), text)
+            if _conflict:
+                memory_meta.merge_version(duplicate, str(duplicate.get("text", "")))
+                duplicate["conflict"] = True
+                try:
+                    duplicate["memory_confidence"] = min(float(duplicate.get("memory_confidence", 0.5) or 0.5), 0.55)
+                except Exception:
+                    duplicate["memory_confidence"] = 0.55
+            duplicate["memory_tier"] = memory_meta.memory_tier(duplicate, now)
             _write_op = memory_meta.classify_write_op(
-                duplicate, {"text": text[:1200]}, 1.0, conflict=bool(duplicate.get("conflict"))
+                duplicate, {"text": text[:1200]}, 1.0, conflict=_conflict or bool(duplicate.get("conflict"))
             )
             duplicate["last_write_op"] = _write_op
             _ops = duplicate.get("write_ops") if isinstance(duplicate.get("write_ops"), dict) else {}
@@ -3739,6 +3749,7 @@ class BioCorePlugin(Star):
                             "conflict": False,
                             "last_write_op": "ADD",
                             "write_ops": {"ADD": 1},
+                            "memory_tier": "hot",
                             "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
             self._trim_memory(doc, core)
         self._save_memory(event, doc)
@@ -3789,6 +3800,30 @@ class BioCorePlugin(Star):
             self._save_memory(event, doc)
         except Exception:
             pass
+        _top_meta = []
+        for _score, e in top:
+            try:
+                _top_meta.append({
+                    "source": memory_meta.normalize_source(e.get("memory_source")),
+                    "confidence": float(e.get("memory_confidence", 0.6) or 0.6),
+                    "tier": e.get("memory_tier") or memory_meta.memory_tier(e, now),
+                })
+            except Exception:
+                pass
+        if _top_meta:
+            _avg_conf = sum(float(x.get("confidence", 0.0)) for x in _top_meta) / len(_top_meta)
+            _src = memory_meta.source_precedence(*(x.get("source") for x in _top_meta))
+            _tiers = {}
+            for x in _top_meta:
+                t = str(x.get("tier") or "cold")
+                _tiers[t] = int(_tiers.get(t, 0) or 0) + 1
+            self._last_memory_meta = {
+                "count": len(_top_meta),
+                "confidence": round(max(0.0, min(1.0, _avg_conf)), 4),
+                "source": _src,
+                "abstain": memory_meta.should_abstain(_avg_conf, _src),
+                "tiers": _tiers,
+            }
         lines = []
         for score, e in top:
             role = "用户" if e.get("role") != "assistant" else "你"
@@ -3928,6 +3963,7 @@ class BioCorePlugin(Star):
             _kb,
             _speaker,
             _voice,
+            memory_meta=getattr(self, "_last_memory_meta", {}) or {},
         ).strip()
         if _compact:
             # Keep the system prompt stable (prefix-cache friendly) and attach

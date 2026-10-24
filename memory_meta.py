@@ -143,7 +143,8 @@ def retrieval_weight(entry: dict[str, Any] | None) -> float:
         conf = _clamp(entry.get("memory_confidence", 0.7))
     except Exception:
         conf = 0.7
-    return round((0.85 + 0.15 * conf) * source_weight, 4)
+    tier_weight = {"hot": 1.03, "warm": 1.0, "cold": 0.97}.get(str(entry.get("memory_tier") or "warm"), 1.0)
+    return round((0.85 + 0.15 * conf) * source_weight * tier_weight, 4)
 
 
 def should_abstain(
@@ -191,6 +192,52 @@ def classify_write_op(
     if sim >= 0.72:
         return "UPDATE"
     return "ADD"
+
+
+def memory_tier(entry: dict[str, Any] | None, now: float | None = None) -> str:
+    """Cheap deterministic hot/warm/cold tier for read-budget experiments."""
+    if not isinstance(entry, dict):
+        return "cold"
+    try:
+        import time
+        current = float(now if now is not None else time.time())
+        ts = float(entry.get("ts", 0) or 0)
+        age_days = max(0.0, (current - ts) / 86400.0)
+        importance = _clamp(entry.get("importance", 0.5))
+        hits = int(entry.get("hits", 0) or 0)
+    except Exception:
+        age_days, importance, hits = 365.0, 0.5, 0
+    if importance >= 0.75 or age_days <= 1.0 or hits >= 3:
+        return "hot"
+    if importance >= 0.45 or age_days <= 14.0:
+        return "warm"
+    return "cold"
+
+
+def detect_conflict(old_text: str, new_text: str) -> bool:
+    """Conservative correction/contradiction heuristic for duplicate writes.
+
+    It only fires on explicit correction markers, not on every negation. This
+    is intentionally conservative: missed updates are safer than silent
+    rewrites.
+    """
+    old = str(old_text or "").strip().lower()
+    new = str(new_text or "").strip().lower()
+    if not old or not new or old == new:
+        return False
+    markers = ("改成", "改为", "其实是", "更正", "纠正", "不是", "不再", "取消", "推迟", "换到", "变成", "update", "correction", "instead")
+    return any(marker in new for marker in markers) and any(ch.isdigit() for ch in new) is False
+
+
+def merge_version(entry: dict[str, Any], old_text: str, *, limit: int = 8) -> None:
+    """Keep a bounded previous-version list for UPDATE/rollback experiments."""
+    if not isinstance(entry, dict) or not old_text:
+        return
+    versions = entry.get("previous_versions")
+    if not isinstance(versions, list):
+        versions = []
+    versions.append(str(old_text)[:800])
+    entry["previous_versions"] = versions[-max(1, int(limit)):]
 
 
 def build_destination(sender_id: Any = "", sender_name: Any = "") -> dict[str, str]:

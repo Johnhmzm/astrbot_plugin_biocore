@@ -147,7 +147,7 @@ def insight_prompt(events) -> str:
 
 
 def render_compact(core, memory="", events="", self_model=None, user=None,
-                   image="", kb="", speaker="", voice="") -> str:
+                   image="", kb="", speaker="", voice="", memory_meta=None) -> str:
     it = core.intent()
     cp = ("[BC] v=%.2f a=%.2f d=%.2f s=%.2f t=%.2f e=%s c=%s n=%s plan=%s reg=%s" % (
         float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
@@ -160,6 +160,15 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
     ib = image_block(image)
     if mb:
         cp += " | mem=" + mb
+    mm = memory_meta if isinstance(memory_meta, dict) else {}
+    _mm_count = int(mm.get("count", 0) or 0) if mm else 0
+    if _mm_count > 0:
+        cp += " | memn=%d memc=%.2f memsrc=%s" % (
+            _mm_count,
+            float(mm.get("confidence", 0.0) or 0.0),
+            str(mm.get("source", "unknown") or "unknown")[:12])
+        if mm.get("abstain"):
+            cp += " mem=uncertain"
     if eb:
         cp += " | ev=" + eb
     if sb:
@@ -177,6 +186,8 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
     cp += ("\n[BC-Return] 回复末尾只输出一个 "
            '<bc>{"e":"joy|sadness|anger|fear|loneliness|neutral","i":0.0-1.0}</bc>，'
            "不解释、不输出数值 delta。")
+    if _mm_count > 0 and mm.get("abstain"):
+        cp += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
     return cp
 
 
