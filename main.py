@@ -1238,7 +1238,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "local", "Standalone BioCore emotion layer", "1.2.5")
+@register("astrbot_plugin_biocore", "Johnhmzm", "Standalone BioCore emotion layer", "1.2.5")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
