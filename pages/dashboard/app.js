@@ -83,7 +83,16 @@
   const shortSession=(v)=>{const t=String(v||"");return t.length>36?t.slice(0,33)+"…":t;};
   function storeGet(k, fallback){ try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch (e) { return fallback; } }
   function storeSet(k, v){ try { localStorage.setItem(k, String(v)); } catch (e) {} }
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","0")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
+  // One-time migration: earlier builds defaulted the memory-node layer off and
+  // cached "0" in localStorage. Without this, upgraded users would never see
+  // the restored archived-event ball (e.g. the late-night confession ball).
+  try {
+    if(!localStorage.getItem("bio_vis_defaults_v3")){
+      if(localStorage.getItem("bio_show_memory_nodes")==="0") localStorage.removeItem("bio_show_memory_nodes");
+      localStorage.setItem("bio_vis_defaults_v3","1");
+    }
+  } catch (e) {}
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -242,7 +251,7 @@
   }
 
 
-  const MEM_SOURCE_LABELS={direct:"用户直述",media:"图片/语音",told:"转述",retrieved:"检索",inferred:"推断",unknown:"来源不明"};
+  const MEM_SOURCE_LABELS={direct:"用户直述",media:"图片/语音",told:"转述",retrieved:"检索",inferred:"推断",unknown:"未标注"};
   const MEM_TIER_LABELS={hot:"HOT 热",warm:"WARM 温",cold:"COLD 冷"};
   const MEM_REL_FIELDS=[["trust","信任"],["closeness","亲近"],["conflict","冲突"],["repair","修复"],["predictability","可预测"]];
   let memSessionFilter=storeGet("bio_mem_session","");
@@ -254,7 +263,7 @@
     if(!n) return "--";
     try { return new Date(n*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}); } catch(e){ return "--"; }
   }
-  function memSourceLabel(src){ const k=String(src||"unknown").toLowerCase(); return MEM_SOURCE_LABELS[k]||k; }
+  function memSourceLabel(src,legacy){ if(legacy) return "用户直述（旧数据）"; const k=String(src||"unknown").toLowerCase(); return MEM_SOURCE_LABELS[k]||k; }
   function memTierLabel(tier){ const k=String(tier||"").toLowerCase(); return MEM_TIER_LABELS[k]||(k?k.toUpperCase():"—"); }
   function memoryIndexValue(){
     const d=data||{};
@@ -314,13 +323,34 @@
     out.sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0));
     return out.slice(0,60);
   }
+  // Archived events are already event-summary artifacts (LLM ranked/summarized
+  // before archiving), so they are valid "summarized" balls even when the raw
+  // memory cluster has not been consolidated yet. This restores e.g. the
+  // late-night confession-clarification ball.
+  function eventBallsFromArchive(){
+    const evs=Array.isArray(data.events)?data.events:[];
+    return evs.filter(e=>e&&typeof e==="object").map(e=>{
+      const text=String(e.event||e.title||"").trim();
+      if(!text) return null;
+      return {_kind:"event", id:String(e.id||("evt_"+Number(e.ts||0))),
+        title:String(e.title||text.slice(0,28)), event:text.slice(0,160),
+        meaning_to_her:String(e.meaning_to_her||""),
+        central_details:String(e.central_details||""),
+        ts:Number(e.ts||0), importance:Number(e.importance==null?0.5:e.importance),
+        centrality:Number(e.centrality==null?0.5:e.centrality),
+        recall_count:Number(e.recall_count||0), merge_count:Number(e.merge_count||0),
+        self_defining:!!e.self_defining,
+        emotion:String(e.emotion||"neutral"), emotion_known:!!String(e.emotion||"").trim(),
+        last_recall:Number(e.last_recall||e.ts||0), summarized:true, role:"event"};
+    }).filter(Boolean).sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0)).slice(0,10);
+  }
   // Only important memories form balls by default: importance >= 0.60 or
   // self-defining (identity-central) memory. Toggle restores "show all".
   const MEMORY_BALL_IMPORTANCE=0.60;
   function importantMemoryBalls(list){
     if(!Array.isArray(list)) return [];
     if(!visual.memoryBallsImportant) return list;
-    return list.filter(ev=>ev&&(ev.self_defining===true||Number(ev.importance||0)>=MEMORY_BALL_IMPORTANCE));
+    return list.filter(ev=>ev&&(ev._kind==="event"||ev.self_defining===true||Number(ev.importance||0)>=MEMORY_BALL_IMPORTANCE));
   }
   function updateOrbLegend(){
     if(!$("orbMemLegend")) return;
@@ -332,7 +362,11 @@
     const all=Array.isArray(st.memories)?st.memories:[];
     const shown=importantMemoryBalls(all).slice(0,10);
     if(!shown.length){
-      $("orbMemLegend").textContent="还没有总结后的记忆球：记忆经过巩固/总结后才生成（设置 → 记忆与隐私 可“立即压缩”触发）";
+      $("orbMemLegend").textContent="还没有总结后的球：记忆巩固/总结后生成记忆球；归档事件会作为事件总结球显示";
+      return;
+    }
+    if(shown.every(b=>b._kind==="event")){
+      $("orbMemLegend").textContent="事件总结球 ×"+shown.length+"：已归档的重要事件（如“深夜表白澄清”）· 球大小=重要度 · 记忆总结后会追加记忆球 · 悬停查看";
       return;
     }
     const suffix=visual.memoryBallsImportant?"总结后重要记忆（重要度≥0.60 或自指）":"总结后记忆（最多 10）";
@@ -345,7 +379,8 @@
     return {id:String(src.id||src.entry_id||""), text:String(src.text||""),
       role:String(src.role||"user"), ts:Number(src.ts||0),
       importance:Number(src.importance||0), hits:Number(src.hits||0),
-      source:String(src.memory_source||src.source||"unknown").toLowerCase(),
+      source:String(src.memory_source||src.source||"direct").toLowerCase(),
+      legacy:!!src.legacy,
       confidence:conf, tier:String(src.memory_tier||src.tier||"").toLowerCase(),
       conflict:!!src.conflict, lastOp:String(src.last_write_op||""),
       versions:versions, summarized:!!src.summarized,
@@ -417,6 +452,7 @@
         e.conflict?'<span class="mem-flag mem-flag-danger">冲突已更新</span>':"",
         e.versions>0?'<span class="mem-flag mem-flag-ok">可回滚 ×'+e.versions+'</span>':"",
         e.summarized?'<span class="mem-flag">已总结</span>':"",
+        e.legacy?'<span class="mem-flag mem-flag-ok">旧数据·直述</span>':"",
         e.sensitive?'<span class="mem-flag mem-flag-warn">敏感</span>':"",
         e.poison?'<span class="mem-flag mem-flag-danger">注入风险</span>':"",
         e.verification==="verified"?'<span class="mem-flag mem-flag-ok">已验证</span>':"",
@@ -429,7 +465,7 @@
       return '<div class="mem-card" data-key="'+esc(key)+'">'+
         '<div class="mem-card-head">'+
           '<span class="mem-tier mem-tier-'+(e.tier||"unknown")+'">'+esc(memTierLabel(e.tier))+'</span>'+
-          '<span class="mem-source">来源 '+esc(memSourceLabel(e.source))+'</span>'+
+          '<span class="mem-source">来源 '+esc(memSourceLabel(e.source,e.legacy))+'</span>'+
           flags+
           '<span class="hint">'+esc(memWhen(e.ts))+' · #'+esc(String(e.id||"").slice(0,12)||"—")+'</span>'+
         '</div>'+
@@ -671,7 +707,8 @@
     const core=(data.cores&&data.cores[0])||demo.cores[0];
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
     const _memBalls=memoryBallsFromIndex();
-    window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_memBalls};
+    const _ballPool=_memBalls.length?_memBalls:eventBallsFromArchive();
+    window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_ballPool};
     updateOrbLegend();
     renderSessionMemory();
     renderMemoryMeta();
@@ -1216,7 +1253,7 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
-  const BIO_VERSION = "v1.2.29";
+  const BIO_VERSION = "v1.2.30";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
