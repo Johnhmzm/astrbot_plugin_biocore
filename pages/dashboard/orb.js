@@ -674,7 +674,7 @@
       for (let k = 0; k < _memHit.length; k++) {
         const hb = _memHit[k];
         const dist = Math.hypot(hb.x - _mouse.x, hb.y - _mouse.y);
-        const reach = Math.max(16, hb.r + 9);   // generous hover target, scales with ball/rings
+        const reach = Math.max(18, hb.r + 10);   // generous hover target, scales with ball/rings
         if (dist <= reach && dist < best) { hit = hb; best = dist; }
       }
       canvas.style.cursor = hit ? "pointer" : "";
@@ -689,7 +689,7 @@
           ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
         const meaning = String(ev.meaning_to_her || ev.central_details || "");
         const lines = [title, when, impLine, meaning].filter(Boolean);
-        const pad = 8, lineH = 15, boxW = 240;
+        const pad = 10, lineH = 17, boxW = 300;
         const boxH = pad * 2 + lines.length * lineH;
         let tx = _mouse.x + 14, ty = _mouse.y + 14;
         tx = Math.max(8, Math.min(W - boxW - 8, tx));
@@ -705,7 +705,7 @@
           ctx.fillRect(tx, ty, boxW, boxH); ctx.strokeRect(tx, ty, boxW, boxH);
         }
         ctx.fillStyle = isDark() ? "rgba(235,230,220,.95)" : "rgba(34,32,28,.93)";
-        ctx.font = "11px Bahnschrift, 'Segoe UI', 'Microsoft YaHei', sans-serif";
+        ctx.font = "12px Bahnschrift, 'Segoe UI', 'Microsoft YaHei', sans-serif";
         ctx.textBaseline = "top";
         for (let k = 0; k < lines.length; k++) {
           let text = lines[k];
