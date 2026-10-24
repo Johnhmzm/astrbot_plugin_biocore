@@ -825,20 +825,8 @@
       const sel=$("fn_"+name+"_provider");
       const cfg=fns[name]||{};
       if(chk) chk.checked=cfg.enabled===true;
-      if(name==="event_ranking"){
-        const embSel=$("fn_event_ranking_embedding");
-        const rrSel=$("fn_event_ranking_rerank");
-        if(embSel){
-          const eps=(data&&data.embedding_providers)||[];
-          embSel.innerHTML='<option value="follow_global">跟随全局 Embedding</option>'+eps.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.model||p.id||""))+'</option>').join("");
-          embSel.value=String(cfg.embedding_provider||"follow_global");
-        }
-        if(rrSel){
-          const rps=(data&&data.rerank_providers)||[];
-          rrSel.innerHTML='<option value="local">本地启发式排序</option><option value="follow_global">跟随全局 Rerank</option>'+rps.map(p=>'<option value="'+esc(String(p.id||""))+'">'+esc(String(p.model||p.id||""))+'</option>').join("");
-          rrSel.value=String(cfg.rerank_provider||"local");
-        }
-      }
+      // event_ranking intentionally has no provider/model select: its
+      // embedding and rerank always follow the API 接入 default config.
       if(sel){
         const vision = name==="image_caption";
         const filtered = provs.filter(p=> vision ? _providerKind(p)==="vision" : _providerKind(p)==="chat");
@@ -860,10 +848,7 @@
         const payload=raw&&raw.data?raw.data:raw;
         if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
         if(data){
-          const field = key.endsWith("_enabled") ? "enabled"
-                      : key.endsWith("_provider") ? "provider"
-                      : key.endsWith("_embedding") ? "embedding_provider"
-                      : "rerank_provider";
+          const field = key.endsWith("_enabled") ? "enabled" : "provider";
           data.llm_functions=Object.assign({},data.llm_functions||{}, {[name]:Object.assign({},(data.llm_functions||{})[name]||{},{[field]:val})});
         }
       }catch(err){ revert(); if(window.alert) window.alert("LLM 功能设置保存失败："+String(err&&err.message||err)); }
@@ -875,14 +860,6 @@
     if(sel) sel.addEventListener("change",()=>{
       const val=String(sel.value||"follow_llm");
       post(name+"_provider",val,()=>{});
-    });
-    const embSel=$("fn_"+name+"_embedding");
-    if(embSel) embSel.addEventListener("change",()=>{
-      post(name+"_embedding",String(embSel.value||"follow_global"),()=>{});
-    });
-    const rrSel=$("fn_"+name+"_rerank");
-    if(rrSel) rrSel.addEventListener("change",()=>{
-      post(name+"_rerank",String(rrSel.value||"local"),()=>{});
     });
   }
   function setMetric(l,b,v){const n=clamp(v);$(l).textContent=n.toFixed(2);$(b).style.width=pct(n);}
@@ -1405,7 +1382,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.46";
+  const BIO_VERSION = "v1.2.47";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
