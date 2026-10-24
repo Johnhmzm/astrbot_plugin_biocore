@@ -1,0 +1,130 @@
+{
+  "enabled": {
+    "description": "启用 BioCore",
+    "hint": "关闭后不注入任何情绪状态，也不写 feedback。",
+    "type": "bool",
+    "default": true
+  },
+  "inject_intent": {
+    "description": "注入表达意图",
+    "hint": "把 [BioCore] 情绪意图追加到 system_prompt；不生成回复、不改人设。",
+    "type": "bool",
+    "default": true
+  },
+  "proactive_reply": {
+    "description": "主动回复",
+    "hint": "默认关闭。BioCore 本身不主动发消息；此开关预留给上层调度。",
+    "type": "bool",
+    "default": false
+  },
+  "memory_dedup_embedding": {
+    "description": "记忆排重嵌入",
+    "hint": "默认开启。BioCore 使用 AstrBot / 自定义 embedding 做本地记忆召回与余弦排重。",
+    "type": "bool",
+    "default": true
+  },
+  "kb_enabled": {
+    "description": "启用 AstrBot 知识库",
+    "hint": "开启后，请求时会检索 kb_names 中的知识库并注入 [BioCore Knowledge]。默认关闭。",
+    "type": "bool",
+    "default": false
+  },
+  "kb_names": {
+    "description": "知识库名称",
+    "hint": "填写 AstrBot 知识库名称，每行一个；仅在启用知识库时生效。",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "voice_transcription_enabled": {
+    "description": "语音转写",
+    "hint": "使用 AstrBot STT provider 把语音转成文字；没有 provider 时自动跳过。",
+    "type": "bool",
+    "default": true
+  },
+  "image_recognition_enabled": {
+    "description": "图片识别",
+    "hint": "私聊识别所有图片；群聊只有触发词 + 引用图片才识别。",
+    "type": "bool",
+    "default": true
+  },
+  "valence_decay_minutes": {
+    "description": "效价衰减半衰期（分钟）",
+    "hint": "没有新刺激时，情绪效价向基线回落的时间尺度；默认 120 分钟。",
+    "type": "int",
+    "default": 120
+  },
+  "arousal_decay_minutes": {
+    "description": "唤醒衰减半衰期（分钟）",
+    "hint": "唤醒比效价回落快；默认 30 分钟。",
+    "type": "int",
+    "default": 30
+  },
+  "social_decay_minutes": {
+    "description": "社交连接衰减半衰期（分钟）",
+    "hint": "社交连接向基线回落的时间尺度；默认 180 分钟。",
+    "type": "int",
+    "default": 180
+  },
+  "stimulus_decay_seconds": {
+    "description": "短时刺激记忆秒数",
+    "hint": "同类情绪刺激在这个时间内重复出现，会按次衰减，避免同一句话反复拉爆情绪。",
+    "type": "int",
+    "default": 300
+  },
+  "stimulus_habituation": {
+    "description": "刺激重复衰减系数",
+    "hint": "越大，重复内容衰减越快；默认 0.75。",
+    "type": "float",
+    "default": 0.75
+  },
+  "reflection_interval_hours": {
+    "description": "周期反思间隔小时",
+    "hint": "每隔这么久，如果事件档案足够，就自动生成跨事件反思；默认 6 小时。",
+    "type": "int",
+    "default": 6
+  },
+  "event_summary_delay_hours": {
+    "description": "事件总结延迟小时",
+    "hint": "会话字数超过阈值后，至少等待这么久才做事件总结，避免刚聊完就归档。",
+    "type": "int",
+    "default": 6
+  },
+  "image_service_idle_seconds": {
+    "description": "图片服务空闲回收秒数",
+    "hint": "图片识别完成后等待多少秒没有新请求就关闭本地 VLM 服务。默认 120。",
+    "type": "int",
+    "default": 120
+  },
+  "image_trigger_words": {
+    "description": "图片触发词",
+    "hint": "群聊中命中这些词并引用图片时才识别；每行一个，可自行增加。",
+    "type": "list",
+    "items": {"type": "string"},
+    "default": []
+  },
+  "image_cache_max_entries": {
+    "description": "图片描述缓存上限",
+    "hint": "同一张图片识别后复用描述，最多缓存多少条。",
+    "type": "int",
+    "default": 500
+  },
+  "compact_prompt": {
+    "description": "紧凑解释层",
+    "hint": "只注入一行 [BC] 状态，由 biocore-interpretation skill 解释；关闭后使用旧的多段 prompt。",
+    "type": "bool",
+    "default": true
+  },
+  "first_run_persona_compile": {
+    "description": "首次人设编译",
+    "hint": "第一次启动读取 AstrBot 人设并用 LLM 转成数值 profile；之后只读缓存。",
+    "type": "bool",
+    "default": true
+  },
+  "max_intent_chars": {
+    "description": "意图最大长度",
+    "hint": "注入 [BioCore] 的文本上限，防止污染上下文。",
+    "type": "int",
+    "default": 180
+  }
+}

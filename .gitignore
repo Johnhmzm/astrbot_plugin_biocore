@@ -1,0 +1,12 @@
+﻿__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+data/
+memory/
+states/
+archives/
+settings.json
+api_config.json
+image_cache.json
+self_model.json
