@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-1910" />
+<link rel="stylesheet" href="./styles.css?v=20261024-1920" />
 </head>
 <body>
 <div class="shell">
@@ -284,7 +284,7 @@
         <p class="api-note" id="memEmpty">还没有可展示的记忆条目。</p>
         <div id="memEntryList"></div>
         <div class="mem-tombstones">
-          <small>TOMBSTONES / 已删除记忆（软删除，可审计）</small>
+          <small>TOMBSTONES / 已删除记忆（软删除，可审计；点“恢复”可撤销）</small>
           <div id="memTombstoneList"></div>
         </div>
       </div>
@@ -392,7 +392,8 @@
           <label><span>触发阈值 / 字符</span><input id="compressThreshold" type="number" min="1000" step="500" value="6000"></label>
           <label><span>压缩后最大 / 字符</span><input id="compressMax" type="number" min="120" step="100" value="800"></label>
         </div>
-        <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。</p>
+        <div class="setting-row"><div><b>跨会话记忆（谨慎）</b><small>开启后，同一发送者在其他会话的记忆可以在当前会话被召回，并标注“其他会话”；默认关闭，群聊场景请先确认隐私边界。</small></div><label class="switch"><input type="checkbox" id="swCrossSession"><span></span></label></div>
+        <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
         <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
@@ -403,7 +404,8 @@
         <div class="setting-row"><div><b>粒子连线</b><small>连接同环相邻粒子，仅 attention 高或悬停球体时淡入。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪节点</b><small>与情绪环表达重叠，默认关闭；需要调试时再开启。</small></div><label class="switch"><input type="checkbox" id="swShowNodes" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪影响线</b><small>情绪节点之间的淡线，默认关闭。</small></div><label class="switch"><input type="checkbox" id="swShowNodeLinks" checked><span></span></label></div>
-        <div class="setting-row"><div><b>记忆节点</b><small>一球一真实事件（最多 10 个 + 外圈档案带）；越久越向内，大小=质量，圈数=重要度，颜色更深。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>一球一条记忆（优先）或一个真实事件（最多 10 个 + 外圈档案带）；越久越向内，大小=质量，颜色=情绪。若看不到球，先点右侧“恢复默认显示”，再强制刷新页面。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>恢复默认显示</b><small>清除本地可视化开关缓存并刷新页面（不影响后端数据）。</small></div><button type="button" class="btn mini" id="resetVisualBtn">恢复默认显示</button></div>
         <div class="setting-row"><div><b>外层环</b><small>围绕球体自主运转的环，速度来自 echo / echo_trace。</small></div><label class="switch"><input type="checkbox" id="swShowEcho" checked><span></span></label></div>
         <div class="setting-row"><div><b>外层环 02</b><small>第二条反向环，倾角和速度独立。</small></div><label class="switch"><input type="checkbox" id="swShowRipple" checked><span></span></label></div>
         <div class="setting-row"><div><b>控制感环</b><small>外环半径来自 dominance；低控制内收，高控制外放。</small></div><label class="switch"><input type="checkbox" id="swShowDominance" checked><span></span></label></div>
@@ -434,5 +436,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-1910"></script><script src="./orb.js?v=20261024-1910"></script>
+<script src="./app.js?v=20261024-1920"></script><script src="./orb.js?v=20261024-1920"></script>
 </body></html>
