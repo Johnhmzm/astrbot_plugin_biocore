@@ -3,7 +3,7 @@
 Standalone biological emotion layer for AstrBot. It reads the current AstrBot persona once, compiles it into a numeric profile, and injects a compact expression intent instead of raw state.
 
 - Plugin name: `astrbot_plugin_biocore`
-- Version: `1.2.5`
+- Version: `1.2.7`
 - Author: `幻灭之梦`
 - Primary update source: https://gitee.com/johnhim/astrbot_plugin_biocore
 - GitHub market mirror: https://github.com/Johnhmzm/astrbot_plugin_biocore

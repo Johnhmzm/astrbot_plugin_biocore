@@ -1,53 +1,32 @@
 # BioCore 插件更新说明
 
-当前版本：**v1.2.5**
+当前版本：**1.2.7**
 
 ## 数据位置
 
-持久化数据在 AstrBot 的 plugin_data 目录：
+插件数据不放在插件代码目录，而是 AstrBot 的持续化插件数据目录：
 
+```text
 AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
+```
 
-包含：
+包含 persona_profile.json、states/、memory/、archives/、users/、self_model.json 等。
 
-persona_profile.json
-api_config.json
-settings.json
-states/
-memory/
-image_cache.json
-archives/
-users/
-self_model.json
+更新插件时不要删除这个目录。
 
-旧版放在插件目录内的 data/，首次启动会自动迁移。
+## 更新方式
 
-## 更新前备份
+1. AstrBot 插件管理 → BioCore → 更新（Gitee 主源 / GitHub 镜像）；
+2. 更新后重载插件；
+3. 打开 BioCore 设置 → 版本，可检查 Gitee 上的最新版本。
 
-复制整个：
+## 本机图片识别服务
 
-AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
+插件不再内置本机绝对路径。需要本地 VLM 图片识别时，在 AstrBot 插件配置里填写：
 
-## 更新
+- `image_llama_server`：llama-server 可执行文件路径
+- `image_llama_model`：VLM 模型路径
+- `image_llama_mmproj`：mmproj 路径（可选）
+- `image_service_port`：端口，默认 8091
 
-推荐走 AstrBot 更新源：
-
-Gitee: https://gitee.com/johnhim/astrbot_plugin_biocore
-
-或手动覆盖：
-
-main.py
-interpretation.py
-metadata.yaml
-_conf_schema.json
-README.md
-UPDATE.md
-preview.png
-pages/
-skills/
-
-不要删除 data/plugin_data 下的持久化数据。
-
-## 卸载注意
-
-AstrBot 卸载会删除插件代码目录；持久化数据在 plugin_data，默认保留。
+留空表示不启用本地图片服务；图片识别会优雅跳过，不影响文字聊天。
