@@ -386,7 +386,9 @@ def summarize_recall(top: Any, now: float | None = None) -> dict[str, Any]:
         tier = str(entry.get("memory_tier") or memory_tier(entry, now))
         rows.append({"source": source, "confidence": confidence, "tier": tier})
         tiers[tier] = int(tiers.get(tier, 0) or 0) + 1
-        if entry.get("conflict"):
+        # A conflict resolved by an explicit user correction is still
+        # versioned for rollback but must not force abstention afterwards.
+        if entry.get("conflict") and not entry.get("conflict_resolved"):
             conflicts += 1
         try:
             ts = float(entry.get("ts", 0) or 0)
@@ -435,6 +437,7 @@ def rollback_entry(entry: dict[str, Any] | None) -> bool:
     entry["text"] = str(versions.pop())[:1200]
     entry["vector"] = []
     entry["vec_updated_ts"] = 0.0
+    entry["needs_reindex"] = True
     entry["last_write_op"] = "ROLLBACK"
     return True
 

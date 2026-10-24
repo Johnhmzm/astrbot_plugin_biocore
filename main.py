@@ -122,6 +122,11 @@ REGULATION_COST = {
     "distraction": 0.006,
 }
 
+# Mem0 UPDATE matching: an explicit correction ("改成/改为/其实是/更正")
+# only updates a memory whose semantic similarity passes this floor; the
+# exact-duplicate threshold (0.93) alone is too strict for corrections.
+MEMORY_UPDATE_MATCH_THRESHOLD = 0.55
+
 # Event-key identity: normalized keys within this window and above this
 # similarity are treated as the same archived event (duplicates are merged).
 EVENT_KEY_SIM_THRESHOLD = 0.82
@@ -1442,7 +1447,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.20")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.21")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -4088,6 +4093,32 @@ class BioCorePlugin(Star):
                 scored.append((score, e))
         _sid, _sname = self._speaker(event)
         _source = memory_meta.source_for_input(text=text, extra=extra, voice=voice)
+        # Mem0 UPDATE path: an explicit correction is an update request even
+        # when embedding similarity is below the exact-duplicate threshold.
+        # Only the conservative correction detector can nominate this target.
+        _update_target = None
+        _explicit_update = False
+        if duplicate is None:
+            try:
+                _scored_ids = {id(_entry) for _score, _entry in scored}
+                _best = None
+                for _pair in retrieval_pairs:
+                    _cand, _cos = _pair
+                    if id(_cand) not in _scored_ids:
+                        continue
+                    if _cos < MEMORY_UPDATE_MATCH_THRESHOLD:
+                        continue
+                    if not memory_meta.detect_conflict(_cand.get("text", ""), text):
+                        continue
+                    if _best is None or _cos > _best[1]:
+                        _best = (_cand, _cos)
+                if _best is not None:
+                    _update_target = _best[0]
+            except Exception:
+                _update_target = None
+        if duplicate is None and _update_target is not None:
+            duplicate = _update_target
+            _explicit_update = True
         if duplicate is not None:
             _entry_age = max(0.0, (now - float(duplicate.get("ts", now) or now)) / 86400.0)
             duplicate["ts"] = now
@@ -4111,7 +4142,8 @@ class BioCorePlugin(Star):
             )
             if not isinstance(duplicate.get("destination"), dict):
                 duplicate["destination"] = memory_meta.build_destination(_sid, _sname)
-            _conflict = memory_meta.detect_conflict(duplicate.get("text", ""), text)
+            _conflict = (memory_meta.detect_conflict(duplicate.get("text", ""), text)
+                         or _explicit_update)
             if _conflict:
                 _old_text = str(duplicate.get("text", ""))
                 memory_meta.merge_version(duplicate, _old_text)
@@ -4121,10 +4153,20 @@ class BioCorePlugin(Star):
                     duplicate["vector"] = vec
                     duplicate["vec_updated_ts"] = now
                 duplicate["conflict"] = True
-                try:
-                    duplicate["memory_confidence"] = min(float(duplicate.get("memory_confidence", 0.5) or 0.5), 0.55)
-                except Exception:
-                    duplicate["memory_confidence"] = 0.55
+                duplicate["conflict_resolved"] = bool(_explicit_update)
+                if _explicit_update:
+                    # The user explicitly corrected the fact: trust the newer
+                    # direct statement, but keep the old version for rollback.
+                    try:
+                        _base_conf = float(duplicate.get("memory_confidence", 0.5) or 0.5)
+                    except Exception:
+                        _base_conf = 0.5
+                    duplicate["memory_confidence"] = round(max(_base_conf, 0.78), 4)
+                else:
+                    try:
+                        duplicate["memory_confidence"] = min(float(duplicate.get("memory_confidence", 0.5) or 0.5), 0.55)
+                    except Exception:
+                        duplicate["memory_confidence"] = 0.55
             if not duplicate.get("id"):
                 duplicate["id"] = _sha256(str(duplicate.get("text", ""))[:300])[:12]
             duplicate["memory_tier"] = memory_meta.memory_tier(duplicate, now)
@@ -4196,8 +4238,12 @@ class BioCorePlugin(Star):
                 e["stability_days"] = round(_st, 3)
                 _days = max(_intervals[min(_rc - 1, len(_intervals) - 1)], _st)
                 e["next_review_ts"] = now + _days * 86400
-                _eid = _sha256(str(e.get("text", ""))[:300])[:12]
-                e["id"] = _eid
+                # Keep the persisted id stable: dashboard delete/rollback and
+                # write_log reference it; only assign one for legacy entries.
+                _eid = str(e.get("id") or "").strip()
+                if not _eid:
+                    _eid = _sha256(str(e.get("text", ""))[:300])[:12]
+                    e["id"] = _eid
                 e["last_recall_regulation"] = str(getattr(core, "regulation", "none") or "none")
                 _ids.append(e)
             except Exception:
