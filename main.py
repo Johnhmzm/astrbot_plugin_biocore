@@ -251,6 +251,10 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 # Read-only extras for the orb memory-ball layer.
                 "encoding_emotion": str(entry.get("encoding_emotion") or ""),
                 "last_used": round(float(entry.get("last_used", 0) or 0), 3),
+                "scope": str(entry.get("scope") or ""),
+                "poison_risk": bool(entry.get("poison_risk")),
+                "links": len(entry.get("links") or []),
+                "verification": str((entry.get("verification") or {}).get("status") or "")
             })
         tombstones = []
         for item in (doc.get("tombstones") or [])[-max_tombstones:]:
@@ -1471,7 +1475,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.26")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.27")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3932,8 +3936,11 @@ class BioCorePlugin(Star):
         lexical_mod = 1.0
         if hybrid and query_text:
             try:
-                lexical_mod = 1.0 + 0.12 * memory_meta.lexical_overlap(
-                    query_text, str(entry.get("text") or ""))
+                entry_text = str(entry.get("text") or "")
+                variants = memory_meta.expand_query(query_text)
+                lexical = max(memory_meta.lexical_overlap(variant, entry_text)
+                              for variant in variants) if variants else 0.0
+                lexical_mod = 1.0 + 0.12 * lexical
             except Exception:
                 lexical_mod = 1.0
         sensitive_mod = 1.0
@@ -4269,12 +4276,33 @@ class BioCorePlugin(Star):
                 entry["encoding_arousal"] = round(float(getattr(core, "a", 0.5) or 0.5), 3)
             except Exception:
                 pass
+        _body = text or str(entry.get("text") or "")
         try:
-            sensitivity = memory_meta.classify_sensitivity(
-                text or str(entry.get("text") or ""))
+            sensitivity = memory_meta.classify_sensitivity(_body)
             entry["sensitive"] = bool(sensitivity.get("sensitive"))
             entry["pii_types"] = list(sensitivity.get("types") or [])
             entry["sensitivity"] = float(sensitivity.get("score") or 0.0)
+        except Exception:
+            pass
+        try:
+            poison = memory_meta.detect_poisoning(_body)
+            entry["poison_risk"] = bool(poison.get("poison_risk"))
+            entry["poison_signals"] = list(poison.get("signals") or [])
+            entry["poison_score"] = float(poison.get("risk") or 0.0)
+            if entry["poison_risk"]:
+                try:
+                    entry["memory_confidence"] = min(
+                        float(entry.get("memory_confidence", 0.5) or 0.5), 0.25)
+                except Exception:
+                    entry["memory_confidence"] = 0.25
+        except Exception:
+            pass
+        # Memory permission scope: user facts may be shared across the same
+        # sender's sessions; assistant summaries stay session-local.
+        _role = str(entry.get("role") or "user")
+        entry.setdefault("scope", "session" if _role in ("assistant", "summary") else "user")
+        try:
+            entry["verification"] = memory_meta.verify_entry(entry)
         except Exception:
             pass
         entry.setdefault("inhibition", 0.0)
@@ -4464,8 +4492,12 @@ class BioCorePlugin(Star):
         duplicate = None
         now = time.time()
         _just_restabilized = set()
+        _working_set = doc.get("working_set") if isinstance(doc.get("working_set"), list) else []
         for e in entries:
             if e.get("summarized") or e.get("deleted"):
+                continue
+            if e.get("poison_risk"):
+                # Poisoned/injected content never enters the recall prompt.
                 continue
             if self._restabilize_if_expired(e, now):
                 _just_restabilized.add(id(e))
@@ -4474,6 +4506,10 @@ class BioCorePlugin(Star):
                 core, e, cosine, query_text=text,
                 hybrid=bool(getattr(self, "hybrid_retrieval", True)),
                 sensitive_protect=bool(getattr(self, "sensitive_memory_protection", True)))
+            try:
+                score *= memory_meta.working_set_boost(e, _working_set)
+            except Exception:
+                pass
             retrieval_pairs.append((e, cosine))
             if cosine >= 0.93:
                 duplicate = e
@@ -4601,6 +4637,15 @@ class BioCorePlugin(Star):
                                          reason="new", ts=now)
             self._trim_memory(doc, core)
         self._save_memory(event, doc)
+        try:
+            _recent_ids = [str(_e.get("id") or "") for _e in entries[-3:]
+                           if isinstance(_e, dict)]
+            doc["working_set"] = memory_meta.update_working_set(
+                doc.get("working_set") if isinstance(doc.get("working_set"), list) else [],
+                _recent_ids, capacity=max(4, self._memory_top_k(core) * 2))
+            self._save_memory(event, doc)
+        except Exception:
+            pass
         self._schedule_consolidation(event, core)
         scored.sort(key=lambda x: x[0], reverse=True)
         top = memory_meta.select_top(
@@ -4651,6 +4696,42 @@ class BioCorePlugin(Star):
                     _b[_aid] = int(_b.get(_aid, 0)) + 1
                 except Exception:
                     pass
+        # Memory graph links (A-MEM-like): co-recalled memories get weighted
+        # directed links; the working set keeps a bounded read set per session.
+        _link_lines = []
+        _consistency = memory_meta.answer_consistency(top)
+        try:
+            for _i in range(len(_ids)):
+                for _j in range(_i + 1, len(_ids)):
+                    _aid = str(_ids[_i].get("id") or "").strip()
+                    _bid = str(_ids[_j].get("id") or "").strip()
+                    if _aid and _bid:
+                        memory_meta.add_link(_ids[_i], _bid, now=now)
+                        memory_meta.add_link(_ids[_j], _aid, now=now)
+            _ws_current = doc.get("working_set") if isinstance(doc.get("working_set"), list) else _working_set
+            doc["working_set"] = memory_meta.update_working_set(
+                _ws_current, [str(e.get("id") or "") for _score, e in top],
+                capacity=max(4, self._memory_top_k(core) * 2))
+            _top_ids = {id(e) for _score, e in top}
+            _by_id = {str(e.get("id") or ""): e for e in entries
+                      if isinstance(e, dict) and str(e.get("id") or "")}
+            for _score, e in top:
+                for _lid in memory_meta.linked_ids(e, limit=2):
+                    _nb = _by_id.get(_lid)
+                    if _nb is None or id(_nb) in _top_ids:
+                        continue
+                    if _nb.get("deleted") or _nb.get("summarized") or _nb.get("poison_risk"):
+                        continue
+                    _nb_text = str(_nb.get("text") or "").strip().replace("\n", " ")
+                    if not _nb_text:
+                        continue
+                    if getattr(self, "sensitive_memory_protection", True) and _nb.get("sensitive"):
+                        _nb_text = memory_meta.mask_sensitive(_nb_text)
+                    _link_lines.append("- 关联记忆：%s" % _nb_text[:200])
+            self._save_memory(event, doc)
+        except Exception:
+            _link_lines = []
+            _consistency = 1.0
         # Retrieval-induced forgetting: similar memories that lost this
         # competition become temporarily inhibited (they are not deleted and
         # the inhibition decays over days).
@@ -4678,6 +4759,9 @@ class BioCorePlugin(Star):
                         continue
                     if _entry.get("sensitive"):
                         # Sensitive memories are never promoted across sessions.
+                        continue
+                    if str(_entry.get("scope") or "user") == "session":
+                        # Session-scoped memories (assistant/summary) stay local.
                         continue
                     _evec = _entry.get("vector") or []
                     _ecos = self._cosine(vec, _evec) if _evec else 0.0
@@ -4714,7 +4798,8 @@ class BioCorePlugin(Star):
                     self._save_memory(event, doc)
         except Exception:
             _foreign_lines = []
-        self._last_memory_meta = memory_meta.summarize_recall(top, now)
+        self._last_memory_meta = memory_meta.summarize_recall(
+            top, now, consistency=_consistency)
         _gate = str(self._last_memory_meta.get("gate") or "none")
         lines = []
         for score, e in top:
@@ -4729,6 +4814,7 @@ class BioCorePlugin(Star):
                 snippet = memory_meta.mask_sensitive(snippet)
             if snippet:
                 lines.append("- %s：%s" % (role, snippet[:240]))
+        lines.extend(_link_lines)
         lines.extend(_foreign_lines)
         memory_text = "\n".join(lines)
         # Forced abstention: uncertain memory content is withheld so the model
