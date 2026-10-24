@@ -517,8 +517,8 @@
     // memory event nodes: one ball per real archived event (max 10 shown).
     // Identity (phase / inclination / periapsis) comes from a hash of
     // id / event_key, so list reordering or new arrivals cannot move old balls.
-    // Only important memories form balls by default (importance >= 0.60 or
-    // self-defining); events are the fallback only when no memory list exists.
+    // Balls exist only after consolidation/summarization (app.js sends the
+    // summarized subset); no raw per-turn memories, no event fallback.
     const _allMem = Array.isArray(state.memories) ? state.memories : [];
     const _importantOnly = !state.visual || state.visual.memoryBallsImportant !== false;
     let _pickedMem = _allMem;
@@ -526,9 +526,7 @@
       _pickedMem = _allMem.filter((ev) => ev && (ev.self_defining === true ||
         Number(ev.importance == null ? 0 : ev.importance) >= 0.60));
     }
-    const _memSource = _allMem.length
-      ? _pickedMem
-      : (Array.isArray(state.events) ? state.events : []);
+    const _memSource = _pickedMem;
     const _memEvents = _memSource.filter((ev) => ev && typeof ev === "object");
     const _memShown = _memEvents.slice(0, 10);
     const _memExtra = Math.max(0, _memEvents.length - _memShown.length);
