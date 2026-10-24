@@ -1510,7 +1510,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.51")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.52")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1579,6 +1579,9 @@ class BioCorePlugin(Star):
                        or (INSIGHT_COOLDOWN_SECONDS // 60)))
         except Exception:
             self._insight_cooldown_minutes = INSIGHT_COOLDOWN_SECONDS // 60
+        # Long-term pattern insight: main entry is the manual dashboard button;
+        # automatic generation is opt-in and OFF by default.
+        self.insight_auto_enabled = bool(self.config.get("insight_auto_enabled", False))
         try:
             self.stimulus_decay_seconds = max(30, int(self.config.get("stimulus_decay_seconds", 300) or 300))
             self.stimulus_habituation = max(0.0, float(self.config.get("stimulus_habituation", 0.75) or 0.75))
@@ -2636,7 +2639,16 @@ class BioCorePlugin(Star):
                 "last_run_ts": last_run, "last_event_ts": last_event_ts}
 
     async def _maybe_archive_insight(self, event, core, trigger: str = "event_archive"):
-        """Unified, event-driven insight entry (compression / event archive)."""
+        """Automatic long-term insight entry (compression / event archive).
+
+        Only runs when the opt-in auto switch is ON *and* the insight LLM
+        switch is ON. There is no silent deterministic fallback: with either
+        switch off nothing is written in the background.
+        """
+        if not bool(getattr(self, "insight_auto_enabled", False)):
+            return False
+        if not self._llm_allowed("insight"):
+            return False
         try:
             state = self._load_insight_state()
             events = self._event_archive(50)
@@ -2665,24 +2677,16 @@ class BioCorePlugin(Star):
             return False
 
     async def _generate_insight(self, event, core, events):
-        """Generate one insight from the given events (LLM if enabled, else deterministic note)."""
+        """Generate one long-term pattern insight from the given events.
+
+        LLM-only: when the insight switch is off this returns False and writes
+        nothing (no silent deterministic note in the background).
+        """
         try:
             events = [e for e in (events or []) if isinstance(e, dict)]
             if not events:
                 return False
             if not self._llm_allowed("insight"):
-                try:
-                    titles = [str(e.get("title") or "").strip() for e in events[-6:]]
-                    titles = [t for t in titles if t]
-                    if titles:
-                        self._append_insight({
-                            "ts": time.time(),
-                            "insight": ("最近发生：" + "；".join(titles))[:300],
-                            "emotion": str(getattr(core, "labels", {}).get("emotion") or "neutral") if core else "neutral",
-                        })
-                        return True
-                except Exception:
-                    pass
                 return False
             provider = await self._provider_for("insight", event)
             if provider is None:
@@ -2715,7 +2719,7 @@ class BioCorePlugin(Star):
                     core.reflection_tree = tree
             except Exception:
                 pass
-            logger.info("[biocore] cross-event insight archived")
+            logger.info("[biocore] long-term insight archived")
             return True
         except Exception as exc:
             logger.warning("[biocore] insight generation failed: %s", exc)
@@ -4053,6 +4057,7 @@ class BioCorePlugin(Star):
                 getattr(self, "llm_memory_candidates", True)),
             "llm_only_reply_summary": bool(
                 getattr(self, "llm_only_reply_summary", True)),
+            "insight_auto_enabled": bool(getattr(self, "insight_auto_enabled", False)),
             "persona_loaded": bool(self.persona_text),
             "persona_id": str(getattr(self, "persona_id", "") or ""),
             "personas": _personas,
@@ -4120,7 +4125,8 @@ class BioCorePlugin(Star):
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                        "cross_session_memory", "sensitive_memory_protection",
                        "hybrid_retrieval", "llm_memory_candidates",
-                       "llm_only_reply_summary", "persona_id"):
+                       "llm_only_reply_summary", "persona_id",
+                       "insight_auto_enabled"):
             return {"status": "error", "message": "unknown setting"}
         if key == "persona_id":
             _val = str(data.get("value") or "").strip()
@@ -4149,15 +4155,18 @@ class BioCorePlugin(Star):
         logger.info("[biocore] setting %s=%s", key, getattr(self, key))
         return {"status": "ok", "data": {"key": key, "value": getattr(self, key)}}
 
-    async def page_insight(self):
-        """Manual cross-event insight button: bypass threshold/cooldown once."""
-        from quart import request
-        _ = await request.get_json(silent=True) or {}
+    async def generate_manual_insight(self) -> dict:
+        """Manual long-term insight (dashboard button), bypass threshold once.
+
+        Never writes a deterministic fallback: when the insight LLM switch is
+        off it only returns a message telling the user to enable it.
+        """
+        if not self._llm_allowed("insight"):
+            return {"generated": False, "insight": "",
+                    "message": "请先开启「长期模式洞察」LLM 开关再生成"}
         events = self._event_archive(12)
         if not events:
-            return {"status": "ok", "data": {"generated": False,
-                                              "insight": "",
-                                              "message": "还没有归档事件"}}
+            return {"generated": False, "insight": "", "message": "还没有归档事件"}
         core = next(iter(self.cores.values()), None)
         if core is None:
             core = BioCore(dict(DEFAULT_PROFILE))
@@ -4172,9 +4181,25 @@ class BioCorePlugin(Star):
                     insight = str(json.loads(lines[-1]).get("insight") or "")
         except Exception:
             insight = ""
-        return {"status": "ok", "data": {"generated": bool(ok),
-                                          "insight": insight,
-                                          "events": len(events)}}
+        if ok:
+            try:
+                # A manual generation also advances the auto dedupe state so
+                # the background trigger does not immediately duplicate it.
+                now = time.time()
+                latest_ts = max([float(e.get("ts", 0) or 0) for e in events] or [0.0])
+                seen = [str(e.get("id") or "") for e in events if str(e.get("id") or "")]
+                self._save_insight_state({"last_run_ts": now, "last_event_ts": latest_ts,
+                                          "seen_ids": seen[-100:]})
+            except Exception:
+                pass
+        return {"generated": bool(ok), "insight": insight, "events": len(events),
+                "message": "" if ok else "生成失败，请查看日志"}
+
+    async def page_insight(self):
+        """Manual '生成长期洞察' button: bypass threshold/cooldown once."""
+        from quart import request
+        _ = await request.get_json(silent=True) or {}
+        return {"status": "ok", "data": await self.generate_manual_insight()}
 
     async def page_api_config(self):
         from quart import request

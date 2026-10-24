@@ -174,15 +174,15 @@ def image_caption_prompt(base_prompt: str = "") -> str:
 def event_summary_prompt(texts) -> str:
     joined = "\n".join("- " + str(t)[:400] for t in (texts or [])[:12])
     return ("把下面一段聊天记录总结成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
-            '{"title":"短标题","event":"事件经过≤80字","meaning_to_her":"对她的意义≤60字","reflection":"反思≤60字"}\n'
-            "事件覆盖整件事，意义只写她的感受/立场/关系变化，reflection 不复述事件；不编造。\n\n" + joined)
+            '{"title":"短标题","event":"事件经过≤80字","meaning_to_her":"对她的意义≤60字","reflection":"事件感悟≤60字"}\n'
+            "事件覆盖整件事，意义只写她的感受/立场/关系变化；reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。\n\n" + joined)
 
 
 def insight_prompt(events) -> str:
     joined = "\n".join("- " + str(e.get("title") or "") + "：" + str(e.get("event") or "")[:220]
                         for e in (events or [])[:6])
     return ("下面是最近几条重要事件。请只输出一个 JSON 对象，不要解释：\n"
-            '{"insight":"从这些事件之间提炼出的一条更高层认识，80字以内，不要复述事件"}\n\n' + joined)
+            '{"insight":"从这些事件之间提炼出的一条长期模式洞察（跨事件，80字以内，不要复述事件）"}\n\n' + joined)
 
 
 def render_compact(core, memory="", events="", self_model=None, user=None,
@@ -547,7 +547,7 @@ def parse_image_caption(raw: str, limit: int = 1600) -> str:
 
 
 def parse_insight(raw: str, limit: int = 500) -> str:
-    """Parse + validate the cross-event insight output."""
+    """Parse + validate the long-term pattern insight output."""
     data = _extract_json_object(raw)
     if not isinstance(data, dict):
         return ""

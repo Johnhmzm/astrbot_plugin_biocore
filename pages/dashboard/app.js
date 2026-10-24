@@ -232,7 +232,7 @@
         '<div class="memory-card-head"><span class="memory-level-tag">总结</span><b>'+esc(ev.title||"重要事件")+'</b><span class="hint">'+esc(when)+'</span>'+warnFlags+'</div>'+
         '<p class="memory-event-text">'+esc(ev.event||"")+'</p>'+
         '<div class="memory-scores"><small>重要度 '+imp+'</small><small>centrality '+cent+'</small><small>来源 '+esc(status)+'</small></div>'+
-        '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(ev.central_details||"")+'</small><small>意义：'+esc(ev.meaning_to_her||"")+'</small><small>反思：'+esc(ev.reflection||"")+'</small></div>'+
+        '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(ev.central_details||"")+'</small><small>意义：'+esc(ev.meaning_to_her||"")+'</small><small>事件感悟（单事件）：'+esc(ev.reflection||"")+'</small></div>'+
         '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'" data-count="'+msgs.length+'">收起消息 · '+msgs.length+' 条</button>'+
         '<div class="memory-messages" data-idx="'+idx+'">'+(msgs.length?msgs.map(_msgRow).join(""):'<div class="empty-mini">该事件没有归档时间窗，无法列出逐条消息。</div>')+'</div>'+
         '</div>';
@@ -658,11 +658,51 @@
     renderRelationships();
   });
 
+  function renderInsightHistory(){
+    const box=$("insightHistoryList");
+    const fcfg=((data&&data.llm_functions)||{}).insight||{};
+    const enabled=fcfg.enabled===true;
+    // Hide legacy deterministic notes ("最近发生：…") written by older versions;
+    // only real LLM long-term insights are shown in the history card.
+    const rows=(data&&Array.isArray(data.insights))?data.insights.filter(x=>x&&x.insight&&String(x.insight).indexOf("最近发生：")!==0).slice(0,8):[];
+    if(box){
+      box.innerHTML=rows.length?rows.map(x=>{
+        const when=x.ts?new Date(Number(x.ts)*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
+        return '<div class="insight-row"><span class="insight-ts">'+esc(when||"--")+'</span><span class="insight-text">'+esc(String(x.insight||""))+'</span></div>';
+      }).join(""):'<div class="empty-mini">还没有长期模式洞察；点「生成长期洞察」手动生成第一条。</div>';
+    }
+    const btn=$("insightNowBtn");
+    if(btn){
+      btn.disabled=!enabled;
+      btn.title=enabled?"生成一次跨事件长期模式洞察":"需先开启上方「长期模式洞察（跨事件）」LLM 开关";
+    }
+    const hint=$("insightHint");
+    if(hint) hint.textContent=enabled?"":"需先开启上方 LLM 开关";
+  }
+  function syncInsightAuto(){
+    const chk=$("swInsightAuto"); if(!chk) return;
+    chk.checked=!!(data&&data.insight_auto_enabled);
+    if(chk.dataset.bound) return;
+    chk.dataset.bound="1";
+    chk.addEventListener("change",async()=>{
+      const val=!!chk.checked;
+      if(!bridge){ chk.checked=!val; if(window.alert)window.alert("静态预览模式无法保存设置，请从 AstrBot 插件视图打开。"); return; }
+      try{
+        const raw=await bridge.apiPost("page/toggle",{key:"insight_auto_enabled",value:val});
+        const payload=raw&&raw.data?raw.data:raw;
+        if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
+        if(data) data.insight_auto_enabled=val;
+      }catch(e){
+        chk.checked=!val;
+        if(window.alert) window.alert("自动长期洞察设置保存失败："+String(e&&e.message||e));
+      }
+    });
+  }
   function renderTree(tree) {
     const roots = (tree && Array.isArray(tree.roots)) ? tree.roots : [];
-    if (!roots.length) return '<div class="empty-mini">还没有跨事件反思节点。</div>';
+    if (!roots.length) return '<div class="empty-mini">还没有长期模式洞察节点。</div>';
     const node = (n, depth) => {
-      const title = esc(n.insight || n.title || "反思节点");
+      const title = esc(n.insight || n.title || "长期洞察");
       const emo = n.emotion ? ' <em>' + esc(L(n.emotion)) + '</em>' : '';
       const when = n.ts ? '<small>' + esc(new Date(Number(n.ts) * 1000).toLocaleString()) + '</small>' : '';
       const kids = (Array.isArray(n.children) && n.children.length)
@@ -728,6 +768,8 @@
     renderSessionMemory();
     renderMemoryMeta();
     renderRelationships();
+    renderInsightHistory();
+    syncInsightAuto();
     renderSelfPanels(s);
     $("pluginBadge").textContent=data.enabled?"BioCore · ON":"BioCore · OFF";
     $("heroTitle").textContent=L(it.emotion)+" · "+L(it.intent);
@@ -1250,15 +1292,24 @@
   if (insightNowBtn) insightNowBtn.addEventListener("click", async () => {
     const st = $("insightState");
     if (!bridge) { if (st) st.textContent = "未连接 AstrBot 页面桥"; return; }
-    if (st) st.textContent = "正在生成跨事件反思…";
+    if (st) st.textContent = "正在生成长期模式洞察…";
     try {
       const raw = await bridge.apiPost("page/insight", {});
       const payload = raw && raw.data ? raw.data : raw;
       if (!payload || payload.status === "error") throw new Error((payload && payload.message) || "insight failed");
       const text = String(payload.insight || "").trim();
-      if (st) st.textContent = text ? ("已生成：" + text.slice(0, 80)) : (payload.message || "没有生成新反思");
+      if (text && payload.generated !== false) {
+        if (st) st.textContent = "已生成：" + text.slice(0, 120);
+        if (data) {
+          data.insights = Array.isArray(data.insights) ? data.insights : [];
+          data.insights.unshift({ ts: Date.now() / 1000, insight: text });
+        }
+        renderInsightHistory();
+      } else if (st) {
+        st.textContent = payload.message || "没有生成新的长期洞察";
+      }
     } catch (e) {
-      if (st) st.textContent = "反思失败：" + String(e && e.message || e);
+      if (st) st.textContent = "生成失败：" + String(e && e.message || e);
     }
   });
 
@@ -1399,7 +1450,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.51";
+  const BIO_VERSION = "v1.2.52";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

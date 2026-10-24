@@ -637,3 +637,21 @@ input[type=range]{width:180px;accent-color:var(--accent)}
   #settingsMemory .llm-route{justify-self:stretch;width:100%}
 }
 
+
+/* ==== 长期模式洞察卡片（手动生成 + 历史） ==== */
+.insight-card{border:1px solid var(--line2);background:var(--panel2);padding:12px;margin-top:14px}
+.insight-card-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.insight-card-head b{display:block;font-size:11px;letter-spacing:.1em;margin-bottom:3px}
+.insight-card-head small{display:block;font-size:10px;color:var(--muted);line-height:1.5}
+.insight-card-actions{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:0 0 auto}
+.insight-hint{font-size:9px;color:var(--danger);letter-spacing:.04em}
+.insight-history{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px}
+.insight-row{display:flex;align-items:baseline;gap:10px;border-top:1px dotted var(--line2);padding-top:6px}
+.insight-row:first-child{border-top:0;padding-top:0}
+.insight-ts{font-size:9px;color:var(--faint);white-space:nowrap;letter-spacing:.04em}
+.insight-text{font-size:11px;line-height:1.55;color:var(--ink)}
+#insightState{display:block;font-size:9px;color:var(--accent2);margin-top:6px;min-height:12px}
+.btn:disabled{opacity:.42;cursor:not-allowed;filter:grayscale(.35)}
+.btn:disabled:hover{background:var(--panel);color:var(--ink)}
+@media(max-width:640px){.insight-card-actions{align-items:flex-start}}
+
