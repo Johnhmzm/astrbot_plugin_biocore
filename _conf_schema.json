@@ -23,6 +23,12 @@
     "type": "bool",
     "default": true
   },
+  "cross_session_memory": {
+    "description": "跨会话记忆（谨慎开启）",
+    "hint": "默认关闭。开启后同一发送者在其他会话的记忆可在当前会话被召回，并标注“其他会话”；仅按发送者隔离，群聊场景请确认隐私边界后再开。",
+    "type": "bool",
+    "default": false
+  },
   "kb_enabled": {
     "description": "启用 AstrBot 知识库",
     "hint": "开启后，请求时会检索 kb_names 中的知识库并注入 [BioCore Knowledge]。默认关闭。",
@@ -146,8 +152,8 @@
     "default": true
   },
   "max_intent_chars": {
-    "description": "意图最大长度",
-    "hint": "注入 [BioCore] 的文本上限，防止污染上下文。",
+    "description": "意图最大长度（已废弃）",
+    "hint": "已废弃：当前 [BC] 长度由解释层固定长度控制，该配置不再生效，保留仅为旧配置兼容。",
     "type": "int",
     "default": 180
   }

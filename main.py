@@ -88,6 +88,10 @@ SELF_MODEL_PATH = DATA_DIR / "self_model.json"
 INSIGHT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "insights.jsonl"
 EMBED_CACHE = {}
 
+# Memory doc schema version: bumped when entry fields/migrations change.
+# Old docs are upgraded lazily on load (additive defaults only).
+MEMORY_SCHEMA_VERSION = 2
+
 DEFAULT_PROFILE = {
     "O": 0.62, "C": 0.55, "E": 0.44, "A": 0.42, "N": 0.40,
     "stress_reactivity": 0.45, "recovery_rate": 0.62,
@@ -1447,7 +1451,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.23")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.24")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1462,7 +1466,12 @@ class BioCorePlugin(Star):
             self.event_summary_delay_hours = 6
         self.proactive_reply = bool(self.config.get("proactive_reply", False))
         self.memory_dedup_embedding = bool(self.config.get("memory_dedup_embedding", True))
+        # Opt-in: recall the same sender's memories from their other sessions.
+        # Default off because cross-session sharing has privacy implications.
+        self.cross_session_memory = bool(self.config.get("cross_session_memory", False))
         self.first_run_persona_compile = bool(self.config.get("first_run_persona_compile", True))
+        # Deprecated: [BC] sizing is owned by the interpretation layer now.
+        # Kept only so existing config files do not break on load.
         self.max_intent_chars = int(self.config.get("max_intent_chars", 180) or 180)
         self.kb_enabled = bool(self.config.get("kb_enabled", False))
         _names = self.config.get("kb_names", [])
@@ -1648,7 +1657,8 @@ class BioCorePlugin(Star):
                 # Single source of truth = AstrBot plugin config. Legacy dashboard
                 # toggles in settings.json only apply when config does not define
                 # the key (otherwise they silently overrode plugin config).
-                for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent", "kb_enabled"):
+                for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
+                            "kb_enabled", "cross_session_memory"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
                 if isinstance(d.get("kb_names"), list) and "kb_names" not in self.config:
@@ -1661,6 +1671,7 @@ class BioCorePlugin(Star):
             self._settings_path().write_text(json.dumps({
                 "proactive_reply": bool(self.proactive_reply),
                 "memory_dedup_embedding": bool(self.memory_dedup_embedding),
+                "cross_session_memory": bool(getattr(self, "cross_session_memory", False)),
                 "inject_intent": bool(self.inject_intent),
                 "kb_enabled": bool(getattr(self, "kb_enabled", False)),
                 "kb_names": list(getattr(self, "kb_names", [])),
@@ -1989,6 +2000,11 @@ class BioCorePlugin(Star):
             d["interactions"] = int(d.get("interactions", 0) or 0) + 1
             d["last_seen"] = time.time()
             d.setdefault("first_seen", time.time())
+            _session_key = str(getattr(event, "unified_msg_origin", "") or "").strip()
+            if _session_key:
+                _sessions = d.get("sessions") if isinstance(d.get("sessions"), list) else []
+                _sessions = [str(x) for x in _sessions if str(x) and str(x) != _session_key]
+                d["sessions"] = (_sessions[-19:] + [_session_key])[-20:]
             try:
                 _ct = float(getattr(core, "trust", 0.5)) if core is not None else 0.5
                 d["trust"] = round(0.7 * float(d.get("trust", 0.5) or 0.5) + 0.3 * _ct, 3)
@@ -3196,6 +3212,8 @@ class BioCorePlugin(Star):
                          self.page_memory_rollback, ["POST"], "BioCore memory rollback")
                 register("/astrbot_plugin_biocore/page/memory/delete/<path:session>/<entry_id>",
                          self.page_memory_delete, ["POST"], "BioCore memory soft delete")
+                register("/astrbot_plugin_biocore/page/memory/restore/<path:session>/<entry_id>",
+                         self.page_memory_restore, ["POST"], "BioCore memory restore")
         except Exception as exc:
             logger.warning("[biocore] page api register failed: %s", exc)
 
@@ -3373,8 +3391,72 @@ class BioCorePlugin(Star):
             doc["tombstones"] = (doc.get("tombstones") if isinstance(doc.get("tombstones"), list) else [])[-100:]
             doc["tombstones"].append({"id": entry_id, "ts": time.time(), "text": str(target.get("text", ""))[:200]})
             doc["entries"] = [e for e in entries if not (isinstance(e, dict) and self._memory_entry_id(e) == entry_id)]
+            memory_meta.append_write_log(doc, op="DELETE", entry_id=entry_id,
+                                         reason="dashboard", ts=time.time())
+            # Propagate the deletion to derived summaries/events/insights.
+            try:
+                _event = types.SimpleNamespace(unified_msg_origin=session)
+                self._propagate_memory_deletion(_event, target, doc, reason="dashboard")
+            except Exception:
+                pass
             self._memory_save_doc_for_session(path, doc)
             return {"status": "ok", "data": {"session": session, "id": entry_id, "deleted": True}}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:180], "data": {}}
+
+    async def page_memory_restore(self, session: str, entry_id: str):
+        """Restore a soft-deleted entry, or recreate one from a tombstone.
+
+        Note: archive/insight redactions made at deletion time are not undone
+        (deletion propagation is one-way for derived artifacts).
+        """
+        try:
+            path, doc = self._memory_doc_for_session(session)
+            entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+            target = self._memory_find_entry(entries, entry_id)
+            from_tombstone = False
+            if target is not None:
+                if not memory_meta.restore_entry(target):
+                    return {"status": "error", "message": "memory entry is not deleted",
+                            "data": {}}
+            else:
+                tombstones = doc.get("tombstones") if isinstance(doc.get("tombstones"), list) else []
+                tomb = next((item for item in tombstones if isinstance(item, dict)
+                             and str(item.get("id") or "") == entry_id), None)
+                if tomb is None:
+                    return {"status": "error", "message": "memory entry not found", "data": {}}
+                target = {"id": entry_id,
+                          "text": str(tomb.get("text") or "")[:1200],
+                          "role": "user", "ts": time.time(), "hits": 1,
+                          "importance": 0.5, "memory_source": "inferred",
+                          "memory_confidence": 0.35, "memory_tier": "warm",
+                          "last_write_op": "RESTORE",
+                          "restored_from_tombstone": True}
+                doc["tombstones"] = [item for item in tombstones
+                                     if not (isinstance(item, dict)
+                                             and str(item.get("id") or "") == entry_id)]
+                entries.append(target)
+                from_tombstone = True
+            try:
+                _vec = await self._embed_text(str(target.get("text", "")))
+                if _vec:
+                    target["vector"] = _vec
+                    target["needs_reindex"] = False
+                else:
+                    target["needs_reindex"] = True
+            except Exception:
+                target["needs_reindex"] = True
+            target["restored_ts"] = time.time()
+            target["last_write_op"] = "RESTORE"
+            memory_meta.append_write_log(
+                doc, op="RESTORE", entry_id=entry_id,
+                reason=("tombstone" if from_tombstone else "soft_delete"),
+                ts=time.time())
+            self._memory_save_doc_for_session(path, doc)
+            return {"status": "ok", "data": {"session": session, "id": entry_id,
+                                            "text": str(target.get("text") or "")[:160],
+                                            "restored": True,
+                                            "from_tombstone": from_tombstone}}
         except Exception as exc:
             return {"status": "error", "message": str(exc)[:180], "data": {}}
 
@@ -3435,6 +3517,7 @@ class BioCorePlugin(Star):
             "inject_intent": self.inject_intent,
             "proactive_reply": self.proactive_reply,
             "memory_dedup_embedding": self.memory_dedup_embedding,
+            "cross_session_memory": bool(getattr(self, "cross_session_memory", False)),
             "persona_loaded": bool(self.persona_text),
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
@@ -3480,7 +3563,8 @@ class BioCorePlugin(Star):
         from quart import request
         data = await request.get_json(silent=True) or {}
         key = str(data.get("key") or "").strip()
-        if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent"):
+        if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
+                       "cross_session_memory"):
             return {"status": "error", "message": "unknown setting"}
         setattr(self, key, bool(data.get("value")))
         self._save_settings()
@@ -3659,6 +3743,15 @@ class BioCorePlugin(Star):
                 d["entries"] = [e for e in d["entries"]
                                 if isinstance(e, dict)
                                 and self._usable_memory_text(str(e.get("text", "")))]
+                try:
+                    if int(d.get("schema_version", 0) or 0) < MEMORY_SCHEMA_VERSION:
+                        for entry in d["entries"]:
+                            entry.setdefault("inhibition", 0.0)
+                            entry.setdefault("suppression_count", 0)
+                            entry.setdefault("memory_tier", "warm")
+                        d["schema_version"] = MEMORY_SCHEMA_VERSION
+                except Exception:
+                    pass
                 return d
         except Exception:
             pass
@@ -3666,6 +3759,8 @@ class BioCorePlugin(Star):
 
     def _save_memory(self, event, doc):
         try:
+            if isinstance(doc, dict):
+                doc["schema_version"] = MEMORY_SCHEMA_VERSION
             self._memory_path(event).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             logger.warning("[biocore] memory save failed: %s", exc)
@@ -3705,15 +3800,6 @@ class BioCorePlugin(Star):
         except Exception:
             return False
 
-    def _memory_tau(self, core) -> float:
-        profile = self.profile or DEFAULT_PROFILE
-        recovery = float(profile.get("recovery_rate", 0.62) or 0.62)
-        stress = float(getattr(core, "stress", 0.1)) if core is not None else 0.1
-        trust = float(getattr(core, "trust", 0.5)) if core is not None else 0.5
-        days = 2.0 + 14.0 * recovery
-        days *= max(0.25, 1.0 - 0.55 * stress)
-        days *= 0.8 + 0.4 * trust
-        return max(3600.0, days * 86400.0)
 
     def _memory_score(self, core, entry: dict, cosine: float) -> float:
         importance = float(entry.get("importance", 0.5) or 0.5)
@@ -4017,7 +4103,9 @@ class BioCorePlugin(Star):
         if reason == "vague_target":
             return "- 删除请求缺少具体对象，未执行；需要用户说明要删除哪条记忆。"
         if reason == "no_match":
-            return "- 没有找到匹配的记忆，未删除。"
+            # Silent: ordinary sentences containing delete words must not inject
+            # a fake memory line into the prompt.
+            return ""
         if reason == "no_restore_target":
             return "- 没有可恢复的已删除记忆。"
         if reason == "no_rollback_target":
@@ -4080,6 +4168,150 @@ class BioCorePlugin(Star):
         entry.setdefault("inhibition", 0.0)
         entry.setdefault("suppression_count", 0)
 
+
+    # ------------------------------------------------------------------
+    # Privacy / deletion semantics
+    # ------------------------------------------------------------------
+    def _redact_archive_text(self, needle: str, session: str = "") -> int:
+        """Redact a deleted memory text from event archives and insights.
+
+        Best-effort, bounded and atomic per file: matching event fields and
+        source_texts are replaced/dropped, insight rows are replaced. Source
+        ids/message refs are left intact because they carry no raw text.
+        """
+        needle = str(needle or "").strip()
+        if len(needle) < 4:
+            return 0
+        replacement = "[已删除]"
+        fields = ("title", "event", "central_details", "peripheral_details",
+                  "meaning_to_her", "reflection", "event_key")
+        total = 0
+
+        def _mutate_event(obj):
+            nonlocal total
+            hit = False
+            for field in fields:
+                value = obj.get(field)
+                if isinstance(value, str) and needle in value:
+                    obj[field] = value.replace(needle, replacement)
+                    hit = True
+            sources = obj.get("source_texts")
+            if isinstance(sources, list):
+                kept = [str(x) for x in sources if needle not in str(x)]
+                if len(kept) != len(sources):
+                    obj["source_texts"] = kept
+                    obj["source_redacted"] = True
+                    hit = True
+            if hit:
+                total += 1
+            return hit
+
+        try:
+            self._rewrite_jsonl_atomic(EVENT_ARCHIVE_PATH, _mutate_event)
+            if session:
+                safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(session))[:80]
+                self._rewrite_jsonl_atomic(EVENT_SESSION_DIR / safe / "events.jsonl",
+                                           _mutate_event)
+        except Exception:
+            pass
+
+        def _mutate_insight(obj):
+            nonlocal total
+            value = obj.get("insight")
+            if isinstance(value, str) and needle in value:
+                obj["insight"] = value.replace(needle, replacement)
+                total += 1
+                return True
+            return False
+
+        try:
+            self._rewrite_jsonl_atomic(INSIGHT_ARCHIVE_PATH, _mutate_insight)
+        except Exception:
+            pass
+        return total
+
+    def _propagate_memory_deletion(self, event, entry, doc, reason: str = "user_delete") -> None:
+        """Propagate one memory deletion to derived summaries/events/insights."""
+        try:
+            if not isinstance(entry, dict) or not isinstance(doc, dict):
+                return
+            raw_text = str(entry.get("text") or "")
+            needle = raw_text.split("\n[再巩固]")[0].strip()
+            if len(needle) < 4:
+                return
+            now = time.time()
+            # 1) summaries derived from the deleted entry in the same doc.
+            for summary in (doc.get("entries") or []):
+                if not isinstance(summary, dict) or summary.get("role") != "summary":
+                    continue
+                text = str(summary.get("text") or "")
+                if needle not in text:
+                    continue
+                summary["text"] = text.replace(needle, "[已删除]")[:1200]
+                summary["source_deleted"] = True
+                try:
+                    summary["memory_confidence"] = min(
+                        float(summary.get("memory_confidence", 0.4) or 0.4), 0.25)
+                except Exception:
+                    summary["memory_confidence"] = 0.25
+                memory_meta.append_write_log(doc, op="REDACT",
+                                             entry_id=str(summary.get("id") or ""),
+                                             reason="summary_derived", ts=now)
+            # 2) event archive + insights.
+            session = str(getattr(event, "unified_msg_origin", "") or "")
+            changed = self._redact_archive_text(needle, session)
+            if changed:
+                memory_meta.append_write_log(
+                    doc, op="REDACT", entry_id=str(entry.get("id") or ""),
+                    reason="%s:%d" % (reason, changed), ts=now)
+        except Exception as exc:
+            logger.warning("[biocore] deletion propagation failed: %s", exc)
+
+    def _cross_session_memory_entries(self, event) -> list:
+        """Active memories from the same sender's other sessions (opt-in).
+
+        Requires `cross_session_memory` and a sender id whose user file has a
+        bounded `sessions` list (written by `_touch_user`). Returns
+        [(session_key, entry), ...] and never mutates other docs.
+        """
+        if not getattr(self, "cross_session_memory", False):
+            return []
+        try:
+            sid, _name = self._speaker(event)
+            if not sid:
+                return []
+            path = self._user_path(event)
+            if not path.exists():
+                return []
+            user = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(user, dict):
+                return []
+            current = str(getattr(event, "unified_msg_origin", "") or "")
+            out = []
+            for key in (user.get("sessions") or [])[-20:]:
+                key = str(key or "").strip()
+                if not key or key == current:
+                    continue
+                safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)[:80]
+                mpath = MEMORY_DIR / (safe + ".json")
+                if not mpath.exists():
+                    continue
+                try:
+                    other = json.loads(mpath.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                if not isinstance(other, dict):
+                    continue
+                for entry in (other.get("entries") or [])[-200:]:
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("deleted") or entry.get("summarized"):
+                        continue
+                    out.append((key, entry))
+            return out
+        except Exception:
+            return []
+
     async def _memory_recall(self, event, text: str, core=None, extra: str = "", vec=None, voice: str = "") -> str:
         self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown",
                                   "abstain": False, "tiers": {}, "answer_confidence": 0.0,
@@ -4099,6 +4331,12 @@ class BioCorePlugin(Star):
         except Exception:
             _cmd = {"handled": False}
         if _cmd.get("handled"):
+            if str(_cmd.get("op") or "") == "DELETE":
+                try:
+                    self._propagate_memory_deletion(
+                        event, _cmd.get("entry"), doc, reason="nl_delete")
+                except Exception:
+                    pass
             self._save_memory(event, doc)
             self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown",
                                       "abstain": False, "tiers": {}, "answer_confidence": 0.0,
@@ -4308,6 +4546,54 @@ class BioCorePlugin(Star):
             self._save_memory(event, doc)
         except Exception:
             pass
+        # Opt-in cross-session recall: promote the same sender's memories from
+        # other sessions into this session (marked, capped, never leaking to
+        # other senders). Default off in config.
+        _foreign_lines = []
+        try:
+            if getattr(self, "cross_session_memory", False):
+                _known_texts = {str(e.get("text") or "") for e in entries
+                                if isinstance(e, dict) and not e.get("deleted")}
+                _foreign = []
+                for _skey, _entry in self._cross_session_memory_entries(event):
+                    _etext = str(_entry.get("text") or "").strip()
+                    if not _etext or _etext in _known_texts:
+                        continue
+                    _evec = _entry.get("vector") or []
+                    _ecos = self._cosine(vec, _evec) if _evec else 0.0
+                    if _ecos < PARTIAL_MATCH_THRESHOLD:
+                        continue
+                    _escore = self._memory_score(core, _entry, _ecos)
+                    if _escore < RETRIEVAL_THRESHOLD:
+                        continue
+                    _foreign.append((_escore, _skey, _entry))
+                _foreign.sort(key=lambda item: item[0], reverse=True)
+                for _escore, _skey, _entry in _foreign[:2]:
+                    _copy = dict(_entry)
+                    _copy["id"] = _sha256(_skey + "|" + str(_entry.get("text"))[:200])[:12]
+                    _copy["shared_from_session"] = _skey
+                    _copy["ts"] = now
+                    _copy["hits"] = 1
+                    _copy["last_used"] = now
+                    _copy["memory_tier"] = "warm"
+                    try:
+                        _copy["memory_confidence"] = min(
+                            0.55, float(_entry.get("memory_confidence", 0.6) or 0.6))
+                    except Exception:
+                        _copy["memory_confidence"] = 0.5
+                    if not _copy.get("memory_source"):
+                        _copy["memory_source"] = "inferred"
+                    entries.append(_copy)
+                    _known_texts.add(_etext)
+                    _foreign_lines.append("- （其他会话）%s：%s" % (
+                        str(_copy.get("memory_source") or "inferred"), _etext[:200]))
+                    memory_meta.append_write_log(doc, op="ADD",
+                                                 entry_id=_copy["id"],
+                                                 reason="cross_session", ts=now)
+                if _foreign_lines:
+                    self._save_memory(event, doc)
+        except Exception:
+            _foreign_lines = []
         self._last_memory_meta = memory_meta.summarize_recall(top, now)
         _gate = str(self._last_memory_meta.get("gate") or "none")
         lines = []
@@ -4321,6 +4607,7 @@ class BioCorePlugin(Star):
             snippet = str(e.get("text", "")).strip().replace("\n", " ")
             if snippet:
                 lines.append("- %s：%s" % (role, snippet[:240]))
+        lines.extend(_foreign_lines)
         memory_text = "\n".join(lines)
         # Forced abstention: uncertain memory content is withheld so the model
         # cannot assert it as fact. The meta keeps count/confidence, so the
