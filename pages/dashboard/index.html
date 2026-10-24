@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
+<link rel="stylesheet" href="./styles.css?v=20261024-1440" />
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="mark"><span></span><span></span><span></span></div><div><b>BioCore</b><small>EMOTION CORE</small></div></div>
+    <div class="side-label">WORKSPACE</div>
+    <nav class="nav">
+      <button class="nav-item active" data-view="overview"><span class="ni-icon">◉</span><span>情绪概览</span></button>
+      <button class="nav-item" data-view="intent"><span class="ni-icon">↗</span><span>表达意图</span></button>
+      <button class="nav-item" data-view="persona"><span class="ni-icon">◐</span><span>人格自我</span></button>
+      <button class="nav-item" data-view="sessions"><span class="ni-icon">▤</span><span>活动会话</span></button>
+      <button class="nav-item" data-view="settings"><span class="ni-icon">⚙</span><span>设置</span></button>
+    </nav>
+    <div class="side-box">
+      <div class="side-box-title">生物层状态</div>
+      <div class="side-line"><span class="dot" id="statusDot"></span><span id="linkState">连接中</span></div>
+      <div class="side-line small"><span id="pluginBadge">BioCore</span></div>
+    </div>
+    <div class="side-foot">v1.0.8 · tendency layer</div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div><div class="crumb">BioCore / <span id="crumbView">情绪概览</span></div><h1>生物情绪核心</h1></div>
+      <div class="top-actions"><span class="status-pill"><span class="dot"></span><span id="topStatus">已连接</span></span><button class="btn" id="themeToggle">深色</button>
+        <button class="btn" id="refreshBtn">刷新</button></div>
+    </header>
+
+    <div class="telemetry-strip">
+      <div><span>SYS</span><b id="teleSys">NOMINAL</b></div>
+      <div><span>MODE</span><b id="teleMode">--</b></div>
+      <div><span>LAYERS</span><b id="teleLayers">FIELD / AFFECT / CORE</b></div>
+      <div><span>SYNC</span><b id="teleSync">--</b></div>
+      <div><span>TICKS</span><b id="teleTicks">--</b></div>
+    </div>
+    <section class="view active" id="view-overview">
+      <div class="hero">
+        <div class="hero-index">01</div>
+        <div class="hero-rail" aria-hidden="true"></div>
+        <div class="hero-side">EMOTION CORE / LIVE TELEMETRY</div>
+        <div class="hero-scale" aria-hidden="true"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+        <div class="hero-copy">
+          <div class="eyebrow">CURRENT EMOTION</div>
+          <h2 id="heroTitle">读取中…</h2>
+          <p id="heroSub">情绪不是台词，是会影响回复倾向的内部状态。</p>
+          <div class="chips" id="tagRow"></div>
+          <div class="legend"><span><i class="lg-noise"></i>粒子</span><span><i class="lg-echo"></i>外层环 01</span><span><i class="lg-ripple"></i>外层环 02</span><span><i class="lg-spike"></i>核心脉冲</span></div>
+        </div>
+        <div class="orb-wrap">
+          <div class="orb-stage">
+            
+            <canvas id="orbCanvas" width="520" height="520"></canvas>
+            <span class="orb-tag ot-noise">core <b id="orbNoise">--</b></span>
+            <span class="orb-tag ot-echo">orbit 01 <b id="orbEcho">--</b></span>
+            <span class="orb-tag ot-ripple">orbit 02 <b id="orbRipple">--</b></span>
+            <span class="orb-tag ot-spike">sync <b id="orbSpike">--</b></span>
+          </div>
+          <div class="orb-meta"><b id="orbValence">+0.00</b><span>PAD valence</span></div>
+        </div>
+      </div>
+
+      <div class="metrics">
+        <div class="metric"><span>压力</span><b id="mStress">--</b><div class="bar"><i id="bStress"></i></div></div>
+        <div class="metric"><span>能量</span><b id="mEnergy">--</b><div class="bar"><i id="bEnergy"></i></div></div>
+        <div class="metric"><span>信任</span><b id="mTrust">--</b><div class="bar"><i id="bTrust"></i></div></div>
+        <div class="metric"><span>控制感</span><b id="mDominance">--</b><div class="bar"><i id="bDominance"></i></div></div>
+        <div class="metric"><span>社交连接</span><b id="mSocial">--</b><div class="bar"><i id="bSocial"></i></div></div>
+        <div class="metric"><span>唤醒</span><b id="mArousal">--</b><div class="bar"><i id="bArousal"></i></div></div>
+      </div>
+
+      <div class="grid">
+        <div class="panel">
+          <div class="panel-head"><h3>噪声通道</h3><span class="hint">OU / random walk</span></div>
+          <div class="noise-list" id="noiseList"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>回声与波纹</h3><span class="hint">echo / ripple</span></div>
+          <div class="signal-grid">
+            <div><small>echo</small><b id="sEcho">--</b></div>
+            <div><small>echo_trace</small><b id="sEchoTrace">--</b></div>
+            <div><small>ripple upper</small><b id="sUpper">--</b></div>
+            <div><small>ripple lower</small><b id="sLower">--</b></div>
+            <div><small>overlap</small><b id="sOverlap">--</b></div>
+            <div><small>spiking rate</small><b id="sRate">--</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel signal-panel">
+        <div class="panel-head"><h3>实时生物信号</h3><span class="hint">COMPOSITE · INTERFERENCE · DECAY</span></div>
+        <canvas id="signalCanvas" style="height:160px;width:100%"></canvas>
+        <div class="signal-legend"><span><i style="background:#ff6b00"></i>COMPOSITE SIGNAL</span><span class="legend-note">噪声抖动 · 回声反射 · 波纹干涉</span></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-intent">
+      <div class="section-title"><div><div class="eyebrow">TRANSLATION</div><h2>表达意图</h2></div><span class="hint">LLM 只读这一层</span></div>
+      <div class="panel">
+        <div class="intent-main"><span id="intentLabel">hold</span><p id="intentText">读取中…</p></div>
+        <div class="intent-grid">
+          <div><small>emotion</small><b id="iEmotion">--</b></div><div><small>need</small><b id="iNeed">--</b></div><div><small>expression</small><b id="iExpr">--</b></div>
+          <div><small>compound</small><b id="iCompound">--</b></div><div><small>spectrum</small><b id="iSpectrum">--</b></div><div><small>plan</small><b id="iPlan">--</b></div>
+          <div><small>novelty</small><b id="iNovelty">--</b></div><div><small>goal</small><b id="iGoal">--</b></div><div><small>coping</small><b id="iCoping">--</b></div>
+          <div><small>regulation</small><b id="iReg">--</b></div><div><small>self</small><b id="iSelf">--</b></div>
+          <div><small>norm</small><b id="iNorm">--</b></div><div><small>expected</small><b id="iExpected">--</b></div><div><small>urgency</small><b id="iUrgency">--</b></div>
+          <div><small>opponent</small><b id="iOpponent">--</b></div>
+          <div><small>attention</small><b id="iAttention">--</b></div><div><small>meta</small><b id="iMeta">--</b></div>
+        </div>
+      </div>
+      <div class="notice">不暴露原始数值。生物层只把状态翻译成 intent / need / expression / plan / regulation。</div>
+    </section>
+
+    <section class="view" id="view-persona">
+      <div class="section-title"><div><div class="eyebrow">PERSONA &amp; SELF</div><h2>人格自我</h2></div><span class="hint">persona → numbers → self</span></div>
+      <div class="persona-tabs fold-grid" id="personaTabs">
+        <button type="button" class="persona-tab fold-panel folded active" data-persona-tab="baseline">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V12M10 20V5M16 20v-9M22 20H2"/></svg></span>
+            <small>人格基线</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="self">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></svg></span>
+            <small>自我模型</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="goals">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/></svg></span>
+            <small>目标</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="editor">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 10-10-3-3L5 16l-1 4Z"/><path d="M13 5l3 3"/></svg></span>
+            <small>编辑</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="autobio">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5a3 3 0 0 1 3-3h13v18H7a3 3 0 0 1-3-3V5Z"/><path d="M8 2v18"/></svg></span>
+            <small>自传</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="tree">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><path d="M12 6v5M12 11l-5 3v4M12 11l5 3v4"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/></svg></span>
+            <small>反思树</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="spectrum">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-25 12 12)"/></svg></span>
+            <small>光谱</small>
+          </span>
+        </button>
+      </div>
+      <div class="panel persona-tabpanel active" data-persona-tab="baseline">
+        <div class="panel-head"><h3>人格基线</h3><span class="hint">OCEAN · PAD</span></div>
+        <div class="persona-bars" id="personaBars"></div>
+        <p class="persona-note" id="personaNote">首次读取 AstrBot 人设后编译</p>
+        <div class="intent-grid" id="personaBaseline"></div>
+      </div>
+      <div class="panel persona-tabpanel" id="selfStatePanel" data-persona-tab="self">
+        <div class="panel-head"><h3>自我模型与叙事</h3><span class="hint" id="selfVersion">v0</span></div>
+        <div class="self-duo">
+          <div><small>CORE SELF / 核心自我</small><p id="coreSelf">未形成</p></div>
+          <div><small>NARRATIVE SELF / 叙事自我</small><p id="narrativeSelf">未形成</p></div>
+        </div>
+        <div class="timeline">
+          <div class="tl-col"><small>PAST / 过去</small><ul id="tlPast"></ul></div>
+          <div class="tl-col"><small>PRESENT / 现在</small><p id="tlPresent">—</p></div>
+          <div class="tl-col"><small>FUTURE / 未来</small><ul id="tlFuture"></ul></div>
+        </div>
+        <div class="hist-block">
+          <small>SELF MODEL HISTORY / 最近 3 次版本</small>
+          <div id="selfHistory"></div>
+        </div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="goals">
+        <div class="panel-head"><h3>目标与冲突</h3><span class="hint">GOALS / CONFLICT</span></div>
+        <div class="signal-grid" id="goalList"></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="editor">
+        <div class="panel-head"><h3>自我模型编辑</h3><span class="hint">WHO / NARRATIVE / BOUNDARIES</span></div>
+        <p class="api-note">只修改 BioCore 的自我模型，不写回 AstrBot 人设。</p>
+        <div class="api-grid" id="selfEditGrid">
+          <label><span>WHO / 我是谁</span><input id="selfWho" placeholder="一句话自我定位" autocomplete="off"></label>
+          <label><span>NARRATIVE / 最近</span><input id="selfNarrative" placeholder="最近发生的事如何改变我看自己" autocomplete="off"></label>
+          <label><span>BOUNDARIES / 边界</span><input id="selfBoundaries" placeholder="用换行分隔" autocomplete="off"></label>
+          <label><span>CONSISTENCY / 一致性</span><input id="selfConsistency" placeholder="用换行分隔" autocomplete="off"></label>
+        </div>
+        <div class="api-actions"><button type="button" class="btn" id="selfSaveBtn">保存自我模型</button><span id="selfSaveState"></span></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="autobio">
+        <div class="panel-head"><h3>自传体时间线</h3><span class="hint">AUTOBIOGRAPHICAL SELF</span></div>
+        <div id="autoBioList"></div>
+        <div class="signal-grid" id="regStats"></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="tree">
+        <div class="panel-head"><h3>反思树</h3><span class="hint" id="treeCount">REFLECTION TREE</span></div>
+        <div class="tree" id="reflectionTree"></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="spectrum">
+        <div class="panel-head"><h3>光谱概率 / SEC</h3><span class="hint">COWEN PROTOTYPES · SEC</span></div>
+        <div class="spec-list" id="spectrumProbs"></div>
+        <div class="sec-grid" id="secGrid"></div>
+      </div>
+      <div class="notice">人设文本留在 AstrBot。这里只展示数值倾向，不写记忆、不改身份。</div>
+    </section>
+
+    <section class="view" id="view-sessions">
+      <div class="section-title"><div><div class="eyebrow">SESSIONS</div><h2>活动会话</h2></div><span class="hint" id="sessionCount">0 SESSIONS</span></div>
+      <div class="sessions" id="sessionList"></div>
+
+      <div class="section-title mt"><div><div class="eyebrow">SESSION MEMORY</div><h2>会话记忆</h2></div><span class="hint">会话 → 记忆 → 总结 → 重要事件 → 全部消息</span></div>
+      <div class="panel">
+        <div class="event-toolbar">
+          <label><span>会话</span><select id="summarySession" class="event-session"></select></label>
+          <span class="hint" id="summaryHint">还没有已总结的会话</span>
+        </div>
+        <p class="api-note" id="summaryEmpty">还没有已总结的会话。事件总结生成后，这里才会出现对应会话。</p>
+        <div id="sessionSummaryBlock"></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <div class="section-title"><div><div class="eyebrow">API ACCESS</div><h2>API 接入 · 覆盖项</h2></div><span class="hint">ASTRBOT 优先</span></div>
+      <div class="notice">行为参数（注入意图 / 记忆 / 知识库 / 语音 / 图片 / 衰减常数）统一在 AstrBot 插件管理 → BioCore 配置里设置；这里只保留 BioCore 自己的 API 覆盖、记忆压缩、可视化和备份，避免两处重复。</div>
+      <div class="panel settings api-panel" data-fold="1" data-fold-label="API">
+        <div class="api-savebar">
+          <div><b>API 接入</b><span id="apiSaveStateTop">默认读取 AstrBot，确认后保存</span></div>
+          <div class="api-savebar-actions">
+            <button type="button" class="btn mini" id="apiFoldBtn">折叠</button>
+            <button type="button" class="btn mini" id="resetApiBtn">读取 AstrBot 默认</button>
+            <button type="button" class="btn primary js-save-api">保存 API 接入</button>
+          </div>
+        </div>
+        <div id="apiBody">
+        <div class="api-block">
+          <div class="api-head"><b>LLM / 对话</b><span id="llmSourceState">检测中</span></div>
+          <div class="api-grid">
+            <label><span>来源</span><select id="llmSource"><option value="astrbot">跟随 AstrBot</option><option value="custom">自定义 API</option></select></label>
+            <label><span>API Base</span><input id="llmBase" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+            <label><span>API Key</span><input id="llmKey" type="password" placeholder="留空 = 保持已保存" autocomplete="new-password"></label>
+            <label><span>模型</span><div class="api-model-row"><select id="llmModel"></select><button type="button" class="btn mini" id="llmModelsBtn">获取模型</button></div></label>
+          </div>
+          <p class="api-note" id="llmNote">LLM 默认使用 AstrBot 当前平台模型；没有时再填自定义 API。</p>
+        </div>
+        <div class="api-block">
+          <div class="api-head"><b>EMBEDDING / 嵌入</b><span id="embedSourceState">检测中</span><span class="api-switch-text">启用</span><label class="switch mini"><input type="checkbox" id="embedEnabled"><span></span></label></div>
+          <div class="api-grid">
+            <label><span>来源</span><select id="embedSource"><option value="astrbot">跟随 AstrBot</option><option value="custom">自定义 API</option></select></label>
+            <label><span>API Base</span><input id="embedBase" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+            <label><span>API Key</span><input id="embedKey" type="password" placeholder="留空 = 保持已保存" autocomplete="new-password"></label>
+            <label><span>模型</span><div class="api-model-row"><select id="embedModel"></select><button type="button" class="btn mini" id="embedModelsBtn">获取模型</button></div></label>
+          </div>
+          <p class="api-note" id="embedNote">未检测到 AstrBot embedding provider 时，请填写自定义 API。</p>
+        </div>
+        <div class="api-block">
+          <div class="api-head"><b>RERANK / 重排</b><span id="rerankSourceState">检测中</span><span class="api-switch-text">启用</span><label class="switch mini"><input type="checkbox" id="rerankEnabled"><span></span></label></div>
+          <div class="api-grid">
+            <label><span>来源</span><select id="rerankSource"><option value="astrbot">跟随 AstrBot</option><option value="custom">自定义 API</option></select></label>
+            <label><span>API Base</span><input id="rerankBase" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+            <label><span>API Key</span><input id="rerankKey" type="password" placeholder="留空 = 保持已保存" autocomplete="new-password"></label>
+            <label><span>模型</span><div class="api-model-row"><select id="rerankModel"></select><button type="button" class="btn mini" id="rerankModelsBtn">获取模型</button></div></label>
+          </div>
+          <p class="api-note" id="rerankNote">未检测到 AstrBot rerank provider 时，请填写自定义 API。</p>
+        </div>
+        <div class="api-block">
+          <div class="api-head"><b>TTS / 语音</b><span id="ttsSourceState">检测中</span><span class="api-switch-text">启用</span><label class="switch mini"><input type="checkbox" id="ttsEnabled"><span></span></label></div>
+          <div class="api-grid">
+            <label><span>来源</span><select id="ttsSource"><option value="astrbot">跟随 AstrBot</option><option value="custom">自定义 API</option></select></label>
+            <label><span>API Base</span><input id="ttsBase" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+            <label><span>API Key</span><input id="ttsKey" type="password" placeholder="留空 = 保持已保存" autocomplete="new-password"></label>
+            <label><span>模型</span><div class="api-model-row"><select id="ttsModel"></select><button type="button" class="btn mini" id="ttsModelsBtn">获取模型</button></div></label>
+            <label><span>音色 / Voice</span><input id="ttsVoice" placeholder="alloy / 自定义音色" autocomplete="off"></label>
+            <label><span>格式</span><select id="ttsFormat"><option value="mp3">mp3</option><option value="wav">wav</option><option value="opus">opus</option></select></label>
+          </div>
+          <p class="api-note" id="ttsNote">通用 OpenAI 兼容 /audio/speech；没有 AstrBot TTS provider 时使用自定义 API。</p>
+        </div>
+        <div class="api-block">
+          <div class="api-head"><b>IMAGE / 图像</b><span id="imageSourceState">检测中</span><span class="api-switch-text">启用</span><label class="switch mini"><input type="checkbox" id="imageEnabled"><span></span></label></div>
+          <div class="api-grid">
+            <label><span>来源</span><select id="imageSource"><option value="astrbot">跟随 AstrBot</option><option value="custom">自定义 API</option></select></label>
+            <label><span>API Base</span><input id="imageBase" placeholder="https://api.example.com/v1" autocomplete="off"></label>
+            <label><span>API Key</span><input id="imageKey" type="password" placeholder="留空 = 保持已保存" autocomplete="new-password"></label>
+            <label><span>模型</span><div class="api-model-row"><select id="imageModel"></select><button type="button" class="btn mini" id="imageModelsBtn">获取模型</button></div></label>
+            <label><span>尺寸 / Size</span><input id="imageSize" placeholder="1024x1024" autocomplete="off"></label>
+          </div>
+          <p class="api-note" id="imageNote">通用 OpenAI 兼容 /images/generations；没有 AstrBot 图片 provider 时使用自定义 API。</p>
+        </div>
+        </div>
+      </div>
+      <div class="section-title mt"><div><div class="eyebrow">MEMORY</div><h2>记忆压缩</h2></div><span class="hint">默认关闭</span></div>
+      <div class="panel settings" data-fold="1" data-fold-label="记忆">
+        <div class="setting-row"><div><b>启用记忆压缩</b><small>超过阈值后压缩旧记忆。</small></div><label class="switch"><input type="checkbox" id="swCompress"><span></span></label></div>
+        <div class="api-grid">
+          <label><span>触发阈值 / 字符</span><input id="compressThreshold" type="number" min="1000" step="500" value="6000"></label>
+          <label><span>压缩后最大 / 字符</span><input id="compressMax" type="number" min="120" step="100" value="800"></label>
+        </div>
+        <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。</p>
+        <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
+        <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
+      </div>
+      <div class="section-title mt"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
+      <div class="panel settings" data-fold="1" data-fold-label="球体">
+        <div class="setting-row"><div><b>评价粒子</b><small>三圈环形粒子，随 arousal/stress 扩张或收敛，颜色跟随情绪色。</small></div><label class="switch"><input type="checkbox" id="swShowNoise" checked><span></span></label></div>
+        <div class="setting-row"><div><b>粒子连线</b><small>连接同环相邻粒子，仅 attention 高或悬停球体时淡入。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
+        <div class="setting-row"><div><b>情绪节点</b><small>与情绪环表达重叠，默认关闭；需要调试时再开启。</small></div><label class="switch"><input type="checkbox" id="swShowNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>情绪影响线</b><small>情绪节点之间的淡线，默认关闭。</small></div><label class="switch"><input type="checkbox" id="swShowNodeLinks" checked><span></span></label></div>
+        <div class="setting-row"><div><b>记忆节点</b><small>一球一真实事件（最多 10 个 + 外圈档案带）；越久越向内，大小=质量，圈数=重要度，颜色更深。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>外层环</b><small>围绕球体自主运转的环，速度来自 echo / echo_trace。</small></div><label class="switch"><input type="checkbox" id="swShowEcho" checked><span></span></label></div>
+        <div class="setting-row"><div><b>外层环 02</b><small>第二条反向环，倾角和速度独立。</small></div><label class="switch"><input type="checkbox" id="swShowRipple" checked><span></span></label></div>
+        <div class="setting-row"><div><b>控制感环</b><small>外环半径来自 dominance；低控制内收，高控制外放。</small></div><label class="switch"><input type="checkbox" id="swShowDominance" checked><span></span></label></div>
+        <div class="setting-row"><div><b>社交连接环</b><small>最外层，半径来自 social；连接强时外扩。</small></div><label class="switch"><input type="checkbox" id="swShowSocial" checked><span></span></label></div>
+        <div class="setting-row"><div><b>强度</b><small>调整球体周围信号的整体幅度。</small></div><input type="range" id="orbIntensity" min="0" max="100" value="65"></div>
+        <p class="save-state" id="saveState">球体显示开关即时保存到本地浏览器（不写后端配置）</p>
+      </div>
+      <div class="section-title mt"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
+      <div class="panel settings" data-fold="1" data-fold-label="备份">
+        <div class="setting-row"><div><b>下载核心备份</b><small>插件代码 + data/ 打包成 zip，可用于迁移或恢复。</small></div><button type="button" class="btn" id="backupBtn">下载备份</button></div>
+        <p class="api-note" id="backupState">备份包含 API Key、persona、memory、states，不要外发。</p>
+        <div class="setting-row"><div><b>加载核心备份</b><small>选择备份 zip；连续点击两次确认，会覆盖当前 data/。</small></div></div>
+        <input type="file" id="restoreFile" accept=".zip,application/zip" style="margin:8px 0">
+        <button type="button" class="btn danger" id="restoreBtn">加载备份（需点两次）</button>
+        <p class="api-note" id="restoreState">尚未选择备份。</p>
+      </div>
+    </section>
+    <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
+  </main>
+</div>
+<script src="./app.js?v=20261024-1440"></script><script src="./orb.js?v=20261024-1440"></script>
+</body></html>
