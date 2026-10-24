@@ -1,12 +1,16 @@
 # -*- coding: utf-8 -*-
 """BioCore interpretation layer.
 
-Only this module may turn biological state into compact LLM input.
-The biological layer must not build prompt strings.
+Only this module may construct LLM inputs or parse LLM outputs for the
+biological layer. The biological layer must not build prompt strings, and the
+LLM may never write biological state directly: every model output is parsed
+and validated here (compact <bc> tag, persona profile, event ranking/summary,
+insight, memory summary).
 """
 from __future__ import annotations
 
 import json
+import math
 import re
 
 
@@ -19,6 +23,11 @@ def _one_line(text: str, limit: int = 160) -> str:
 
 
 _ALLOWED = {"joy", "sadness", "anger", "fear", "loneliness", "neutral"}
+_ALLOWED_NEEDS = {"share", "space", "vent", "be_heard", "talk"}
+_ALLOWED_EXPRESSIONS = {"open", "normal", "short"}
+# The model may only emit these compact keys. Numeric deltas are derived by
+# this module; any delta supplied by the model is ignored (boundary rule).
+_ALLOWED_OUTPUT_KEYS = {"e", "emotion", "i", "intensity", "n", "need", "x", "expression"}
 _LABEL_DELTAS = {
     "joy": (0.18, 0.06, 0.04, 0.05, 0.02),
     "sadness": (-0.18, -0.04, -0.03, -0.02, -0.01),
@@ -30,47 +39,63 @@ _LABEL_DELTAS = {
 
 
 def _with_label_deltas(meta: dict) -> dict:
+    """Map the compact model output (e/i/n/x) to validated state deltas.
+
+
+    The LLM never supplies numeric deltas. If a delta key is present it is
+    dropped instead of applied, so the model cannot write biological state
+    directly; only the label/strength mapping below may change v/a/d/social.
+    """
     if not isinstance(meta, dict):
         return {}
-    if any(k in meta for k in ("valence_delta", "arousal_delta", "dominance_delta", "social_delta")):
-        return meta
+    if any(k in meta for k in ("valence_delta", "arousal_delta", "dominance_delta",
+                               "social_delta", "trust_delta")):
+        return {}
+    out = {}
     emo = str(meta.get("emotion") or meta.get("e") or "").strip()
-    if emo not in _ALLOWED:
-        return meta
-    try:
-        inten = max(0.0, min(1.0, float(meta.get("intensity", meta.get("i", 0.65)))))
-    except Exception:
-        inten = 0.65
-    out = dict(meta)
-    out["emotion"] = emo
-    out["valence_delta"] = _LABEL_DELTAS[emo][0] * inten
-    out["arousal_delta"] = _LABEL_DELTAS[emo][1] * inten
-    out["dominance_delta"] = _LABEL_DELTAS[emo][2] * inten
-    out["social_delta"] = _LABEL_DELTAS[emo][3] * inten
-    out["trust_delta"] = _LABEL_DELTAS[emo][4] * inten
+    if emo in _ALLOWED:
+        try:
+            inten = max(0.0, min(1.0, float(meta.get("intensity", meta.get("i", 0.65)))))
+        except Exception:
+            inten = 0.65
+        out["emotion"] = emo
+        out["intensity"] = round(inten, 3)
+        out["valence_delta"] = _LABEL_DELTAS[emo][0] * inten
+        out["arousal_delta"] = _LABEL_DELTAS[emo][1] * inten
+        out["dominance_delta"] = _LABEL_DELTAS[emo][2] * inten
+        out["social_delta"] = _LABEL_DELTAS[emo][3] * inten
+        out["trust_delta"] = _LABEL_DELTAS[emo][4] * inten
+    need = str(meta.get("n") or meta.get("need") or "").strip()
+    if need in _ALLOWED_NEEDS:
+        out["need"] = need
+    expression = str(meta.get("x") or meta.get("expression") or "").strip()
+    if expression in _ALLOWED_EXPRESSIONS:
+        out["expression"] = expression
     return out
 
 
 def parse_response(raw: str):
-    """Parse LLM output and return (clean_text, numeric_update|None).
+    """Parse LLM output and return (clean_text, validated_update|None).
 
-    This is the only place that interprets the hidden emotion tag.
+    This is the only place that interprets the hidden emotion tag. The model
+    may only emit compact label keys; numeric deltas in the tag are ignored.
     """
     text = str(raw or "")
     m = re.search(r"<bc>(.*?)</bc>", text, re.S | re.I)
-    tag = "bc"
     if not m:
         m = re.search(r"<biocore>(.*?)</biocore>", text, re.S | re.I)
-        tag = "biocore"
     if not m:
         return text, None
+    clean = (text[:m.start()] + text[m.end():]).strip()
     try:
         data = json.loads(m.group(1).strip())
     except Exception:
-        return (text[:m.start()] + text[m.end():]).strip(), None
-    update = _with_label_deltas(data)
-    clean = (text[:m.start()] + text[m.end():]).strip()
-    return clean, update
+        return clean, None
+    if not isinstance(data, dict):
+        return clean, None
+    allowed = {key: value for key, value in data.items() if key in _ALLOWED_OUTPUT_KEYS}
+    update = _with_label_deltas(allowed)
+    return clean, (update or None)
 
 
 def plan(core) -> str:
@@ -136,6 +161,16 @@ def image_block(caption: str) -> str:
     return str(caption or "").strip().replace("\n", "；")[:160]
 
 
+def image_caption_prompt(base_prompt: str = "") -> str:
+    """Prompt used for the vision model caption request.
+
+    The caller may supply an AstrBot/user configured prompt; the deterministic
+    fallback lives here so main.py never assembles prompt text itself.
+    """
+    text = str(base_prompt or "").strip()
+    return text or "请客观描述这张图片，供角色扮演聊天使用。"
+
+
 def event_summary_prompt(texts) -> str:
     joined = "\n".join("- " + str(t)[:400] for t in (texts or [])[:12])
     return ("下面是一段已经发生的事件（来自聊天记录）。请只输出一个 JSON 对象，不要代码块，不要解释：\n"
@@ -151,7 +186,14 @@ def insight_prompt(events) -> str:
 
 
 def render_compact(core, memory="", events="", self_model=None, user=None,
-                   image="", kb="", speaker="", voice="", memory_meta=None) -> str:
+                   image="", kb="", speaker="", voice="", memory_meta=None,
+                   open_loops=None, open_loops_due=0, answer_confidence=None) -> str:
+    """Render biological state into the single compact block the LLM sees.
+
+    The interpretation layer owns this string; callers pass raw state/data and
+    never build prompt text themselves. Optional fields are rendered only when
+    present so the block stays short (prefix-cache friendly).
+    """
     it = core.intent()
     cp = ("[BC] v=%.2f a=%.2f d=%.2f s=%.2f t=%.2f e=%s c=%s n=%s plan=%s reg=%s" % (
         float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
@@ -173,9 +215,34 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
             str(mm.get("source", "unknown") or "unknown")[:12])
         if mm.get("abstain"):
             cp += " mem=uncertain"
+        _ansc = answer_confidence
+        if _ansc is None:
+            _ansc = mm.get("answer_confidence")
+        if _ansc is not None:
+            try:
+                cp += " ansc=%.2f" % max(0.0, min(1.0, float(_ansc)))
+            except Exception:
+                pass
         _dests = mm.get("destinations")
         if isinstance(_dests, dict) and _dests:
             cp += " memwho=" + ",".join("%s×%s" % (str(k)[:20], int(v)) for k, v in list(_dests.items())[:3])
+    # Prospective memory: open-loop count plus the nearest due item (bounded).
+    _loops = [x for x in (open_loops or []) if isinstance(x, dict)] if isinstance(open_loops, (list, tuple)) else []
+    _open_loops = [x for x in _loops if str(x.get("status") or "open") == "open"]
+    if _open_loops:
+        cp += " | loops=%d" % len(_open_loops)
+        try:
+            _due = int(open_loops_due or 0)
+        except Exception:
+            _due = 0
+        if _due:
+            cp += " due=%d" % _due
+        for _loop in _open_loops:
+            if str(_loop.get("due_hint") or "") in ("soon", "tomorrow"):
+                _text = str(_loop.get("text") or "").strip()[:40]
+                if _text:
+                    cp += " soon=" + _text
+                break
     if eb:
         cp += " | ev=" + eb
     if sb:
@@ -191,8 +258,9 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
     if voice:
         cp += " | voice=" + str(voice)[:160]
     cp += ("\n[BC-Return] 回复末尾只输出一个 "
-           '<bc>{"e":"joy|sadness|anger|fear|loneliness|neutral","i":0.0-1.0}</bc>，'
-           "不解释、不输出数值 delta。")
+           '<bc>{"e":"joy|sadness|anger|fear|loneliness|neutral","i":0.0-1.0}</bc>'
+           "（可选 n=share|space|vent|be_heard|talk，x=open|normal|short）；"
+           "不解释、不输出任何数值 delta。")
     if _mm_count > 0 and mm.get("abstain"):
         cp += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
     return cp
@@ -214,3 +282,185 @@ def event_ranking_prompt(texts) -> str:
             "规则：importance 0~1；centrality 0~1 表示核心程度；event_key 要能区分同一情绪的不同事件；"
             "只有真正影响关系、承诺、伤害、被理解、重要偏好或情绪转折的事件才给 importance >=0.6；"
             "普通闲聊不要提取；没有重要事件就输出 []；不要编造。\n\n" + joined)
+
+
+# ---------------------------------------------------------------------------
+# Model output parsing (the only path from LLM output into biological state)
+# ---------------------------------------------------------------------------
+_EMOTIONS = {"joy", "sadness", "anger", "fear", "loneliness", "neutral"}
+
+# Compiled-persona numeric ranges. Keys outside this table are ignored so a
+# model cannot inject arbitrary fields into the biological layer.
+PROFILE_RANGES = {
+    "O": (0.0, 1.0), "C": (0.0, 1.0), "E": (0.0, 1.0), "A": (0.0, 1.0), "N": (0.0, 1.0),
+    "stress_reactivity": (0.0, 1.0), "recovery_rate": (0.0, 1.0),
+    "social_baseline": (0.0, 1.0), "energy_baseline": (0.0, 1.0),
+    "curiosity_baseline": (0.0, 1.0), "safety_baseline": (0.0, 1.0),
+    "da_baseline": (0.0, 1.0), "oa_baseline": (0.0, 1.0), "ht_baseline": (0.0, 1.0),
+    "autonomy_gain": (0.0, 1.5), "baseline_v": (-1.0, 1.0), "baseline_a": (0.0, 1.0),
+    "learning_rate": (0.01, 0.12),
+}
+
+
+def _bounded(value, low: float, high: float, default: float = 0.0) -> float:
+    try:
+        number = float(value)
+    except Exception:
+        return float(default)
+    if not math.isfinite(number):
+        return float(default)
+    return max(float(low), min(float(high), number))
+
+
+def _clean_text(value, limit: int = 400) -> str:
+    return str(value or "").strip()[:max(1, int(limit))]
+
+
+def _strip_code_fence(raw: str) -> str:
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _extract_json_object(raw: str):
+    """Extract one JSON object from possibly noisy model output."""
+    text = _strip_code_fence(raw)
+    lo, hi = text.find("{"), text.rfind("}")
+    if lo < 0 or hi <= lo:
+        return None
+    try:
+        data = json.loads(text[lo:hi + 1])
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _extract_json_array(raw: str):
+    """Extract one JSON array from possibly noisy model output."""
+    text = _strip_code_fence(raw)
+    lo, hi = text.find("["), text.rfind("]")
+    if lo < 0 or hi <= lo:
+        return None
+    try:
+        data = json.loads(text[lo:hi + 1])
+    except Exception:
+        return None
+    return data if isinstance(data, list) else None
+
+
+def persona_compile_system() -> str:
+    """System prompt for the one-shot persona -> numeric profile compile."""
+    return "你是人格参数编译器。只输出 JSON，不要解释。"
+
+
+def persona_compile_prompt(persona_text: str) -> str:
+    """Build the one-shot persona compile prompt (interpretation-layer owned)."""
+    return str(persona_text or "") + (
+        "\n\n返回 JSON：\n"
+        '{"O":0-1,"C":0-1,"E":0-1,"A":0-1,"N":0-1,\n'
+        ' "stress_reactivity":0-1,"recovery_rate":0-1,\n'
+        ' "social_baseline":0-1,"energy_baseline":0-1,\n'
+        ' "curiosity_baseline":0-1,"safety_baseline":0-1,\n'
+        ' "da_baseline":0-1,"oa_baseline":0-1,"ht_baseline":0-1,\n'
+        ' "autonomy_gain":0-1.5,"baseline_v":-1..1,"baseline_a":0-1,\n'
+        ' "learning_rate":0.01-0.12}\n'
+        "只输出 JSON。"
+    )
+
+
+def parse_persona_profile(raw: str, defaults: dict) -> dict:
+    """Parse + bound a model-compiled persona profile.
+
+    Unknown keys and out-of-range values are dropped/clamped; malformed output
+    falls back to the deterministic defaults.
+    """
+    merged = dict(defaults or {})
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        return merged
+    for key, (low, high) in PROFILE_RANGES.items():
+        if key not in data:
+            continue
+        default = merged.get(key, 0.0)
+        merged[key] = round(_bounded(data.get(key), low, high, float(default or 0.0)), 6)
+    return merged
+
+
+def memory_summary_prompt(texts) -> str:
+    """Prompt for consolidating several memory entries into one summary."""
+    joined = "\n".join("- " + str(t)[:500] for t in (texts or []) if str(t).strip())
+    return ("把下面这些长期记忆合并成一条不超过 180 字的中文摘要。"
+            "保留人物、关系、偏好、承诺、事件和情绪变化；不要编造；只输出摘要。\n\n" + joined)
+
+
+def parse_memory_summary(raw: str, limit: int = 240) -> str:
+    """Parse a model summary into bounded plain text for the biological layer."""
+    text = _strip_code_fence(raw)
+    text = re.sub(r"\s+", " ", text).strip().strip("\"'“”")
+    for prefix in ("摘要：", "摘要:", "总结：", "总结:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text[:max(1, int(limit))]
+
+
+def parse_event_ranking(raw: str) -> list:
+    """Parse + validate the ranked-event extraction output."""
+    items = _extract_json_array(raw)
+    if not isinstance(items, list):
+        return []
+    out = []
+    for item in items[:10]:
+        if not isinstance(item, dict):
+            continue
+        body = _clean_text(item.get("event"), 600)
+        if not body:
+            continue
+        importance = _bounded(item.get("importance"), 0.0, 1.0, 0.0)
+        emotion = str(item.get("emotion") or "neutral").strip()
+        if emotion not in _EMOTIONS:
+            emotion = "neutral"
+        centrality = _bounded(item.get("centrality"), 0.0, 1.0, importance)
+        out.append({
+            "title": _clean_text(item.get("title") or "重要事件", 80),
+            "event": body,
+            "event_key": _clean_text(item.get("event_key"), 80),
+            "centrality": round(centrality, 3),
+            "central_details": _clean_text(item.get("central_details") or body, 400),
+            "peripheral_details": _clean_text(item.get("peripheral_details"), 300),
+            "meaning_to_her": _clean_text(item.get("meaning_to_her"), 400),
+            "reflection": _clean_text(item.get("reflection"), 400),
+            "emotion": emotion,
+            "importance": round(importance, 3),
+        })
+    return out
+
+
+def parse_event_summary(raw: str) -> dict:
+    """Parse + validate the single-event summary output."""
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "title": _clean_text(data.get("title"), 80),
+        "event": _clean_text(data.get("event"), 600),
+        "meaning_to_her": _clean_text(data.get("meaning_to_her"), 400),
+        "reflection": _clean_text(data.get("reflection"), 400),
+    }
+
+
+def parse_image_caption(raw: str, limit: int = 1600) -> str:
+    """Bound a vision-model caption before it enters the biological layer."""
+    text = str(raw or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text[:max(1, int(limit))]
+
+
+def parse_insight(raw: str, limit: int = 500) -> str:
+    """Parse + validate the cross-event insight output."""
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        return ""
+    return _clean_text(data.get("insight"), limit)
+
