@@ -67,11 +67,8 @@ PROFILE_PATH = DATA_DIR / "persona_profile.json"
 API_CONFIG_PATH = DATA_DIR / "api_config.json"
 STATE_DIR = DATA_DIR / "states"
 MEMORY_DIR = DATA_DIR / "memory"
-IMAGE_SERVICE_PORT = 8091
-IMAGE_SERVICE_HEALTH = "http://127.0.0.1:8091/v1/models"
-LLAMA_SERVER = Path(r"C:\Users\Administrator\Desktop\deepseek\llamacpp\llama-server.exe")
-LLAMA_MODEL = Path(r"C:\Users\Administrator\Desktop\deepseek\_minicpm47_heretic_gguf\MiniCPM-V-4.7-1B-Heretic.Q4_K_M.gguf")
-LLAMA_MMPROJ = Path(r"C:\Users\Administrator\Desktop\deepseek\_minicpm47_heretic_gguf\mmproj-Q8_0.gguf")
+# Local image service paths/port are configured through _conf_schema.json.
+# There are no machine-specific fallback paths baked into the plugin.
 IMAGE_CACHE_PATH = DATA_DIR / "image_cache.json"
 EVENT_ARCHIVE_DIR = DATA_DIR / "archives"
 EVENT_SESSION_DIR = EVENT_ARCHIVE_DIR / "sessions"
@@ -1238,7 +1235,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "幻灭之梦", "Standalone BioCore emotion layer", "1.2.5")
+@register("astrbot_plugin_biocore", "幻灭之梦", "Standalone BioCore emotion layer", "1.2.6")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1282,12 +1279,16 @@ class BioCorePlugin(Star):
             self.image_cache_max_entries = max(20, int(self.config.get("image_cache_max_entries", 500) or 500))
         except Exception:
             self.image_cache_max_entries = 500
-        def _configured_path(key, fallback):
+        def _configured_path(key):
             raw = str(self.config.get(key, "") or "").strip()
-            return Path(raw) if raw else fallback
-        self.image_llama_server = _configured_path("image_llama_server", LLAMA_SERVER)
-        self.image_llama_model = _configured_path("image_llama_model", LLAMA_MODEL)
-        self.image_llama_mmproj = _configured_path("image_llama_mmproj", LLAMA_MMPROJ)
+            return Path(raw) if raw else None
+        self.image_llama_server = _configured_path("image_llama_server")
+        self.image_llama_model = _configured_path("image_llama_model")
+        self.image_llama_mmproj = _configured_path("image_llama_mmproj")
+        try:
+            self.image_service_port = max(1, int(self.config.get("image_service_port", 8091) or 8091))
+        except Exception:
+            self.image_service_port = 8091
         _triggers = self.config.get("image_trigger_words", [])
         self.image_trigger_words = ([str(x).strip() for x in _triggers if str(x).strip()]
                                     if isinstance(_triggers, (list, tuple)) else [])
@@ -1619,10 +1620,10 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] image cache save failed: %s", exc)
 
-    @staticmethod
-    def _image_health_ok() -> bool:
+    def _image_health_ok(self) -> bool:
         try:
-            req = urllib.request.Request(IMAGE_SERVICE_HEALTH, headers={"Accept": "application/json"})
+            req = urllib.request.Request(f"http://127.0.0.1:{self.image_service_port}/v1/models",
+                                         headers={"Accept": "application/json"})
             with urllib.request.urlopen(req, timeout=2) as resp:
                 return 200 <= int(resp.status) < 300
         except Exception:
@@ -1676,13 +1677,15 @@ class BioCorePlugin(Star):
                 self._image_last_used = time.time()
                 return True
             try:
-                if not self.image_llama_server.is_file() or not self.image_llama_model.is_file():
-                    logger.warning("[biocore] image service files missing")
+                if (not self.image_llama_server or not self.image_llama_model
+                        or not self.image_llama_server.is_file()
+                        or not self.image_llama_model.is_file()):
+                    logger.warning("[biocore] image service paths missing; configure image_llama_server / image_llama_model")
                     return False
-                args = [str(LLAMA_SERVER), "-m", str(LLAMA_MODEL)]
-                if LLAMA_MMPROJ.is_file():
-                    args += ["--mmproj", str(LLAMA_MMPROJ)]
-                args += ["--host", "127.0.0.1", "--port", str(IMAGE_SERVICE_PORT),
+                args = [str(self.image_llama_server), "-m", str(self.image_llama_model)]
+                if self.image_llama_mmproj and self.image_llama_mmproj.is_file():
+                    args += ["--mmproj", str(self.image_llama_mmproj)]
+                args += ["--host", "127.0.0.1", "--port", str(self.image_service_port),
                          "-ngl", "99", "-c", "8192", "-np", "1", "-lm", "none",
                          "-cram", "0", "-ctxcp", "0", "--no-warmup"]
                 flags = 0x08000000 if os.name == "nt" else 0
