@@ -1506,7 +1506,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.46")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.47")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1539,9 +1539,7 @@ class BioCorePlugin(Star):
             self.config.get("llm_only_reply_summary", True))
         self.llm_functions = {
             _name: {"enabled": LLM_FUNCTION_DEFAULTS[_name],
-                    "provider": "follow_llm",
-                    "embedding_provider": "follow_global",
-                    "rerank_provider": "local"}
+                    "provider": "follow_llm"}
             for _name in LLM_FUNCTIONS
         }
         self.first_run_persona_compile = bool(self.config.get("first_run_persona_compile", True))
@@ -1681,8 +1679,6 @@ class BioCorePlugin(Star):
         return {
             "enabled": bool(_cfg.get("enabled", LLM_FUNCTION_DEFAULTS.get(_name, True))),
             "provider": str(_cfg.get("provider") or "follow_llm"),
-            "embedding_provider": str(_cfg.get("embedding_provider") or "follow_global"),
-            "rerank_provider": str(_cfg.get("rerank_provider") or "local"),
         }
 
     def _llm_allowed(self, kind: str) -> bool:
@@ -1934,12 +1930,17 @@ class BioCorePlugin(Star):
         self._load_llm_functions()
 
     def _load_llm_functions(self):
-        """Load per-function routes; migrate old llm_only_reply_summary once."""
+        """Load per-function LLM switches and provider overrides.
+
+        Embedding/rerank model selection is intentionally NOT per-function:
+        the deterministic event-ranking pipeline always follows the API 接入
+        defaults (global embedding, global rerank with deterministic local
+        fallback). Legacy configs that stored embedding_provider/rerank_provider
+        are migrated by dropping those keys.
+        """
         _defaults = {
             _name: {"enabled": LLM_FUNCTION_DEFAULTS[_name],
-                    "provider": "follow_llm",
-                    "embedding_provider": "follow_global",
-                    "rerank_provider": "local"}
+                    "provider": "follow_llm"}
             for _name in LLM_FUNCTIONS
         }
         _saved = self.api_config.get("functions") if isinstance(self.api_config.get("functions"), dict) else None
@@ -1949,9 +1950,7 @@ class BioCorePlugin(Star):
             _legacy = bool(getattr(self, "llm_only_reply_summary", True))
             _defaults = {
                 _name: {"enabled": (LLM_FUNCTION_DEFAULTS[_name] if _legacy else True),
-                         "provider": "follow_llm",
-                         "embedding_provider": "follow_global",
-                         "rerank_provider": "local"}
+                         "provider": "follow_llm"}
                 for _name in LLM_FUNCTIONS
             }
             self.llm_functions = _defaults
@@ -1959,16 +1958,23 @@ class BioCorePlugin(Star):
             self._save_api_config()
             return
         _merged = {}
+        _dropped_legacy = False
         for _name in LLM_FUNCTIONS:
-            _item = _saved.get(_name) if isinstance(_saved.get(_name), dict) else {}
+            _raw = _saved.get(_name)
+            _item = _raw if isinstance(_raw, dict) else {}
+            if isinstance(_raw, dict) and (
+                    "embedding_provider" in _raw or "rerank_provider" in _raw):
+                _dropped_legacy = True
             _merged[_name] = {
                 "enabled": bool(_item.get("enabled", LLM_FUNCTION_DEFAULTS[_name])),
                 "provider": str(_item.get("provider") or "follow_llm"),
-                "embedding_provider": str(_item.get("embedding_provider") or "follow_global"),
-                "rerank_provider": str(_item.get("rerank_provider") or "local"),
             }
         self.llm_functions = _merged
         self.api_config["functions"] = _merged
+        if _dropped_legacy:
+            # Persist the migration once so the dead per-function model keys go
+            # away from data/api_config.json.
+            self._save_api_config()
 
     def _save_api_config(self):
         try:
@@ -3484,37 +3490,8 @@ class BioCorePlugin(Star):
             out[_name] = {
                 "enabled": bool(_cfg["enabled"]),
                 "provider": str(_cfg["provider"]),
-                "embedding_provider": str(_cfg.get("embedding_provider") or "follow_global"),
-                "rerank_provider": str(_cfg.get("rerank_provider") or "local"),
                 "default_enabled": bool(LLM_FUNCTION_DEFAULTS[_name]),
             }
-        return out
-
-    def _embedding_provider_options(self) -> list:
-        out = []
-        try:
-            for _p in self.context.get_all_embedding_providers():
-                _cfg = getattr(_p, "provider_config", {}) or {}
-                _pid = str(_cfg.get("id") or "")
-                if not _pid:
-                    continue
-                out.append({"id": _pid, "model": str(_cfg.get("embedding_model") or _cfg.get("model") or "")})
-        except Exception:
-            out = []
-        return out
-
-    def _rerank_provider_options(self) -> list:
-        out = []
-        try:
-            _pm = getattr(self.context, "provider_manager", None)
-            for _p in (getattr(_pm, "rerank_provider_insts", []) or []):
-                _cfg = getattr(_p, "provider_config", {}) or {}
-                _pid = str(_cfg.get("id") or "")
-                if not _pid:
-                    continue
-                out.append({"id": _pid, "model": str(_cfg.get("rerank_model") or _cfg.get("model") or "")})
-        except Exception:
-            out = []
         return out
 
     def _llm_provider_options(self) -> list:
@@ -3941,8 +3918,6 @@ class BioCorePlugin(Star):
             "personas": _personas,
             "llm_functions": self._functions_public(),
             "llm_providers": self._llm_provider_options(),
-            "embedding_providers": self._embedding_provider_options(),
-            "rerank_providers": self._rerank_provider_options(),
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
             "memory": self._memory_stats(),
@@ -3989,20 +3964,15 @@ class BioCorePlugin(Star):
         key = str(data.get("key") or "").strip()
         _fn_enabled = {("%s_enabled" % _name): _name for _name in LLM_FUNCTIONS}
         _fn_provider = {("%s_provider" % _name): _name for _name in LLM_FUNCTIONS}
-        _fn_embedding = {("%s_embedding" % _name): _name for _name in LLM_FUNCTIONS}
-        _fn_rerank = {("%s_rerank" % _name): _name for _name in LLM_FUNCTIONS}
-        if key in _fn_enabled or key in _fn_provider or key in _fn_embedding or key in _fn_rerank:
-            _name = (_fn_enabled.get(key) or _fn_provider.get(key)
-                     or _fn_embedding.get(key) or _fn_rerank.get(key))
+        if key in _fn_enabled or key in _fn_provider:
+            _name = _fn_enabled.get(key) or _fn_provider.get(key)
             _cur = dict(self.llm_functions.get(_name) or {})
             if key in _fn_enabled:
                 _cur["enabled"] = bool(data.get("value"))
-            elif key in _fn_provider:
-                _cur["provider"] = str(data.get("value") or "follow_llm").strip() or "follow_llm"
-            elif key in _fn_embedding:
-                _cur["embedding_provider"] = str(data.get("value") or "follow_global").strip() or "follow_global"
             else:
-                _cur["rerank_provider"] = str(data.get("value") or "local").strip() or "local"
+                _cur["provider"] = str(data.get("value") or "follow_llm").strip() or "follow_llm"
+            _cur.pop("embedding_provider", None)
+            _cur.pop("rerank_provider", None)
             self.llm_functions[_name] = _cur
             self.api_config["functions"] = dict(self.llm_functions)
             self._save_api_config()
@@ -4075,10 +4045,8 @@ class BioCorePlugin(Star):
                     _cur["enabled"] = bool(_item.get("enabled"))
                 if "provider" in _item:
                     _cur["provider"] = str(_item.get("provider") or "follow_llm").strip() or "follow_llm"
-                if "embedding_provider" in _item:
-                    _cur["embedding_provider"] = str(_item.get("embedding_provider") or "follow_global").strip() or "follow_global"
-                if "rerank_provider" in _item:
-                    _cur["rerank_provider"] = str(_item.get("rerank_provider") or "local").strip() or "local"
+                _cur.pop("embedding_provider", None)
+                _cur.pop("rerank_provider", None)
                 self.llm_functions[_name] = _cur
             self.api_config["functions"] = dict(self.llm_functions)
         comp = body.get("compression")
@@ -4162,44 +4130,29 @@ class BioCorePlugin(Star):
         return None
 
     async def _embedding_for(self, kind: str, text: str):
-        """Embedding provider for one function (follow_global or explicit id)."""
-        _pid = str(self._function_cfg(kind).get("embedding_provider") or "follow_global")
-        if _pid in ("", "follow_global", "global"):
-            return await self._embed_text(text)
-        try:
-            for _p in self.context.get_all_embedding_providers():
-                _cfg = getattr(_p, "provider_config", {}) or {}
-                if str(_cfg.get("id") or "") != _pid:
-                    continue
-                _vec = await _p.get_embedding(text)
-                if isinstance(_vec, list) and _vec:
-                    return _vec
-        except Exception as exc:
-            logger.warning("[biocore] embedding provider %s failed: %s", _pid, exc)
-        logger.warning("[biocore] embedding provider %s unavailable; fallback to global embedding", _pid)
+        """Embedding for one function; always follows the API 接入 default.
+
+        Per-function embedding model selection was removed by user request:
+        every function uses the same global embedding configuration. ``kind``
+        is kept for call-site clarity and tests.
+        """
         return await self._embed_text(text)
 
     async def _rerank_scores(self, kind: str, query: str, documents: list):
-        """Optional rerank provider scores keyed by candidate index (None = local)."""
-        _choice = str(self._function_cfg(kind).get("rerank_provider") or "local")
-        if _choice in ("", "local", "none"):
-            return None
+        """Optional global rerank scores keyed by candidate index (None = local).
+
+        Event ranking never asks the user to pick a model: it follows the
+        API 接入 / AstrBot default rerank provider and falls back to the
+        deterministic local ranking when no provider is configured or the call
+        fails. ``kind`` is kept for call-site clarity and tests.
+        """
         try:
             _provs = getattr(getattr(self.context, "provider_manager", None),
                              "rerank_provider_insts", []) or []
         except Exception:
             _provs = []
-        _target = None
-        if _choice in ("follow_global", "global"):
-            _target = _provs[0] if _provs else None
-        else:
-            for _p in _provs:
-                _cfg = getattr(_p, "provider_config", {}) or {}
-                if str(_cfg.get("id") or "") == _choice:
-                    _target = _p
-                    break
+        _target = _provs[0] if _provs else None
         if _target is None:
-            logger.warning("[biocore] rerank provider %s unavailable; fallback to local ranking", _choice)
             return None
         try:
             _results = await _target.rerank(query, [str(d) for d in documents], top_n=len(documents))
@@ -4213,7 +4166,7 @@ class BioCorePlugin(Star):
                 out[_idx] = max(0.0, min(1.0, _score))
             return out or None
         except Exception as exc:
-            logger.warning("[biocore] rerank provider %s failed: %s", _choice, exc)
+            logger.warning("[biocore] global rerank failed; fallback to local ranking: %s", exc)
             return None
 
     async def _embed_text(self, text: str):

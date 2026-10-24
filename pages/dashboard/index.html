@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-2314" />
+<link rel="stylesheet" href="./styles.css?v=20261024-2338" />
 </head>
 <body>
 <div class="shell">
@@ -22,7 +22,7 @@
       <div class="side-line"><span class="dot" id="statusDot"></span><span id="linkState">连接中</span></div>
       <div class="side-line small"><span id="pluginBadge">BioCore</span></div>
     </div>
-    <div class="side-foot" id="sideVersion">v1.2.19 · tendency layer</div>
+    <div class="side-foot" id="sideVersion">v1.2.47 · tendency layer</div>
   </aside>
 
   <main class="main">
@@ -432,10 +432,10 @@
         <div class="setting-row"><div><b>混合检索（词法 + MMR）</b><small>embedding 余弦之外加入词法分，并用 MMR 减少近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
         <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><select id="personaSelect" class="event-session"></select></div>
-        <p class="api-note">功能路由：每个功能独立开关；需要 LLM 的功能默认跟随主 LLM，可指定其他 provider（找不到时回退主 LLM）。事件排序、记忆总结的嵌入/去重在本地完成；图片描述只走视觉 provider。</p>
+        <p class="api-note">功能路由：每个功能独立开关；需要 LLM 的功能默认跟随主 LLM，可指定其他 provider（找不到时回退主 LLM）。事件排序不选模型：嵌入与重排固定跟随 API 接入的默认配置；图片描述只走视觉 provider。</p>
         <div class="setting-row"><div><b>人格编译</b><small>首次使用/更换人设时用一次；关闭则沿用已保存的数值 profile。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_persona_compile_enabled"><span></span></label><select id="fn_persona_compile_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>事件总结</b><small>强事件发生时总结成事件档案；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
-        <div class="setting-row"><div><b>事件排序（嵌入+规则）</b><small>确定性分段 + embedding 新异度 + 线索排序，不调用 LLM；可单独选择嵌入 provider 和排序/r erank 方式。</small></div><div class="llm-route"><select id="fn_event_ranking_embedding" class="event-session" title="事件排序使用的嵌入 provider"></select><select id="fn_event_ranking_rerank" class="event-session" title="事件排序/rerank 方式"></select><label class="switch"><input type="checkbox" id="fn_event_ranking_enabled"><span></span></label></div></div>
+        <div class="setting-row"><div><b>事件排序（嵌入+规则）</b><small>确定性分段 + embedding 新异度 + 线索排序，不调用 LLM；嵌入与重排固定跟随 API 接入的默认配置，不再单独选模型。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_ranking_enabled"><span></span></label></div></div>
         <div class="setting-row"><div><b>跨事件反思</b><small>定期从最近事件提炼更高层认识；默认关闭，关闭时用确定性摘要。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_insight_enabled"><span></span></label><select id="fn_insight_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。关闭时改用 embedding 分组+去重的抽取式摘要，不调用 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>图片描述</b><small>调用视觉 provider 描述图片；默认关闭，且只走视觉 API，不混用文本 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_image_caption_enabled"><span></span></label><select id="fn_image_caption_provider" class="event-session"></select></div></div>
@@ -466,7 +466,7 @@
         <div class="setting-row"><div><b>检查更新</b><small>对比 GitHub 仓库最新 metadata.yaml 版本；只检查提示，安装仍走 AstrBot 插件管理。</small></div><button type="button" class="btn" id="updateCheckBtn">检查更新</button></div>
         <div class="setting-row"><div><b>Gitee 镜像</b><small>owner/repo；填了之后检查更新会优先尝试 Gitee raw。留空只试 GitHub。</small></div><input id="giteeRepo" placeholder="Johnhmzm/astrbot_plugin_biocore" autocomplete="off"></div>
         <div class="api-actions"><button type="button" class="btn mini" id="giteeSaveBtn">保存镜像</button><span class="api-note" id="giteeState">未配置</span></div>
-        <p class="api-note" id="updateState">当前版本 v1.2.19 · 尚未检查</p>
+        <p class="api-note" id="updateState">当前版本 v1.2.47 · 尚未检查</p>
         <p class="api-note" id="updateNote">AstrBot 插件管理 → BioCore → 更新（需绑定 GitHub/Gitee 仓库）；或打开仓库手动下载。</p>
         <a class="btn mini" id="updateOpenRepo" href="https://github.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener">打开 GitHub 仓库</a>
         <a class="btn mini" id="updateOpenGitee" href="https://gitee.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener" style="display:none">打开 Gitee 仓库</a>
@@ -484,5 +484,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-2314"></script><script src="./orb.js?v=20261024-2314"></script>
+<script src="./app.js?v=20261024-2338"></script><script src="./orb.js?v=20261024-2338"></script>
 </body></html>
