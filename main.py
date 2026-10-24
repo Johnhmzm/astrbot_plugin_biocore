@@ -1447,7 +1447,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.22")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.23")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1519,6 +1519,8 @@ class BioCorePlugin(Star):
         self.stimuli = []
         self.profile = None
         self.persona_text = ""
+        # Schema slots proposed once by the persona compiler (bounded strings).
+        self.schema_texts = []
         self.self_model = self._load_self_model()
         self.api_config = {}
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1548,6 +1550,10 @@ class BioCorePlugin(Star):
                 d = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
                 self.profile = dict(d.get("profile") or {})
                 self.persona_text = str(d.get("persona") or "")
+                _schema = d.get("schema")
+                if isinstance(_schema, list):
+                    self.schema_texts = [str(x).strip()[:60] for x in _schema
+                                         if str(x).strip()][:6]
                 logger.info("[biocore] loaded profile %s", PROFILE_PATH)
         except Exception as exc:
             logger.warning("[biocore] profile load failed: %s", exc)
@@ -1568,9 +1574,10 @@ class BioCorePlugin(Star):
         if not text:
             self.profile = dict(DEFAULT_PROFILE)
             self.persona_text = ""
+            self.schema_texts = []
             try:
                 PROFILE_PATH.write_text(json.dumps(
-                    {"persona": "", "profile": self.profile},
+                    {"persona": "", "profile": self.profile, "schema": []},
                     ensure_ascii=False, indent=1), encoding="utf-8")
             except Exception:
                 pass
@@ -1586,14 +1593,18 @@ class BioCorePlugin(Star):
             prompt = interpretation.persona_compile_prompt(text)
             resp = await provider.text_chat(prompt=prompt, system_prompt=system)
             raw = str(getattr(resp, "completion_text", "") or "")
-            self.profile = interpretation.parse_persona_profile(raw, DEFAULT_PROFILE)
+            _compiled = interpretation.parse_persona_compile(raw, DEFAULT_PROFILE)
+            self.profile = _compiled.get("profile") or dict(DEFAULT_PROFILE)
+            self.schema_texts = list(_compiled.get("schema") or [])
+            logger.info("[biocore] persona schema slots=%s", len(self.schema_texts))
         except Exception as exc:
             logger.warning("[biocore] persona compile failed: %s", exc)
             self.profile = dict(DEFAULT_PROFILE)
         self.persona_text = text
         try:
             PROFILE_PATH.write_text(json.dumps(
-                {"persona": self.persona_text, "profile": self.profile},
+                {"persona": self.persona_text, "profile": self.profile,
+                 "schema": list(getattr(self, "schema_texts", []) or [])},
                 ensure_ascii=False, indent=1), encoding="utf-8")
             logger.info("[biocore] first-run profile written: %s", PROFILE_PATH)
         except Exception as exc:
@@ -3886,13 +3897,15 @@ class BioCorePlugin(Star):
                 if len(texts) < 2:
                     continue
                 prompt = interpretation.memory_summary_prompt(texts)
+                payload = {"summary": "", "candidates": []}
                 try:
                     resp = await provider.text_chat(prompt=prompt)
-                    summary = interpretation.parse_memory_summary(
+                    payload = interpretation.parse_memory_summary_payload(
                         str(getattr(resp, "completion_text", "") or ""))
                 except Exception as exc:
                     logger.warning("[biocore] memory summary failed: %s", exc)
-                    summary = ""
+                summary = str(payload.get("summary") or "")
+                candidates = payload.get("candidates") or []
                 if not summary:
                     continue
                 vec = await self._embed_text(summary)
@@ -3939,6 +3952,39 @@ class BioCorePlugin(Star):
                                 "encoding_emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")})
                 memory_meta.append_write_log(doc, op="ADD", entry_id=_sum_id,
                                              reason="summary", ts=now)
+                # LLM proposes candidate facts; the deterministic policy here
+                # decides ADD/UPDATE/NOOP and can never DELETE. Confidence is
+                # capped below direct-user confidence by memory_meta.
+                _cand_applied = 0
+                for _cand in (candidates or [])[:memory_meta.CANDIDATE_MAX]:
+                    try:
+                        _ctext = str(_cand.get("text") or "").strip()
+                        if len(_ctext) < 4:
+                            continue
+                        _cvec = await self._embed_text(_ctext)
+                        if not _cvec:
+                            continue
+                        _best, _best_cos = None, 0.0
+                        for _ce in entries:
+                            if not isinstance(_ce, dict) or _ce.get("deleted") or _ce.get("summarized"):
+                                continue
+                            _cos = self._cosine(_cvec, _ce.get("vector") or [])
+                            if _cos > _best_cos:
+                                _best, _best_cos = _ce, _cos
+                        _res = memory_meta.apply_memory_candidate(
+                            entries, _cand, match=_best, cosine=_best_cos,
+                            vector=_cvec, now=now, provenance=_summary_prov)
+                        _entry = _res.get("entry")
+                        if _res.get("op") in ("ADD", "UPDATE") and isinstance(_entry, dict):
+                            self._apply_memory_encoding(_entry, core, now, _ctext)
+                            memory_meta.append_write_log(
+                                doc, op=_res["op"], entry_id=str(_entry.get("id") or ""),
+                                reason="candidate", ts=now)
+                            _cand_applied += 1
+                    except Exception:
+                        continue
+                if _cand_applied:
+                    logger.info("[biocore] llm memory candidates applied=%s", _cand_applied)
                 changed = True
             if changed:
                 await self._archive_ranked_events(event, core, entries)
@@ -3980,7 +4026,7 @@ class BioCorePlugin(Star):
 
     def _self_schema_texts(self, core) -> list:
         """Bounded self-schema corpus for deterministic schema congruence."""
-        texts = []
+        texts = list(getattr(self, "schema_texts", []) or [])
         try:
             model = self.self_model or {}
             for key in ("who_am_i", "narrative"):

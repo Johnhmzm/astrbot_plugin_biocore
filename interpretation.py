@@ -365,7 +365,8 @@ def persona_compile_prompt(persona_text: str) -> str:
         ' "curiosity_baseline":0-1,"safety_baseline":0-1,\n'
         ' "da_baseline":0-1,"oa_baseline":0-1,"ht_baseline":0-1,\n'
         ' "autonomy_gain":0-1.5,"baseline_v":-1..1,"baseline_a":0-1,\n'
-        ' "learning_rate":0.01-0.12}\n'
+        ' "learning_rate":0.01-0.12,\n'
+        ' "schema":["最多6条，每条不超过40字的自我/关系先验（如：难过时更需要被听见）"]}\n'
         "只输出 JSON。"
     )
 
@@ -388,11 +389,48 @@ def parse_persona_profile(raw: str, defaults: dict) -> dict:
     return merged
 
 
+def _clean_schema_list(value) -> list:
+    """Bound the self/relationship schema slots proposed by the persona model."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        text = _clean_text(item, 60)
+        if not text or text in out:
+            continue
+        out.append(text)
+        if len(out) >= 6:
+            break
+    return out
+
+
+def parse_persona_compile(raw: str, defaults: dict) -> dict:
+    """Parse the persona-compile payload: numeric profile + schema slots.
+
+    The model proposes schema phrases; this layer bounds them (max 6, <=60
+    chars, deduped). It only returns data; the caller decides persistence.
+    """
+    profile = parse_persona_profile(raw, defaults)
+    data = _extract_json_object(raw)
+    schema = _clean_schema_list(data.get("schema")) if isinstance(data, dict) else []
+    return {"profile": profile, "schema": schema}
+
+
 def memory_summary_prompt(texts) -> str:
-    """Prompt for consolidating several memory entries into one summary."""
+    """Prompt for consolidating memories + proposing bounded write candidates.
+
+    One call does both jobs: the LLM proposes candidates, the biological layer
+    decides ADD/UPDATE via its deterministic policy (DELETE is never accepted).
+    """
     joined = "\n".join("- " + str(t)[:500] for t in (texts or []) if str(t).strip())
-    return ("把下面这些长期记忆合并成一条不超过 180 字的中文摘要。"
-            "保留人物、关系、偏好、承诺、事件和情绪变化；不要编造；只输出摘要。\n\n" + joined)
+    return ("把下面这些长期记忆整理成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
+            '{"summary":"不超过 180 字的中文摘要，保留人物、关系、偏好、承诺、事件和情绪变化，不要编造",\n'
+            ' "candidates":[{"text":"一条长期有用的事实/偏好/承诺，40字以内",'
+            '"source":"told|inferred","confidence":0.0-1.0,"kind":"add|update"}]}\n'
+            "规则：candidates 最多 3 条；只提取长期有用的信息（偏好、关系、承诺、重要经历），一次性闲聊不要提；\n"
+            "已有相似记忆用 update，否则 add；绝对不要输出 delete；没有则输出空数组。\n\n" + joined)
 
 
 def parse_memory_summary(raw: str, limit: int = 240) -> str:
@@ -403,6 +441,51 @@ def parse_memory_summary(raw: str, limit: int = 240) -> str:
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
     return text[:max(1, int(limit))]
+
+
+def parse_memory_candidates(raw) -> list:
+    """Validate LLM-proposed memory write candidates (proposals only).
+
+    The biological layer never lets a candidate DELETE memory; candidates may
+    only be add/update suggestions, carry an inferred/told source, and their
+    confidence is capped below direct-user confidence.
+    """
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:12]:
+        if not isinstance(item, dict):
+            continue
+        if len(out) >= 3:
+            break
+        text = _clean_text(item.get("text"), 300)
+        if len(text) < 4:
+            continue
+        source = str(item.get("source") or "inferred").strip().lower()
+        if source not in ("told", "inferred"):
+            source = "inferred"
+        confidence = _bounded(item.get("confidence"), 0.2, 0.7, 0.5)
+        kind = str(item.get("kind") or "add").strip().lower()
+        if kind not in ("add", "update"):
+            kind = "add"
+        out.append({"text": text, "source": source,
+                    "confidence": round(confidence, 3), "kind": kind})
+    return out
+
+
+def parse_memory_summary_payload(raw: str) -> dict:
+    """Parse consolidation output into {summary, candidates}.
+
+    Plain-text summaries (legacy/fake providers) are still accepted; only a
+    JSON object with summary/candidates enables the proposed-update path.
+    """
+    data = _extract_json_object(raw)
+    if isinstance(data, dict):
+        # Any JSON object is treated as the payload form; a bare "{}" must not
+        # become a literal summary entry.
+        return {"summary": parse_memory_summary(str(data.get("summary") or "")),
+                "candidates": parse_memory_candidates(data.get("candidates"))}
+    return {"summary": parse_memory_summary(raw), "candidates": []}
 
 
 def parse_event_ranking(raw: str) -> list:
