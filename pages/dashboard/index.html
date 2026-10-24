@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-2353" />
+<link rel="stylesheet" href="./styles.css?v=20261024-2359" />
 </head>
 <body>
 <div class="shell">
@@ -431,7 +431,7 @@
         <div class="setting-row"><div><b>敏感记忆保护</b><small>自动识别手机号/证件/银行卡/邮箱/密码等，召回时以 ••• 掩码交给模型；敏感记忆不跨会话共享。</small></div><label class="switch"><input type="checkbox" id="swSensitiveMemory" checked><span></span></label></div>
         <div class="setting-row"><div><b>混合检索（词法 + MMR）</b><small>embedding 余弦之外加入词法分，并用 MMR 减少近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
-        <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><select id="personaSelect" class="event-session"></select></div>
+        <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><div class="llm-route"><span class="llm-route-slot" aria-hidden="true"></span><select id="personaSelect" class="event-session"></select></div></div>
         <p class="api-note">功能路由：每个功能独立开关；需要 LLM 的功能默认跟随主 LLM，可指定其他 provider（找不到时回退主 LLM）。事件排序不选模型：嵌入与重排固定跟随 API 接入的默认配置；图片描述只走视觉 provider。</p>
         <div class="setting-row"><div><b>人格编译</b><small>首次使用/更换人设时用一次；关闭则沿用已保存的数值 profile。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_persona_compile_enabled"><span></span></label><select id="fn_persona_compile_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>事件总结</b><small>强事件发生时总结成事件档案；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
@@ -484,5 +484,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-2353"></script><script src="./orb.js?v=20261024-2353"></script>
+<script src="./app.js?v=20261024-2359"></script><script src="./orb.js?v=20261024-2359"></script>
 </body></html>

@@ -621,3 +621,19 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 
 .llm-route{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
 .llm-route select{max-width:190px}
+
+/* ==== 记忆与隐私：统一控制列对齐（开关永远贴右，下拉在开关左侧）==== */
+#settingsMemory{--mem-ctrl-w:248px;--mem-select-w:200px;--mem-switch-w:38px}
+#settingsMemory .setting-row{display:grid;grid-template-columns:minmax(0,1fr) var(--mem-ctrl-w);align-items:center;column-gap:18px;row-gap:10px}
+#settingsMemory .setting-row > .switch{justify-self:end}
+#settingsMemory .llm-route{display:flex;flex-direction:row-reverse;flex-wrap:nowrap;align-items:center;justify-content:flex-start;gap:10px;width:100%;min-width:0;justify-self:end}
+#settingsMemory .llm-route > .switch{flex:0 0 auto;justify-self:auto}
+#settingsMemory .llm-route > select{flex:0 0 var(--mem-select-w);width:var(--mem-select-w);max-width:var(--mem-select-w);min-width:0}
+#settingsMemory .llm-route > .llm-route-slot{flex:0 0 var(--mem-switch-w);width:var(--mem-switch-w);height:20px;display:block}
+#settingsMemory .llm-route > .switch + select{margin-right:0}
+@media(max-width:820px){
+  #settingsMemory .setting-row{grid-template-columns:minmax(0,1fr);align-items:start}
+  #settingsMemory .setting-row > .switch{justify-self:end;margin-top:2px}
+  #settingsMemory .llm-route{justify-self:stretch;width:100%}
+}
+
