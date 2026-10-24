@@ -1478,7 +1478,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.30")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.31")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -4142,6 +4142,7 @@ class BioCorePlugin(Star):
                 _summary_conf = memory_meta.initial_confidence(_summary_source, importance)
                 _summary_sens = memory_meta.classify_sensitivity(summary)
                 entries.append({"id": _sum_id, "text": summary[:1200], "role": "summary",
+                                "scope": "session",
                                 "vector": vec, "ts": now, "hits": 1,
                                 "importance": importance, "last_used": now,
                                 "summary_id": _sum_id, "provenance": _summary_prov,
@@ -4769,6 +4770,9 @@ class BioCorePlugin(Star):
                         continue
                     if _entry.get("sensitive"):
                         # Sensitive memories are never promoted across sessions.
+                        continue
+                    if str(_entry.get("role") or "") in ("assistant", "summary"):
+                        # Assistant text and consolidated summaries stay local.
                         continue
                     if str(_entry.get("scope") or "user") == "session":
                         # Session-scoped memories (assistant/summary) stay local.
