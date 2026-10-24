@@ -102,6 +102,34 @@ DEFAULT_PROFILE = {
     "learning_rate": 0.06,
 }
 
+# Per-function LLM routing: each feature has its own enabled switch and a
+# provider choice ("follow_llm" = AstrBot main chat model, or a provider_id).
+# Defaults: only the two summary functions are enabled; everything else is
+# opt-in. This replaces the single llm_only_reply_summary master switch while
+# keeping it readable for legacy migration.
+LLM_FUNCTIONS = (
+    "persona_compile",
+    "event_summary",
+    "event_ranking",
+    "insight",
+    "memory_summary",
+    "image_caption",
+)
+LLM_FUNCTION_DEFAULTS = {
+    "persona_compile": False,
+    "event_summary": True,
+    "event_ranking": False,
+    "insight": False,
+    "memory_summary": True,
+    "image_caption": False,
+}
+LLM_FUNCTION_ALIASES = {
+    "persona": "persona_compile",
+    "ranking": "event_ranking",
+    "caption": "image_caption",
+    "summary": "event_summary",
+}
+
 # ACT-R retrieval constants (Anderson & Reder 1999; partial matching per
 # Anderson 1994). Keeping them in one named place makes scoring tunable.
 ACT_R_DECAY = 0.5
@@ -1478,7 +1506,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.40")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.41")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1509,6 +1537,11 @@ class BioCorePlugin(Star):
         # skipped (deterministic fallbacks where available).
         self.llm_only_reply_summary = bool(
             self.config.get("llm_only_reply_summary", True))
+        self.llm_functions = {
+            _name: {"enabled": LLM_FUNCTION_DEFAULTS[_name],
+                    "provider": "follow_llm"}
+            for _name in LLM_FUNCTIONS
+        }
         self.first_run_persona_compile = bool(self.config.get("first_run_persona_compile", True))
         # Deprecated: [BC] sizing is owned by the interpretation layer now.
         # Kept only so existing config files do not break on load.
@@ -1635,15 +1668,76 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] persona read failed: %s", exc)
             return ""
 
+    def _function_cfg(self, kind: str) -> dict:
+        _name = LLM_FUNCTION_ALIASES.get(str(kind or ""), str(kind or ""))
+        _all = getattr(self, "llm_functions", None)
+        if not isinstance(_all, dict):
+            return {"enabled": True, "provider": "follow_llm"}
+        _cfg = _all.get(_name)
+        if not isinstance(_cfg, dict):
+            _cfg = {}
+        return {
+            "enabled": bool(_cfg.get("enabled", LLM_FUNCTION_DEFAULTS.get(_name, True))),
+            "provider": str(_cfg.get("provider") or "follow_llm"),
+        }
+
     def _llm_allowed(self, kind: str) -> bool:
-        """LLM scope gate: reply and summary only in strict mode."""
+        """Per-function LLM switch (replaces the old global strict flag)."""
+        _all = getattr(self, "llm_functions", None)
+        if not isinstance(_all, dict):
+            # Test harness / legacy object created before this feature: keep
+            # the old llm_only_reply_summary semantics when present.
+            _strict = getattr(self, "llm_only_reply_summary", None)
+            if _strict is None:
+                return True
+            return (not bool(_strict)) or str(kind or "") in ("reply", "summary")
+        return self._function_cfg(kind)["enabled"]
+
+    async def _provider_for(self, kind: str, event=None):
+        """Resolve the LLM provider for one function.
+
+        Default ("follow_llm") uses AstrBot's current chat provider. A configured
+        provider_id is looked up via get_provider_by_id; if it is missing we log
+        a warning and fall back to the main LLM instead of failing the feature.
+        """
+        _cfg = self._function_cfg(kind)
+        _override = _cfg["provider"]
+        _umo = str(getattr(event, "unified_msg_origin", "") or "") if event is not None else ""
+        if _override and _override not in ("follow_llm", "main", "default", ""):
+            _p = None
+            try:
+                _p = self.context.get_provider_by_id(_override)
+            except Exception as exc:
+                logger.warning("[biocore] provider lookup failed for %s (%s): %s", kind, _override, exc)
+                _p = None
+            if _p is not None:
+                return _p
+            logger.warning("[biocore] llm function %s provider %s not found; fallback to main LLM", kind, _override)
         try:
-            strict = bool(getattr(self, "llm_only_reply_summary", False))
-        except Exception:
-            strict = False
-        if not strict:
-            return True
-        return str(kind or "") in ("reply", "summary")
+            return await self.context.get_using_provider_async(_umo)
+        except Exception as exc:
+            logger.warning("[biocore] main LLM provider lookup failed for %s: %s", kind, exc)
+            return None
+
+    def _vision_provider_for(self, event=None):
+        """Resolve the vision provider for image caption (never a text LLM)."""
+        _cfg = self._function_cfg("image_caption")
+        _override = _cfg["provider"]
+        _pid = ""
+        if _override and _override not in ("follow_llm", "main", "default", ""):
+            _pid = _override
+        if not _pid:
+            try:
+                _cfg_all = self.context.get_config()
+                _ps = _cfg_all.get("provider_settings", {}) if isinstance(_cfg_all, dict) else {}
+                _pid = str(_ps.get("default_image_caption_provider_id") or "exusiai-img")
+            except Exception:
+                _pid = "exusiai-img"
+        try:
+            return self.context.get_provider_by_id(_pid)
+        except Exception as exc:
+            logger.warning("[biocore] vision provider lookup failed (%s): %s", _pid, exc)
+            return None
 
     async def _compile_profile(self, event):
         text = await self._persona_text(event)
@@ -1658,6 +1752,10 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
             return
+        if not self._llm_allowed("persona_compile"):
+            self.persona_text = text
+            logger.info("[biocore] persona_compile disabled; keep saved profile")
+            return
         _ph = _sha256(text)
         if getattr(self, "_persona_compiled_hash", "") == _ph and getattr(self, "profile", None):
             # Already compiled for this persona: no extra LLM call.
@@ -1665,7 +1763,7 @@ class BioCorePlugin(Star):
             logger.info("[biocore] persona already compiled; skip")
             return
         try:
-            provider = await self.context.get_using_provider_async(getattr(event, "unified_msg_origin", ""))
+            provider = await self._provider_for("persona_compile", event)
             if provider is None:
                 self.profile = dict(DEFAULT_PROFILE)
                 return
@@ -1789,6 +1887,37 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] api config load failed: %s", exc)
             self.api_config = {}
+        self._load_llm_functions()
+
+    def _load_llm_functions(self):
+        """Load per-function routes; migrate old llm_only_reply_summary once."""
+        _defaults = {
+            _name: {"enabled": LLM_FUNCTION_DEFAULTS[_name], "provider": "follow_llm"}
+            for _name in LLM_FUNCTIONS
+        }
+        _saved = self.api_config.get("functions") if isinstance(self.api_config.get("functions"), dict) else None
+        if _saved is None:
+            # Legacy migration: strict=true meant "summaries only"; strict=false
+            # meant all capabilities available.
+            _legacy = bool(getattr(self, "llm_only_reply_summary", True))
+            _defaults = {
+                _name: {"enabled": (LLM_FUNCTION_DEFAULTS[_name] if _legacy else True),
+                         "provider": "follow_llm"}
+                for _name in LLM_FUNCTIONS
+            }
+            self.llm_functions = _defaults
+            self.api_config["functions"] = _defaults
+            self._save_api_config()
+            return
+        _merged = {}
+        for _name in LLM_FUNCTIONS:
+            _item = _saved.get(_name) if isinstance(_saved.get(_name), dict) else {}
+            _merged[_name] = {
+                "enabled": bool(_item.get("enabled", LLM_FUNCTION_DEFAULTS[_name])),
+                "provider": str(_item.get("provider") or "follow_llm"),
+            }
+        self.llm_functions = _merged
+        self.api_config["functions"] = _merged
 
     def _save_api_config(self):
         try:
@@ -2375,8 +2504,7 @@ class BioCorePlugin(Star):
                 pass
             return
         try:
-            provider = await self.context.get_using_provider_async(
-                getattr(event, "unified_msg_origin", "") or "")
+            provider = await self._provider_for("insight", event)
             if provider is None:
                 return
             prompt = interpretation.insight_prompt(events)
@@ -2815,13 +2943,11 @@ class BioCorePlugin(Star):
     async def _archive_ranked_events(self, event, core, entries):
         if not entries:
             return
-        if not self._llm_allowed("ranking"):
-            # Strict scope: only strong-event summaries (allowed "summary")
-            # run; no LLM ranking/extraction pass.
+        if not self._llm_allowed("event_ranking"):
+            # Per-function switch: only the enabled functions call the LLM.
             return
         try:
-            provider = await self.context.get_using_provider_async(
-                getattr(event, "unified_msg_origin", "") or "")
+            provider = await self._provider_for("event_ranking", event)
             if provider is None:
                 return
             texts = []
@@ -2950,9 +3076,10 @@ class BioCorePlugin(Star):
                   (abs(float(core.v)) >= 0.28 and float(core.a) >= 0.60))
         if not strong or not texts:
             return
+        if not self._llm_allowed("event_summary"):
+            return
         try:
-            provider = await self.context.get_using_provider_async(
-                getattr(event, "unified_msg_origin", "") or "")
+            provider = await self._provider_for("event_summary", event)
             if provider is None:
                 return
             prompt = interpretation.event_summary_prompt(texts)
@@ -3037,6 +3164,8 @@ class BioCorePlugin(Star):
         refs = self._image_refs(event)
         if not refs:
             return ""
+        if not self._llm_allowed("image_caption"):
+            return ""
         if not await self._ensure_image_service():
             return ""
         self._image_last_used = time.time()
@@ -3046,10 +3175,10 @@ class BioCorePlugin(Star):
             try:
                 cfg = self.context.get_config()
                 provider_settings = cfg.get("provider_settings", {}) if isinstance(cfg, dict) else {}
-                provider_id = str(provider_settings.get("default_image_caption_provider_id") or "exusiai-img")
                 prompt = interpretation.image_caption_prompt(
                     provider_settings.get("image_caption_prompt"))
-                provider = self.context.get_provider_by_id(provider_id)
+                # Image caption always uses the vision provider, never a text LLM.
+                provider = self._vision_provider_for(event)
                 if provider is not None:
                     for ref in missing[:3]:
                         try:
@@ -3270,6 +3399,7 @@ class BioCorePlugin(Star):
             }
         compression = self.api_config.get("compression") if isinstance(self.api_config.get("compression"), dict) else {}
         return {
+            "functions": self._functions_public(),
             "llm": one("llm", llm),
             "embedding": one("embedding", emb),
             "rerank": one("rerank", rrk),
@@ -3281,6 +3411,35 @@ class BioCorePlugin(Star):
                 "max_chars": int(compression.get("max_chars", 800) or 800),
             },
         }
+
+    def _functions_public(self) -> dict:
+        out = {}
+        for _name in LLM_FUNCTIONS:
+            _cfg = self._function_cfg(_name)
+            out[_name] = {
+                "enabled": bool(_cfg["enabled"]),
+                "provider": str(_cfg["provider"]),
+                "default_enabled": bool(LLM_FUNCTION_DEFAULTS[_name]),
+            }
+        return out
+
+    def _llm_provider_options(self) -> list:
+        out = []
+        try:
+            for _p in self.context.get_all_providers():
+                _cfg = getattr(_p, "provider_config", {}) or {}
+                _pid = str(_cfg.get("id") or getattr(_p, "provider_id", "") or "")
+                if not _pid:
+                    continue
+                try:
+                    _model = str(getattr(_p, "get_model", lambda: "")() or _cfg.get("model") or "")
+                except Exception:
+                    _model = str(_cfg.get("model") or "")
+                _ptype = str(_cfg.get("provider_type") or getattr(_p, "provider_type", "") or "")
+                out.append({"id": _pid, "model": _model, "type": _ptype})
+        except Exception:
+            out = []
+        return out
 
     @staticmethod
     def _models_url(base: str) -> str:
@@ -3686,6 +3845,8 @@ class BioCorePlugin(Star):
             "persona_loaded": bool(self.persona_text),
             "persona_id": str(getattr(self, "persona_id", "") or ""),
             "personas": _personas,
+            "llm_functions": self._functions_public(),
+            "llm_providers": self._llm_provider_options(),
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
             "memory": self._memory_stats(),
@@ -3730,6 +3891,19 @@ class BioCorePlugin(Star):
         from quart import request
         data = await request.get_json(silent=True) or {}
         key = str(data.get("key") or "").strip()
+        _fn_enabled = {("%s_enabled" % _name): _name for _name in LLM_FUNCTIONS}
+        _fn_provider = {("%s_provider" % _name): _name for _name in LLM_FUNCTIONS}
+        if key in _fn_enabled or key in _fn_provider:
+            _name = _fn_enabled.get(key) or _fn_provider.get(key)
+            _cur = dict(self.llm_functions.get(_name) or {})
+            if key in _fn_enabled:
+                _cur["enabled"] = bool(data.get("value"))
+            else:
+                _cur["provider"] = str(data.get("value") or "follow_llm").strip() or "follow_llm"
+            self.llm_functions[_name] = _cur
+            self.api_config["functions"] = dict(self.llm_functions)
+            self._save_api_config()
+            return {"status": "ok", "data": {"key": key, "value": _cur.get("enabled") if key in _fn_enabled else _cur.get("provider")}}
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                        "cross_session_memory", "sensitive_memory_protection",
                        "hybrid_retrieval", "llm_memory_candidates",
@@ -3741,6 +3915,21 @@ class BioCorePlugin(Star):
             self._save_settings()
             await self._persist_plugin_config({key: _val})
             return {"status": "ok", "data": {"key": key, "value": _val}}
+        if key == "llm_only_reply_summary":
+            # Legacy master switch: keep it readable, but migrate all per-function
+            # routes once instead of treating it as the only switch.
+            self.llm_only_reply_summary = bool(data.get("value"))
+            _legacy = bool(self.llm_only_reply_summary)
+            for _name in LLM_FUNCTIONS:
+                self.llm_functions[_name] = {
+                    "enabled": (LLM_FUNCTION_DEFAULTS[_name] if _legacy else True),
+                    "provider": str((self.llm_functions.get(_name) or {}).get("provider") or "follow_llm"),
+                }
+            self.api_config["functions"] = dict(self.llm_functions)
+            self._save_api_config()
+            self._save_settings()
+            await self._persist_plugin_config({key: bool(self.llm_only_reply_summary)})
+            return {"status": "ok", "data": {"key": key, "value": self.llm_only_reply_summary}}
         setattr(self, key, bool(data.get("value")))
         self._save_settings()
         await self._persist_plugin_config({key: bool(getattr(self, key))})
@@ -3772,6 +3961,19 @@ class BioCorePlugin(Star):
                 if extra in incoming:
                     entry[extra] = str(incoming.get(extra) or "").strip()
             self.api_config[kind] = entry
+        _incoming_functions = body.get("functions")
+        if isinstance(_incoming_functions, dict):
+            for _name in LLM_FUNCTIONS:
+                _item = _incoming_functions.get(_name)
+                if not isinstance(_item, dict):
+                    continue
+                _cur = dict(self.llm_functions.get(_name) or {})
+                if "enabled" in _item:
+                    _cur["enabled"] = bool(_item.get("enabled"))
+                if "provider" in _item:
+                    _cur["provider"] = str(_item.get("provider") or "follow_llm").strip() or "follow_llm"
+                self.llm_functions[_name] = _cur
+            self.api_config["functions"] = dict(self.llm_functions)
         comp = body.get("compression")
         if isinstance(comp, dict):
             self.api_config["compression"] = {
@@ -4141,8 +4343,9 @@ class BioCorePlugin(Star):
                     self._save_memory(event, doc)
                 return
             doc["last_event_summary_ts"] = time.time()
-            provider = await self.context.get_using_provider_async(
-                getattr(event, "unified_msg_origin", "") or "")
+            if not self._llm_allowed("memory_summary"):
+                return
+            provider = await self._provider_for("memory_summary", event)
             if provider is None:
                 return
             now = time.time()

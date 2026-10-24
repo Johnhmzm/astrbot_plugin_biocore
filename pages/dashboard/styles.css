@@ -618,3 +618,6 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 #personaTabs .fold-icon svg,#sessionTabs .fold-icon svg,#settingsTabs .fold-icon svg,#intentTabs .fold-icon svg{width:62%;height:62%;display:block}
 #personaTabs .fold-face small,#sessionTabs .fold-face small,#settingsTabs .fold-face small,#intentTabs .fold-face small{display:block;font-size:10px;color:var(--ink);max-width:72px;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:520px){#personaTabs.fold-grid,#sessionTabs.fold-grid,#settingsTabs.fold-grid,#intentTabs.fold-grid{grid-template-columns:repeat(auto-fill,64px);gap:7px;padding:10px}#personaTabs .fold-panel.folded,#sessionTabs .fold-panel.folded,#settingsTabs .fold-panel.folded,#intentTabs .fold-panel.folded{width:64px;height:64px;min-height:0;padding:6px 3px}#personaTabs .fold-icon,#sessionTabs .fold-icon,#settingsTabs .fold-icon,#intentTabs .fold-icon{width:24px;height:24px}#personaTabs .fold-face small,#sessionTabs .fold-face small,#settingsTabs .fold-face small,#intentTabs .fold-face small{font-size:9px;max-width:56px}}
+
+.llm-route{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:flex-end}
+.llm-route select{max-width:190px}
