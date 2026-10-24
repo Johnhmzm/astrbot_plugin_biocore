@@ -723,6 +723,62 @@
     tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
     activate(tabs[0].dataset.personaTab||"baseline");
   }
+  const BIO_VERSION = "v1.2.3";
+  const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
+  function _semverParts(v){
+    return String(v || "").replace(/^v/i, "").split(/[.+-]/).slice(0, 3).map(n => parseInt(n, 10) || 0);
+  }
+  function _compareVer(a, b){
+    const A = _semverParts(a), B = _semverParts(b);
+    for (let i = 0; i < 3; i++) { if (A[i] !== B[i]) return A[i] > B[i] ? 1 : -1; }
+    return 0;
+  }
+  async function checkBioUpdate(auto){
+    const st = $("updateState");
+    if (!st) return;
+    const linkState = $("linkState");
+    if (linkState && /预览|preview/i.test(String(linkState.textContent || ""))) {
+      st.textContent = "预览模式不检查更新";
+      return;
+    }
+    st.textContent = "检查中…";
+    st.style.color = "";
+    const sources = [
+      "https://api.github.com/repos/" + BIO_REPO_SLUG + "/contents/metadata.yaml",
+      "https://cdn.jsdelivr.net/gh/" + BIO_REPO_SLUG + "@main/metadata.yaml",
+      "https://raw.githubusercontent.com/" + BIO_REPO_SLUG + "/main/metadata.yaml"
+    ];
+    for (const url of sources) {
+      try {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 8000);
+        const res = await fetch(url, {
+          cache: "no-store",
+          signal: ctl.signal,
+          headers: { Accept: url.indexOf("api.github.com") >= 0 ? "application/vnd.github.raw+json" : "text/plain" }
+        });
+        clearTimeout(timer);
+        if (!res.ok) continue;
+        const text = await res.text();
+        const m = text.match(/^\s*version:\s*["']?([^"'\s]+)/m);
+        if (!m) continue;
+        const remote = m[1].trim();
+        if (_compareVer(remote, BIO_VERSION) > 0) {
+          st.textContent = "发现新版本 " + remote + "（当前 " + BIO_VERSION + "）";
+          st.style.color = "var(--accent2)";
+        } else {
+          st.textContent = "已是最新（" + BIO_VERSION + "）";
+          st.style.color = "";
+        }
+        return;
+      } catch (e) { /* try next source */ }
+    }
+    st.textContent = auto ? "自动检查失败（网络不通，可点检查重试）" : "检查失败（网络不可达）";
+    st.style.color = "var(--danger)";
+  }
+  const _updateBtn = $("updateCheckBtn");
+  if (_updateBtn) _updateBtn.addEventListener("click", () => checkBioUpdate(false));
+  setTimeout(() => checkBioUpdate(true), 1500);
   setupPersonaTabs();
   setupFolds();
   arrangeFoldGrid();

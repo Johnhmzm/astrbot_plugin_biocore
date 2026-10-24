@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261024-1440" />
+<link rel="stylesheet" href="./styles.css?v=20261024-1450" />
 </head>
 <body>
 <div class="shell">
@@ -323,6 +323,13 @@
         <div class="setting-row"><div><b>强度</b><small>调整球体周围信号的整体幅度。</small></div><input type="range" id="orbIntensity" min="0" max="100" value="65"></div>
         <p class="save-state" id="saveState">球体显示开关即时保存到本地浏览器（不写后端配置）</p>
       </div>
+      <div class="section-title mt"><div><div class="eyebrow">VERSION</div><h2>版本更新</h2></div><span class="hint">GitHub repository</span></div>
+      <div class="panel settings" data-fold="1" data-fold-label="版本">
+        <div class="setting-row"><div><b>检查更新</b><small>对比 GitHub 仓库最新 metadata.yaml 版本；只检查提示，安装仍走 AstrBot 插件管理。</small></div><button type="button" class="btn" id="updateCheckBtn">检查更新</button></div>
+        <p class="api-note" id="updateState">当前版本 v1.2.3 · 尚未检查</p>
+        <p class="api-note" id="updateNote">AstrBot 插件管理 → BioCore → 更新（需绑定仓库）；或打开 GitHub 仓库手动下载。</p>
+        <a class="btn mini" id="updateOpenRepo" href="https://github.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener">打开 GitHub 仓库</a>
+      </div>
       <div class="section-title mt"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
       <div class="panel settings" data-fold="1" data-fold-label="备份">
         <div class="setting-row"><div><b>下载核心备份</b><small>插件代码 + data/ 打包成 zip，可用于迁移或恢复。</small></div><button type="button" class="btn" id="backupBtn">下载备份</button></div>
@@ -336,5 +343,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261024-1440"></script><script src="./orb.js?v=20261024-1440"></script>
+<script src="./app.js?v=20261024-1450"></script><script src="./orb.js?v=20261024-1450"></script>
 </body></html>
