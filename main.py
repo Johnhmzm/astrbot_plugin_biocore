@@ -43,6 +43,11 @@ try:
 except Exception:
     import memory_meta
 
+try:
+    from . import relationship_meta
+except Exception:
+    import relationship_meta
+
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
 _BASE_DATA_DIR = PLUGIN_DIR.parents[1] if len(PLUGIN_DIR.parents) > 1 else PLUGIN_DIR
@@ -1240,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.11")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.12")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1794,6 +1799,29 @@ class BioCorePlugin(Star):
                 d["trust"] = round(0.7 * float(d.get("trust", 0.5) or 0.5) + 0.3 * _ct, 3)
             except Exception:
                 d["trust"] = d.get("trust", 0.5)
+            try:
+                _prev_rel = d.get("relationship") if isinstance(d.get("relationship"), dict) else {}
+                _prev_state = _prev_rel.get("state") if isinstance(_prev_rel.get("state"), dict) else None
+                _opp = getattr(core, "opponent", {}) if core is not None else {}
+                _opp_v = _opp.get("v", 0.0) if isinstance(_opp, dict) else 0.0
+                _rel_state = relationship_meta.relationship_state(
+                    trust=d.get("trust", 0.5),
+                    social=getattr(core, "social", 0.5) if core is not None else 0.5,
+                    stress=getattr(core, "stress", 0.5) if core is not None else 0.5,
+                    opponent=_opp_v,
+                    previous=_prev_state,
+                )
+                _mem_doc = self._load_memory(event)
+                _entries = _mem_doc.get("entries") if isinstance(_mem_doc, dict) else []
+                d["relationship"] = relationship_meta.update_relationship_record(
+                    _prev_rel,
+                    state=_rel_state,
+                    ts=d.get("last_seen", time.time()),
+                    transactive_map=relationship_meta.build_transactive_map(_entries),
+                    destination_map=relationship_meta.build_destination_map(_entries),
+                )
+            except Exception:
+                pass
             path.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
             return d
         except Exception:
@@ -3686,6 +3714,13 @@ class BioCorePlugin(Star):
             )
             if not isinstance(duplicate.get("destination"), dict):
                 duplicate["destination"] = memory_meta.build_destination(_sid, _sname)
+            _write_op = memory_meta.classify_write_op(
+                duplicate, {"text": text[:1200]}, 1.0, conflict=bool(duplicate.get("conflict"))
+            )
+            duplicate["last_write_op"] = _write_op
+            _ops = duplicate.get("write_ops") if isinstance(duplicate.get("write_ops"), dict) else {}
+            _ops[_write_op] = int(_ops.get(_write_op, 0) or 0) + 1
+            duplicate["write_ops"] = _ops
             duplicate["provenance"] = self._memory_provenance(event, now)
         else:
             _importance = self._memory_importance(core, "user")
@@ -3701,6 +3736,8 @@ class BioCorePlugin(Star):
                             "memory_confidence": memory_meta.initial_confidence(_source, _importance),
                             "destination": memory_meta.build_destination(_sid, _sname),
                             "conflict": False,
+                            "last_write_op": "ADD",
+                            "write_ops": {"ADD": 1},
                             "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
             self._trim_memory(doc, core)
         self._save_memory(event, doc)
