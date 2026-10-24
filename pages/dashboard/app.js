@@ -1290,6 +1290,21 @@
       if(t.classList.contains("active")) activate(null); else activate(name);
     }));
   }
+  function setupIntentTabs(){
+    const bar=$('intentTabs'); if(!bar) return;
+    const tabs=[...bar.querySelectorAll('.persona-tab')];
+    const panels=[...document.querySelectorAll('#view-intent .intent-tabpanel')];
+    if(!tabs.length) return;
+    const activate=(name)=>{
+      tabs.forEach(t=>t.classList.toggle('active',!!name&&t.dataset.intentTab===name));
+      panels.forEach(p=>p.classList.toggle('active',!!name&&p.dataset.intentTab===name));
+    };
+    activate(null); // default folded; click one tile to open
+    tabs.forEach(t=>t.addEventListener('click',()=>{
+      const name=t.dataset.intentTab||'hero';
+      if(t.classList.contains('active')) activate(null); else activate(name);
+    }));
+  }
   const BIO_VERSION = "v1.2.38";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
@@ -1370,6 +1385,7 @@
   setupSettingsTabs();
   setupPersonaTabs();
   setupSessionTabs();
+  setupIntentTabs();
   setupFolds();
   arrangeFoldGrid();
   if (document.readyState === 'complete') load(); else window.addEventListener('load', () => load());

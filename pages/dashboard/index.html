@@ -101,7 +101,26 @@
 
     <section class="view" id="view-intent">
       <div class="section-title"><div><div class="eyebrow">TRANSLATION</div><h2>表达意图</h2></div><span class="hint">只看倾向，不生成台词</span></div>
-      <div class="intent-page">
+      <div class="persona-tabs fold-grid" id="intentTabs">
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="hero">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span><small>当前意图</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="flow">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M4 12h13M4 17h7"/><path d="M16 5l4 2-4 2M16 10l4 2-4 2M12 15l4 2-4 2"/></svg></span><small>表达流程</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="feeling">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7-4.5-7-9a4 4 0 0 1 7-2 4 4 0 0 1 7 2c0 4.5-7 9-7 9Z"/></svg></span><small>她的感受</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="response">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v6h16v-6"/><path d="M8 8l4-4 4 4"/><path d="M12 4v10"/></svg></span><small>想怎么回应</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="context">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="18" r="2"/></svg></span><small>内部参考</small></span>
+        </button>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelHero" data-intent-tab="hero">
+        <div class="panel-head"><h3>当前意图</h3><span class="hint">CURRENT INTENT</span></div>
         <div class="intent-hero">
           <div>
             <div class="intent-kicker">CURRENT INTENT</div>
@@ -114,7 +133,11 @@
             <div class="intent-strength-foot"><span id="intentUrgencyText">紧迫度 --</span><span>不直接展示原始状态</span></div>
           </div>
         </div>
+        <div class="intent-legend">EMOTION → NEED → EXPRESSION → PLAN：这一层只解释“为什么/想怎样”，不生成回复文本；LLM 只读这一层。</div>
+      </div>
 
+      <div class="panel intent-tabpanel" id="intentPanelFlow" data-intent-tab="flow">
+        <div class="panel-head"><h3>表达流程</h3><span class="hint">EMOTION → NEED → EXPRESSION → PLAN</span></div>
         <div class="intent-flow">
           <div class="intent-step"><small>01 / 情绪</small><b id="iFlowEmotion">--</b><span>她先感到了什么</span></div>
           <div class="intent-arrow">→</div>
@@ -124,36 +147,31 @@
           <div class="intent-arrow">→</div>
           <div class="intent-step"><small>04 / 计划</small><b id="iFlowPlan">--</b><span>准备怎么接</span></div>
         </div>
+      </div>
 
-        <div class="intent-cards">
-          <div class="intent-card">
-            <div class="intent-card-head"><span>她现在的感受</span><small>FEELING</small></div>
-            <div class="intent-row"><small>emotion / 情绪</small><b id="iEmotion">--</b></div>
-            <div class="intent-row"><small>compound / 复合情绪</small><b id="iCompound">--</b></div>
-            <div class="intent-row"><small>spectrum / 最接近原型</small><b id="iSpectrum">--</b></div>
-            <div class="intent-row"><small>novelty / 意外程度</small><b id="iNovelty">--</b></div>
-            <div class="intent-row"><small>goal / 目标相关</small><b id="iGoal">--</b></div>
-          </div>
-          <div class="intent-card">
-            <div class="intent-card-head"><span>她想怎么回应</span><small>RESPONSE</small></div>
-            <div class="intent-row"><small>need / 需要</small><b id="iNeed">--</b></div>
-            <div class="intent-row"><small>expression / 表达程度</small><b id="iExpr">--</b></div>
-            <div class="intent-row"><small>plan / 计划</small><b id="iPlan">--</b></div>
-            <div class="intent-row"><small>regulation / 调节策略</small><b id="iReg">--</b></div>
-            <div class="intent-row"><small>coping / 应对余量</small><b id="iCoping">--</b></div>
-          </div>
-          <div class="intent-card">
-            <div class="intent-card-head"><span>内部参考</span><small>CONTEXT</small></div>
-            <div class="intent-row"><small>self / 自我定位</small><b id="iSelf">--</b></div>
-            <div class="intent-row"><small>norm / 规范匹配</small><b id="iNorm">--</b></div>
-            <div class="intent-row"><small>expected / 预期</small><b id="iExpected">--</b></div>
-            <div class="intent-row"><small>urgency / 紧迫度</small><b id="iUrgency">--</b></div>
-            <div class="intent-row"><small>attention / 注意</small><b id="iAttention">--</b></div>
-            <div class="intent-row"><small>opponent / 对抗</small><b id="iOpponent">--</b></div>
-            <div class="intent-row"><small>meta / 元情绪</small><b id="iMeta">--</b></div>
-          </div>
-        </div>
-        <div class="intent-legend">EMOTION → NEED → EXPRESSION → PLAN：这一层只解释“为什么/想怎样”，不生成回复文本；LLM 只读这一层。</div>
+      <div class="panel intent-tabpanel" id="intentPanelFeeling" data-intent-tab="feeling">
+        <div class="panel-head"><h3>她现在的感受</h3><span class="hint">FEELING</span></div>
+        <div class="intent-row"><small>emotion / 情绪</small><b id="iEmotion">--</b></div>
+        <div class="intent-row"><small>compound / 复合情绪</small><b id="iCompound">--</b></div>
+        <div class="intent-row"><small>spectrum / 最接近原型</small><b id="iSpectrum">--</b></div>
+        <div class="intent-row"><small>novelty / 意外程度</small><b id="iNovelty">--</b></div>
+        <div class="intent-row"><small>goal / 目标相关</small><b id="iGoal">--</b></div>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelResponse" data-intent-tab="response">
+        <div class="panel-head"><h3>她想怎么回应</h3><span class="hint">RESPONSE</span></div>
+        <div class="intent-row"><small>need / 需要</small><b id="iNeed">--</b></div>
+        <div class="intent-row"><small>expression / 表达程度</small><b id="iExpr">--</b></div>
+        <div class="intent-row"><small>plan / 计划</small><b id="iPlan">--</b></div>
+        <div class="intent-row"><small>regulation / 调节策略</small><b id="iReg">--</b></div>
+        <div class="intent-row"><small>coping / 应对余量</small><b id="iCoping">--</b></div>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelContext" data-intent-tab="context">
+        <div class="panel-head"><h3>内部参考</h3><span class="hint">CONTEXT</span></div>
+        <div class="intent-row"><small>self / 自我定位</small><b id="iSelf">--</b></div>
+        <div class="intent-row"><small>norm / 规范匹配</small><b id="iNorm">--</b></div>
+        <p class="api-note">已移除重复/长期为空项：expected（=1-novelty）、urgency（=arousal）、attention、opponent、meta；内部参考只保留对表达有用的 self / norm。</p>
       </div>
     </section>
 
