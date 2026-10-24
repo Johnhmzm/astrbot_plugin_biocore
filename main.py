@@ -1245,7 +1245,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.12")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.13")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3482,7 +3482,8 @@ class BioCorePlugin(Star):
                 * (0.85 + 0.15 * base)
                 * (1.0 + 0.10 * math.log1p(max(0, recall_count)))
                 * due
-                * (1.0 + 0.05 * math.log1p(max(0, assoc))))
+                * (1.0 + 0.05 * math.log1p(max(0, assoc)))
+                * memory_meta.retrieval_weight(entry))
 
     def _memory_top_k(self, core) -> int:
         k = 4
