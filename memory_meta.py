@@ -1724,7 +1724,7 @@ def working_set_boost(entry: Any, working_set: Any) -> float:
     return 1.0
 
 
-def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 8) -> list[str]:
+def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 0) -> list[str]:
     """Drop near-duplicate memory texts before an LLM summary call.
 
     Deterministic char-bigram similarity; keeps first (caller usually passes
@@ -1735,9 +1735,12 @@ def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 8) -> list
     out: list[str] = []
     try:
         thr = max(0.5, min(1.0, float(threshold)))
-        cap = max(1, int(limit))
+        try:
+            cap = max(0, int(limit))
+        except Exception:
+            cap = 0
     except Exception:
-        thr, cap = 0.88, 8
+        thr, cap = 0.88, 0
     for item in (texts or []):
         text = str(item or "").strip()
         if not text:
@@ -1745,6 +1748,6 @@ def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 8) -> list
         if any(text_similarity(text, prev) >= thr for prev in out):
             continue
         out.append(text)
-        if len(out) >= cap:
+        if cap > 0 and len(out) >= cap:
             break
     return out
