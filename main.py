@@ -371,6 +371,9 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
                 "trajectory": [dict(x) for x in trajectory[-max_trajectory:] if isinstance(x, dict)],
                 "transactive_map": rel.get("transactive_map") if isinstance(rel.get("transactive_map"), dict) else {},
                 "destination_map": rel.get("destination_map") if isinstance(rel.get("destination_map"), dict) else {},
+                "repair_state": rel.get("repair_state") if isinstance(rel.get("repair_state"), dict) else {},
+                "absence": rel.get("absence") if isinstance(rel.get("absence"), dict) else {},
+                "calibration": rel.get("calibration") if isinstance(rel.get("calibration"), dict) else {},
             },
         })
     return rows
@@ -468,6 +471,9 @@ class BioCore:
         self.compound = ""
         self.regulation = "none"
         self.history = []
+        # B-T06: exploration/boredom drive (bounded state; not a claim about feelings).
+        self.novelty_need = 0.5
+        self.boredom = 0.0
         self.open_loops = []
         self.stimuli = []
         self.goals = [
@@ -915,6 +921,23 @@ class BioCore:
                 social_delta -= 0.03
         # Short-term habituation: repeated equivalent emotional stimuli decay.
         _now = time.time()
+        # B-T06: generic novelty history (also covers non-emotional repeated text).
+        try:
+            _novelty_text = re.sub(r"\s+", "", t)[:160]
+            if _novelty_text:
+                _hist = getattr(self, "_novelty_history", [])
+                _seen_before = any(
+                    self._text_similarity(_novelty_text, str(x)) >= 0.65
+                    for x in _hist[-12:])
+                if _seen_before:
+                    self.boredom = _clip(self.boredom + 0.06 * (1.0 - self.boredom), 0.0, 1.0)
+                    self.novelty_need = _clip(self.novelty_need + 0.03 * (1.0 - self.novelty_need), 0.0, 1.0)
+                else:
+                    self.boredom = _clip(self.boredom - 0.08, 0.0, 1.0)
+                    self.novelty_need = _clip(0.94 * self.novelty_need + 0.06 * 0.5, 0.0, 1.0)
+                self._novelty_history = (_hist + [_novelty_text])[-20:]
+        except Exception:
+            pass
         self.stimuli = [x for x in (getattr(self, "stimuli", []) or [])
                         if _now - float(x.get("ts", 0) or 0) <= float(getattr(self, "stimulus_decay_seconds", 300))]
         if _hits:
@@ -952,6 +975,14 @@ class BioCore:
             a_delta *= _hab
             d_delta *= _hab
             social_delta *= _hab
+            if _item:
+                # Repeated equivalent stimulus: boredom rises, novelty need rises.
+                self.boredom = _clip(self.boredom + (0.05 + 0.03 * min(3.0, _count)) * (1.0 - self.boredom), 0.0, 1.0)
+                self.novelty_need = _clip(self.novelty_need + 0.04 * (1.0 - self.novelty_need), 0.0, 1.0)
+            else:
+                # New stimulus: boredom falls, novelty need eases toward baseline.
+                self.boredom = _clip(self.boredom - 0.08, 0.0, 1.0)
+                self.novelty_need = _clip(0.92 * self.novelty_need + 0.08 * 0.5, 0.0, 1.0)
         self.v = _clip(0.7 * self.v + 0.3 * v_delta, -1, 1)
         self.a = _clip(0.8 * self.a + 0.2 * (0.4 + a_delta), 0, 1)
         self.d = _clip(0.8 * self.d + 0.2 * (0.55 + d_delta), -1, 1)
@@ -1488,6 +1519,8 @@ class BioCore:
                 "autobiography": list(self.autobiography)[-8:],
                 "regulation_stats": dict(self.regulation_stats),
                 "attention": round(float(self.attention), 3),
+                "novelty_need": round(float(getattr(self, "novelty_need", 0.5)), 3),
+                "boredom": round(float(getattr(self, "boredom", 0.0)), 3),
                 "meta_emotion": self.meta_emotion,
                 "goals": [{"key": g.get("key"), "name": g.get("name"), "horizon": g.get("horizon"),
                            "progress": round(float(g.get("progress", 0) or 0), 3),
@@ -1510,7 +1543,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.56")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.57")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2298,8 +2331,14 @@ class BioCorePlugin(Star):
                     d = {}
             d["sender_id"] = sid
             d["sender_name"] = name or d.get("sender_name", "")
+            try:
+                _prev_last_seen = float(d.get("last_seen", 0) or 0)
+            except Exception:
+                _prev_last_seen = 0.0
             d["interactions"] = int(d.get("interactions", 0) or 0) + 1
-            d["last_seen"] = time.time()
+            _now_seen = time.time()
+            d["absence"] = relationship_meta.absence_state(_prev_last_seen, _now_seen)
+            d["last_seen"] = _now_seen
             d.setdefault("first_seen", time.time())
             _session_key = str(getattr(event, "unified_msg_origin", "") or "").strip()
             if _session_key:
@@ -2331,6 +2370,7 @@ class BioCorePlugin(Star):
                     ts=d.get("last_seen", time.time()),
                     transactive_map=relationship_meta.build_transactive_map(_entries),
                     destination_map=relationship_meta.build_destination_map(_entries),
+                    absence=d.get("absence"),
                 )
             except Exception:
                 pass
@@ -4010,6 +4050,16 @@ class BioCorePlugin(Star):
             self._last_consolidation = time.time()
         return {"status": "ok", "data": {"files": len(results), "sessions": len(files)}}
 
+    def _working_set_preview(self, key: str) -> dict:
+        """Bounded working-set exposure for the dashboard/evals (no new mechanism)."""
+        try:
+            doc = self._load_memory(types.SimpleNamespace(unified_msg_origin=str(key or "")))
+            ws = doc.get("working_set") if isinstance(doc, dict) else []
+            ids = [str(x) for x in (ws or []) if str(x)][-8:]
+            return {"capacity": 8, "count": len(ids), "ids": ids}
+        except Exception:
+            return {"capacity": 8, "count": 0, "ids": []}
+
     async def page_status(self):
         _personas = []
         try:
@@ -4028,6 +4078,7 @@ class BioCorePlugin(Star):
                 "key": key,
                 "snapshot": core.snapshot(),
                 "intent": {**core.intent(), "plan": interpretation.plan(core)},
+                "working_set": self._working_set_preview(key),
             })
         if not cores:
             # The in-memory cache is empty after a restart. Load persisted
@@ -4045,6 +4096,7 @@ class BioCorePlugin(Star):
                         "key": path.stem,
                         "snapshot": core.snapshot(),
                         "intent": {**core.intent(), "plan": interpretation.plan(core)},
+                        "working_set": self._working_set_preview(path.stem),
                     })
                 except Exception:
                     continue
@@ -5200,6 +5252,15 @@ class BioCorePlugin(Star):
                     duplicate["vec_updated_ts"] = now
                 duplicate["conflict"] = True
                 duplicate["conflict_resolved"] = bool(_explicit_update)
+                try:
+                    self._record_calibration(
+                        event,
+                        "explicit_correction" if _explicit_update else "conflict",
+                        duplicate.get("memory_confidence", 0.5),
+                        0.0,
+                    )
+                except Exception:
+                    pass
                 if _explicit_update:
                     # The user explicitly corrected the fact: trust the newer
                     # direct statement, but keep the old version for rollback.
