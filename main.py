@@ -1935,7 +1935,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.90")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.91")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3149,6 +3149,27 @@ class BioCorePlugin(Star):
         except Exception:
             return []
 
+    def _event_emotion_intensity(self, core) -> float:
+        """Emotion-intensity snapshot for ring speed (task-66).
+
+        Prefers the core's own intensity(); otherwise arousal + |valence|.
+        None / no core -> 0.0; the orb then falls back to importance or
+        emotion_layers[0].p instead of fabricating a value.
+        """
+        try:
+            if core is None:
+                return 0.0
+            fn = getattr(core, "_intensity", None)
+            if callable(fn):
+                raw = float(fn())
+                if math.isfinite(raw):
+                    return round(max(0.0, min(1.0, raw)), 4)
+            arousal = float(getattr(core, "a", 0.4) or 0.4)
+            valence = abs(float(getattr(core, "v", 0.0) or 0.0))
+            return round(max(0.0, min(1.0, 0.5 * arousal + 0.5 * valence)), 4)
+        except Exception:
+            return 0.0
+
     def _event_secondary_for_record(self, record) -> str:
         """Secondary emotion for an archived event, from its session core.
 
@@ -3681,6 +3702,11 @@ class BioCorePlugin(Star):
         if isinstance(saved.get("emotion_layers"), list):
             payload["emotion_layers"] = [dict(x) for x in (saved.get("emotion_layers") or [])[:4]
                                          if isinstance(x, dict)]
+        try:
+            payload["emotion_intensity"] = round(
+                float(saved.get("emotion_intensity", 0.0) or 0.0), 4)
+        except Exception:
+            pass
         payload["summary_history"] = history if isinstance(history, list) else []
         return {"status": "ok", "data": payload}
 
@@ -4839,6 +4865,7 @@ class BioCorePlugin(Star):
                     "emotion_secondary": self._secondary_emotion(core),
                     "emotion_nuance": [],
                     "emotion_layers": self._event_emotion_layers(core),
+                    "emotion_intensity": self._event_emotion_intensity(core),
                     "importance": _imp,
                     "appraisal": dict(core.appraisal) if core is not None else {},
                     "confidence": round(max(0.2, min(1.0, 0.55 + 0.45 * float(check.get("overlap", 0)))), 3),
@@ -4944,6 +4971,7 @@ class BioCorePlugin(Star):
                 "emotion_nuance": self._normalize_emotion_nuance(
                     data.get("emotion_nuance")),
                 "emotion_layers": self._event_emotion_layers(core),
+                "emotion_intensity": self._event_emotion_intensity(core),
                 "importance": round(max(0.5, min(1.0, intensity)), 3),
                 "appraisal": dict(core.appraisal),
                 "confidence": _conf,

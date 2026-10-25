@@ -1073,7 +1073,20 @@
         // secondary ring (or ONE inferred ring when no secondary was stored);
         // they never fabricate a 3rd/4th ring.
         const _primaryEmo = String(ev.emotion || "neutral").trim().toLowerCase();
+        // task-66: ring rotation speed follows the archived emotion intensity.
+        // Old records fall back to importance then emotion_layers[0].p.
+        const _intensityRaw = Number(ev.emotion_intensity);
+        let _emoIntensity = Number.isFinite(_intensityRaw) ? clamp(_intensityRaw) : null;
         const _rawLayers = Array.isArray(ev.emotion_layers) ? ev.emotion_layers : null;
+        if (_emoIntensity == null && _rawLayers && _rawLayers.length) {
+          _emoIntensity = clamp(Number((_rawLayers[0] || {}).p) || 0);
+        }
+        if (_emoIntensity == null) {
+          _emoIntensity = clamp(Number(ev.importance == null ? 0.5 : ev.importance));
+        }
+        const speedFactor = 1.0 + 1.8 * _emoIntensity;
+        window.__biocoreOrbitSpeed = { intensity: Number(_emoIntensity.toFixed(4)),
+          speedFactor: Number(speedFactor.toFixed(3)) };
         let _rings = [];
         if (_rawLayers) {
           _rings = _rawLayers.map((item) => ({
@@ -1097,13 +1110,18 @@
           orbitTilt: 0.42, hasAuxEllipse: false, rotates: _ringStyle === "orbit",
           hasHighlight: _ringStyle === "orbit" && _rings.length > 0, spin: 0,
           orbitYaw: 0, orbitPitch: 0.42, orbitPts: [], highlightAngle: 0,
-          orbitHighlightLen: 0
+          orbitHighlightLen: 0, emotionIntensity: Number(_emoIntensity.toFixed(4)),
+          speedFactor: Number(speedFactor.toFixed(3)),
+          yawRate: Number((0.9 * speedFactor).toFixed(3))
         };
         const fullTurn = Math.PI * 2;
         const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);
         const _orbitTilts = [0.42, 0.30, 0.18];
-        const _phaseYaw = phase * 0.42;
-        const _phasePitch = 0.42 + 0.10 * Math.sin(phase * 0.7);
+        // task-66: yaw rate is faster than the old fixed .42 and scales with the
+        // emotion intensity (low intensity stays slow but visible).
+        const _phaseYaw = phase * 0.9 * speedFactor;
+        const _phasePitch = 0.42 +
+          (0.08 + 0.06 * _emoIntensity) * Math.sin(phase * (0.55 + 0.45 * speedFactor));
         _rings.forEach((ringItem, ringIdx) => {
           const weight = ringItem.p == null ? b.imp : ringItem.p;
           const ringBaseR = size + 4.2 + ringIdx * 2.4;
@@ -1155,7 +1173,7 @@
             ctx.stroke();
             if (ringIdx === 0) {
               const orbitHighlightLen = fullTurn * 0.10;
-              const orbitHighlightStart = (phase * 1.35) % fullTurn;
+              const orbitHighlightStart = (phase * 1.35 * speedFactor) % fullTurn;
               ctx.globalAlpha = ringHighlightAlphaR;
               ctx.beginPath();
               for (let hIdx = 0; hIdx <= 10; hIdx++) {
