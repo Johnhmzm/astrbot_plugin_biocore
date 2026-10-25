@@ -87,6 +87,9 @@ IMAGE_CACHE_PATH = DATA_DIR / "image_cache.json"
 EVENT_ARCHIVE_DIR = DATA_DIR / "archives"
 EVENT_SESSION_DIR = EVENT_ARCHIVE_DIR / "sessions"
 EVENT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "events.jsonl"
+EVENT_SUMMARY_ACTIONS = ("regenerate", "update")
+EVENT_SUMMARY_HARD_MAX = 20000
+EVENT_SUMMARY_SMALL_MAX = 80
 USER_DIR = DATA_DIR / "users"
 SELF_MODEL_PATH = DATA_DIR / "self_model.json"
 INSIGHT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "insights.jsonl"
@@ -1878,7 +1881,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.82")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.83")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3250,6 +3253,169 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
 
+    # ---- task-47: regenerate / edit one archived event summary ----
+    @staticmethod
+    def _parse_event_summary_request(body):
+        """Validate an event_summary POST body -> (event_id, action, error)."""
+        data = body if isinstance(body, dict) else {}
+        event_id = str(data.get("event_id") or "").strip()
+        action = str(data.get("action") or "").strip().lower()
+        if not event_id:
+            return "", "", "缺少 event_id"
+        if action not in EVENT_SUMMARY_ACTIONS:
+            return event_id, action, "未知操作"
+        return event_id, action, ""
+
+    @staticmethod
+    def _validate_edited_event_summary(big, small, max_chars: int = 0):
+        """Validate a manual summary edit -> (big, small, error)."""
+        big_text = str(big or "").strip()
+        small_text = str(small or "").strip()
+        if not big_text:
+            return "", "", "大总结不能为空"
+        if len(small_text) > EVENT_SUMMARY_SMALL_MAX:
+            return "", "", "小总结不能超过 %d 字" % EVENT_SUMMARY_SMALL_MAX
+        try:
+            cap = int(max_chars or 0)
+        except Exception:
+            cap = 0
+        limit = EVENT_SUMMARY_HARD_MAX
+        if cap > 0:
+            limit = min(cap, EVENT_SUMMARY_HARD_MAX)
+        return big_text[:limit], small_text, ""
+
+    @staticmethod
+    def _apply_event_summary_fields(record, event_id: str, updates: dict) -> bool:
+        """Mutation for _rewrite_jsonl_atomic: touch only the target row."""
+        if not isinstance(record, dict) or not isinstance(updates, dict):
+            return False
+        if str(record.get("id") or "") != str(event_id or ""):
+            return False
+        record.update(updates)
+        return True
+
+    def _find_event_summary_record(self, event_id: str):
+        try:
+            target = str(event_id or "").strip()
+            if not target or not EVENT_ARCHIVE_PATH.exists():
+                return None
+            for line in EVENT_ARCHIVE_PATH.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if isinstance(row, dict) and str(row.get("id") or "") == target:
+                    return row
+        except Exception as exc:
+            logger.warning("[biocore] event summary lookup failed: %s", exc)
+        return None
+
+    @staticmethod
+    def _event_summary_source_texts(record) -> list:
+        try:
+            source = [str(t or "").strip() for t in (record.get("source_texts") or [])
+                      if str(t or "").strip()]
+            if source:
+                return source[:12]
+        except Exception:
+            pass
+        out = []
+        for value in (record.get("event"), record.get("central_details"),
+                      record.get("title")):
+            text = str(value or "").strip()
+            if text:
+                out.append(text)
+        return out[:12]
+
+    async def _regenerate_event_summary_fields(self, record) -> dict:
+        """Regenerate big/small: LLM when enabled+available, else bounded fallback."""
+        record = record if isinstance(record, dict) else {}
+        title = str(record.get("title") or "").strip()
+        texts = self._event_summary_source_texts(record)
+        source_text = "\n".join(texts) if texts else str(record.get("event") or "")
+        now = time.time()
+        big = small = ""
+        status = "fallback"
+        llm_ok = False
+        try:
+            if self._llm_allowed("event_summary"):
+                provider = await self._provider_for("event_summary", None)
+                if provider is not None:
+                    prompt = interpretation.event_summary_prompt(texts or [source_text])
+                    resp = await provider.text_chat(prompt=prompt)
+                    raw = str(getattr(resp, "completion_text", "") or "").strip()
+                    data = interpretation.parse_event_summary(
+                        raw, getattr(self, "summary_max_chars", 0))
+                    llm_big = str(data.get("big_summary") or "").strip()
+                    llm_small = str(data.get("small_summary") or "").strip()
+                    if llm_big or llm_small:
+                        try:
+                            cap = int(getattr(self, "summary_max_chars", 0) or 0)
+                        except Exception:
+                            cap = 0
+                        limit = EVENT_SUMMARY_HARD_MAX
+                        if cap > 0:
+                            limit = min(cap, EVENT_SUMMARY_HARD_MAX)
+                        big = self._mask_if_safety(str(llm_big or llm_small))[:limit]
+                        small = self._mask_if_safety(
+                            str(llm_small or llm_big))[:EVENT_SUMMARY_SMALL_MAX]
+                        llm_ok = True
+        except Exception as exc:
+            logger.warning("[biocore] event summary regenerate via LLM failed: %s", exc)
+            llm_ok = False
+        if not llm_ok:
+            big, small = self._dual_event_summary_fallback(source_text, title)
+            status = "fallback"
+        else:
+            status = "llm"
+        return {"big_summary": str(big or "")[:EVENT_SUMMARY_HARD_MAX],
+                "small_summary": str(small or "")[:EVENT_SUMMARY_SMALL_MAX],
+                "summary_status": status,
+                "summary_edited": False,
+                "summary_updated_ts": now}
+
+    async def page_event_summary(self):
+        """Regenerate (LLM/fallback) or manually edit one archived event summary."""
+        from quart import request
+        try:
+            body = await request.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+        event_id, action, error = self._parse_event_summary_request(body)
+        if error:
+            return {"status": "error", "message": error}
+        record = self._find_event_summary_record(event_id)
+        if record is None:
+            return {"status": "error", "message": "事件不存在"}
+        try:
+            if action == "regenerate":
+                updates = await self._regenerate_event_summary_fields(record)
+            else:
+                big, small, error = self._validate_edited_event_summary(
+                    body.get("big_summary"), body.get("small_summary"),
+                    getattr(self, "summary_max_chars", 0))
+                if error:
+                    return {"status": "error", "message": error}
+                updates = {"big_summary": big, "small_summary": small,
+                           "summary_status": "edited", "summary_edited": True,
+                           "summary_updated_ts": time.time()}
+        except Exception as exc:
+            logger.warning("[biocore] event summary %s failed: %s", action, exc)
+            return {"status": "error", "message": "处理失败"}
+        try:
+            changed = self._rewrite_jsonl_atomic(
+                EVENT_ARCHIVE_PATH,
+                lambda obj: self._apply_event_summary_fields(obj, event_id, updates))
+        except Exception as exc:
+            logger.warning("[biocore] event summary rewrite failed: %s", exc)
+            changed = 0
+        if changed <= 0:
+            return {"status": "error", "message": "事件不存在或写入失败"}
+        return {"status": "ok",
+                "data": dict({"event_id": event_id, "action": action}, **updates)}
+
     def _persist_peripheral_forgetting(self, events) -> None:
         """Persist periphery forgetting to both archive layers.
 
@@ -4611,6 +4777,9 @@ class BioCorePlugin(Star):
                          "BioCore manual cross-event insight")
                 register("/astrbot_plugin_biocore/page/consolidate", self.page_consolidate, ["POST"],
                          "BioCore memory consolidation")
+                register("/astrbot_plugin_biocore/page/event_summary",
+                         self.page_event_summary, ["POST"],
+                         "BioCore event summary regenerate/edit")
                 register("/astrbot_plugin_biocore/page/memory/rollback/<path:session>/<entry_id>",
                          self.page_memory_rollback, ["POST"], "BioCore memory rollback")
                 register("/astrbot_plugin_biocore/page/memory/delete/<path:session>/<entry_id>",
