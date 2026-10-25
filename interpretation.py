@@ -199,11 +199,18 @@ def event_summary_prompt(texts) -> str:
     return ("把下面一段聊天记录总结成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
             '{"title":"短标题","event":"完整事件经过","meaning_to_her":"对她的意义","reflection":"事件感悟",'
             '"big_summary":"完整总结（不设固定字数上限）","small_summary":"≤80字 tooltip 短总结",'
-            '"emotion_nuance":["0-3个隐含/复合情绪中文标签，如 遗憾/难过/失落/释然/心动；没有就空数组，不要重复主情绪/次情绪"]}\n'
+            '"emotion_nuance":["0-3个隐含/复合情绪中文标签，如 遗憾/难过/失落/释然/心动；没有就空数组，不要重复主情绪/次情绪"],'
+            '"emotion_layers":[{"emotion":"joy","intensity":0.80,"confidence":0.90,"centrality":0.70,"evidence":"老板把喜欢限定为干员喜欢"},{"emotion":"sadness","intensity":0.45,"confidence":0.80,"centrality":0.60,"evidence":"她笑着但语气低下去"}]}\n'
             "基于提供的聊天事件完整总结整件事，不设固定字数上限；big_summary 是完整总结，small_summary 是给 tooltip 的≤80字短总结；"
             "只总结事件本身，不要把原始聊天上下文原样拼进摘要；意义只写她的感受/立场/关系变化；"
             "reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。"
-            "emotion_nuance 只提取主情绪/次情绪之外隐含或复合的情绪层次（0-3 个中文短标签），没有就输出空数组，不能编造。\n\n" + joined)
+            "emotion_layers 必须基于总结出的事件给出全部识别到的情绪（0-6 个，含主情绪，emotion 用 EMOTION_SPECTRUM 英文 key）；"
+            "每个情绪给四个独立信号：intensity 0-1（该情绪强度）、confidence 0-1（判断置信）、centrality 0-1（对该事件核心程度）、evidence（文本依据短句）；"
+            "不要把强度归一化为总和 1、不要为了凑总和而虚增/压小，也不要只取 top3；"
+            "没有依据就给空数组，不要用固定权重凑数；emotion_nuance 的标签只是候选，emotion_layers 的 p 由你按事件实际给出。"
+            "emotion_nuance 只提取主情绪/次情绪之外隐含或复合的情绪层次（0-3 个中文短标签），没有就输出空数组，不能编造。"
+            "遇到表白/期待被降级、关系边界回退、心意被限定为玩笑等场景，如果文本里确有难过/失落的依据，"
+            "emotion_nuance 要考虑 遗憾/难过/失落 等词；依据不足时不要为了凑数编造。\n\n" + joined)
 
 
 def insight_prompt(events) -> str:
@@ -808,6 +815,46 @@ def parse_event_ranking(raw: str) -> list:
     return out
 
 
+_NUANCE_EMOTION_MAP = {
+    "遗憾": "disappointment",
+    "失望": "disappointment",
+    "失落": "sadness",
+    "难受": "sadness",
+    "难过": "sadness",
+    "委屈": "sadness",
+    "心痛": "sadness",
+    "尴尬": "awkwardness",
+    "释然": "contentment",
+    "松口气": "contentment",
+    "心动": "adoration",
+    "害怕": "fear",
+    "担心": "anxiety",
+    "生气": "anger",
+    "不甘": "anger",
+    "内疚": "guilt",
+    "怀念": "nostalgia",
+    "孤独": "loneliness",
+}
+
+
+def nuance_emotion_key(label) -> str:
+    """Map a Chinese emotion-nuance label to an EMOTION_SPECTRUM key (task-68).
+
+    Used only to build fallback emotion_layers for OLD events (layers missing)
+    on regenerate; unknown labels return "" so no ring is fabricated.
+    """
+    text = re.sub(r"\s+", "", str(label or ""))
+    if not text:
+        return ""
+    direct = _NUANCE_EMOTION_MAP.get(text)
+    if direct:
+        return direct
+    for word, key in _NUANCE_EMOTION_MAP.items():
+        if word and word in text:
+            return key
+    return ""
+
+
 def clean_emotion_nuance(value, limit: int = 3) -> list:
     """Normalize the hidden/composite emotion layer (task-64).
 
@@ -838,6 +885,52 @@ def clean_emotion_nuance(value, limit: int = 3) -> list:
     return out[:max(0, int(limit or 0))]
 
 
+def clean_emotion_layers(value, limit: int = 6) -> list:
+    """Validate summary-provided emotion proportions (task-68 correction).
+
+    The event summary returns ALL recognized emotions (0-6), each with an
+    INDEPENDENT 0-1 intensity in p (no requirement to sum to 1, no global
+    normalization). Entries need a non-empty emotion key and p>0; the list is
+    deduped, sorted by intensity and capped at 6. Missing/garbage -> [].
+    """
+    if not isinstance(value, (list, tuple)):
+        return []
+    def _clamp_signal(raw) -> float:
+        try:
+            value_f = float(raw)
+        except Exception:
+            return 0.0
+        return round(max(0.0, min(1.0, value_f)), 4)
+
+    out = []
+    seen = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("emotion") or "").strip().lower()
+        intensity = item.get("intensity")
+        if intensity is None:
+            intensity = item.get("p")   # backward compatibility
+        intensity = _clamp_signal(intensity)
+        confidence = (0.5 if item.get("confidence") is None
+                      else _clamp_signal(item.get("confidence")))
+        centrality = (0.5 if item.get("centrality") is None
+                      else _clamp_signal(item.get("centrality")))
+        evidence = str(item.get("evidence") or "").strip()[:120]
+        if not key or intensity <= 0 or key in seen:
+            continue
+        seen.add(key)
+        out.append({"emotion": key, "intensity": intensity,
+                    "confidence": confidence, "centrality": centrality,
+                    "evidence": evidence})
+        if len(out) >= max(1, int(limit or 0)):
+            break
+    # task-68 final: these are independent signals, NOT shares. Do not
+    # normalize to 1; keep the four signals for the ring scorer.
+    out.sort(key=lambda item: item["intensity"], reverse=True)
+    return out
+
+
 def parse_event_summary(raw: str, max_chars: int = 0) -> dict:
     """Parse the single-event summary; summary fields are uncapped by default."""
     data = _extract_json_object(raw)
@@ -856,6 +949,7 @@ def parse_event_summary(raw: str, max_chars: int = 0) -> dict:
         "big_summary": big_text,
         "small_summary": small_text,
         "emotion_nuance": clean_emotion_nuance(data.get("emotion_nuance")),
+        "emotion_layers": clean_emotion_layers(data.get("emotion_layers")),
     }
 
 

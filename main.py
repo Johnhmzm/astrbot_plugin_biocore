@@ -1935,7 +1935,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.92")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.94")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3588,6 +3588,7 @@ class BioCorePlugin(Star):
         big = small = ""
         new_title = ""
         nuance = []
+        summary_layers = []
         status = "fallback"
         llm_ok = False
         try:
@@ -3618,6 +3619,8 @@ class BioCorePlugin(Star):
                             new_title = llm_title[:80]
                         nuance = interpretation.clean_emotion_nuance(
                             data.get("emotion_nuance"))
+                        summary_layers = interpretation.clean_emotion_layers(
+                            data.get("emotion_layers"))
                         llm_ok = True
         except Exception as exc:
             logger.warning("[biocore] event summary regenerate via LLM failed: %s", exc)
@@ -3626,6 +3629,7 @@ class BioCorePlugin(Star):
             big, small = self._dual_event_summary_fallback(source_text, title)
             status = "fallback"
             nuance = []   # deterministic fallback never fabricates a nuance layer
+            summary_layers = []
         else:
             status = "llm"
         if not new_title:
@@ -3634,13 +3638,21 @@ class BioCorePlugin(Star):
                          or interpretation.clean_event_title(record.get("meaning_to_her"))
                          or interpretation.clean_event_title(title)
                          or "对话事件")
-        return {"title": str(new_title or "对话事件")[:80],
-                "big_summary": str(big or "")[:EVENT_SUMMARY_HARD_MAX],
-                "small_summary": str(small or "")[:EVENT_SUMMARY_SMALL_MAX],
-                "emotion_nuance": interpretation.clean_emotion_nuance(nuance),
-                "summary_status": status,
-                "summary_edited": False,
-                "summary_updated_ts": now}
+        updates = {"title": str(new_title or "对话事件")[:80],
+                   "big_summary": str(big or "")[:EVENT_SUMMARY_HARD_MAX],
+                   "small_summary": str(small or "")[:EVENT_SUMMARY_SMALL_MAX],
+                   "emotion_nuance": interpretation.clean_emotion_nuance(nuance),
+                   "summary_status": status,
+                   "summary_edited": False,
+                   "summary_updated_ts": now}
+        # task-68 correction: emotion proportions come from the summary itself
+        # (normalized p, including the primary emotion). No fixed 50/30/20
+        # weights and no fabrication: no layers in the output -> keep the old
+        # value (possibly null) untouched.
+        if summary_layers:
+            updates["emotion_layers"] = summary_layers
+            updates["emotion_layers_source"] = "summary"
+        return updates
 
     async def page_event_summary(self):
         """Regenerate (LLM/fallback) or manually edit one archived event summary."""
@@ -3707,6 +3719,9 @@ class BioCorePlugin(Star):
                 float(saved.get("emotion_intensity", 0.0) or 0.0), 4)
         except Exception:
             pass
+        if str(saved.get("emotion_layers_source") or "").strip():
+            payload["emotion_layers_source"] = str(
+                saved.get("emotion_layers_source") or "").strip()
         payload["summary_history"] = history if isinstance(history, list) else []
         return {"status": "ok", "data": payload}
 
@@ -4865,6 +4880,7 @@ class BioCorePlugin(Star):
                     "emotion_secondary": self._secondary_emotion(core),
                     "emotion_nuance": [],
                     "emotion_layers": self._event_emotion_layers(core),
+                    "emotion_layers_source": "core",
                     "emotion_intensity": self._event_emotion_intensity(core),
                     "importance": _imp,
                     "appraisal": dict(core.appraisal) if core is not None else {},
@@ -4970,7 +4986,11 @@ class BioCorePlugin(Star):
                 "emotion_secondary": self._secondary_emotion(core),
                 "emotion_nuance": self._normalize_emotion_nuance(
                     data.get("emotion_nuance")),
-                "emotion_layers": self._event_emotion_layers(core),
+                "emotion_layers": (interpretation.clean_emotion_layers(
+                    data.get("emotion_layers")) or None),
+                "emotion_layers_source": ("summary"
+                    if interpretation.clean_emotion_layers(
+                        data.get("emotion_layers")) else ""),
                 "emotion_intensity": self._event_emotion_intensity(core),
                 "importance": round(max(0.5, min(1.0, intensity)), 3),
                 "appraisal": dict(core.appraisal),
