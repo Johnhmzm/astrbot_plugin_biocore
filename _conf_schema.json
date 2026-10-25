@@ -145,32 +145,32 @@
     "default": 6
   },
   "image_llama_server": {
-    "description": "图片服务 llama-server 路径",
-    "hint": "留空 = 不启用本地图片服务；换机器必须填写实际 llama-server 路径。",
+    "description": "本地 VLM llama-server 路径（可选）",
+    "hint": "仅用于本地图片识别模式；填写此路径和模型后才启用。若使用 AstrBot 通用多模态 Provider/API，留空即可。",
     "type": "string",
     "default": ""
   },
   "image_llama_model": {
-    "description": "图片服务 VLM 模型路径",
-    "hint": "留空 = 不启用本地图片服务；换机器必须填写实际 VLM 模型路径。",
+    "description": "本地 VLM 模型路径（可选）",
+    "hint": "仅用于本地图片识别模式；与 image_llama_server 一起填写后才启用。使用通用 API 时留空。",
     "type": "string",
     "default": ""
   },
   "image_llama_mmproj": {
-    "description": "图片服务 mmproj 路径",
-    "hint": "可选；填写视觉投影 mmproj 路径，留空则不附加。",
+    "description": "本地 VLM mmproj 路径（可选）",
+    "hint": "仅本地 VLM 模式；可选视觉投影 mmproj，留空则不附加。",
     "type": "string",
     "default": ""
   },
   "image_service_port": {
-    "description": "本地图片服务端口",
-    "hint": "llama-server 启动端口，默认 8091；换机器或端口冲突时修改。",
+    "description": "本地 llama-server 端口（仅本地 VLM 模式）",
+    "hint": "0 = 不启用本地 VLM。只有填写 image_llama_server/model 且端口>0 时，插件才启动 127.0.0.1 本地子进程；这不是通用图片 API 地址。使用 AstrBot 通用多模态 Provider 时保持 0。",
     "type": "int",
-    "default": 8091
+    "default": 0
   },
   "image_service_idle_seconds": {
-    "description": "图片服务空闲回收秒数",
-    "hint": "图片识别完成后等待多少秒没有新请求就关闭本地 VLM 服务。默认 120。",
+    "description": "本地 VLM 空闲回收秒数（仅本地模式）",
+    "hint": "本地图片识别完成后多少秒无请求就关闭 llama-server；使用通用 API 时忽略。",
     "type": "int",
     "default": 120
   },

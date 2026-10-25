@@ -2,6 +2,15 @@
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
 
+## [1.2.96] - 2026-10-26
+
+### Fixed
+- 通用图片识别不再因为本地 VLM 未配置而被阻断：只有填写 image_llama_server + image_llama_model 时才启动/检查本地 llama-server。
+- AstrBot 通用多模态 Provider 现在可以直接用于 image_caption，无需 image_service_port。
+
+### Documentation
+- 明确 image_service_port 是本地 llama-server 的绑定端口，不是通用图片 API 地址；默认 0=不启用本地 VLM，只有填写 image_llama_server/model 且端口>0 才启动本地服务。
+
 ## [1.2.95] - 2026-10-26
 
 ### Added
@@ -10,6 +19,9 @@
 
 ### Changed
 - 记忆球体不透明度提高到 0.85–0.96，环最高 0.80，球体始终比环更实，混合色更清晰。
+
+### Documentation
+- 明确 `image_service_port` / `image_llama_*` 仅用于可选本地 VLM llama-server，不是通用 API 接口；使用 AstrBot 通用多模态 Provider 时无需配置。
 
 ## [1.2.94] - 2026-10-26
 

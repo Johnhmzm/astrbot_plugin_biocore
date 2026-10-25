@@ -6,7 +6,7 @@
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
-- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.95`）
+- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.96`）
 - 作者：`Johnhmzm`
 - GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
 - Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
@@ -70,8 +70,8 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 | 其他 LLM 功能 | 默认关闭 | `relationship_impression`、`insight`、`diary`、`humor_hint` 等默认不启用 |
 | `bc_prompt_mode` | `telemetry` | 默认注入紧凑状态 telemetry；切换到 `semantic` 可查看自然语言 brief |
 | `summary_max_chars` | `0` | 默认不设硬上限；异常/安全场景可设置上限 |
-| `image_llama_server` / `image_llama_model` / `image_llama_mmproj` | 空 | 可选本机 VLM 路径；留空不启用 |
-| `image_service_port` | `8091` | 本机图片服务端口 |
+| `image_llama_server` / `image_llama_model` / `image_llama_mmproj` | 空 | 可选本地 VLM 路径；仅本地图片识别模式，使用通用多模态 API 时留空 |
+| `image_service_port` | `0` | 本地 llama-server 端口；0=不启用，仅本地 VLM 模式，不是通用 API 地址 |
 
 Dashboard 设置页还提供 BioCore 专用 API 覆盖、记忆压缩、可视化图层、版本检查和备份。
 
@@ -135,7 +135,7 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 
 ## 更新日志
 
-- 当前版本：`1.2.95`（以 `metadata.yaml` 为准）
+- 当前版本：`1.2.96`（以 `metadata.yaml` 为准）
 - 详细历史见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)
 - 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
 
