@@ -280,7 +280,10 @@ def step(core: Any, dt: float = 60.0, relationship: Any = None) -> dict[str, Any
                                   0.10 * _core(core, "energy", 0.55)), 4)
     body["fatigue"] = round(_clamp(0.95 * float(body.get("fatigue", 0.2)) +
                                    0.05 * _core(core, "stress", 0.1)), 4)
-    body["hydration"] = round(_clamp(float(body.get("hydration", 0.7)) - 0.001), 4)
+    # BUG-05: slow recovery balanced against metabolic loss; bounded.
+    _stress = _core(core, "stress", 0.1) if core is not None else 0.0
+    body["hydration"] = round(_clamp(
+        float(body.get("hydration", 0.7)) - 0.001 + 0.0024 * (1.0 - _stress)), 4)
     body["warmth"] = round(_clamp(0.995 * float(body.get("warmth", 0.6)) +
                                   0.005 * (1.0 - _core(core, "stress", 0.1))), 4)
     drives = _drives(core, body, relationship)
@@ -322,6 +325,9 @@ def metabolize_reply(core: Any, text: str = "") -> float:
     body["hydration"] = round(_clamp(float(body.get("hydration", 0.7)) - 0.40 * cost), 4)
     try:
         core.energy = _clamp(float(getattr(core, "energy", 0.55)) - 0.60 * cost, 0.0, 1.0)
+        # Persist a decaying energy debt so the next _derive() does not erase it.
+        core._metabolic_energy_offset = _clamp(
+            float(getattr(core, "_metabolic_energy_offset", 0.0)) + 0.60 * cost, 0.0, 0.20)
     except Exception:
         pass
     state["last_metabolic_cost"] = round(cost, 4)

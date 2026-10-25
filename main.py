@@ -386,7 +386,10 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
         if not isinstance(data, dict):
             continue
         try:
-            trust = round(float(data.get("trust", 0.5) or 0.5), 4)
+            trust = float(data.get("trust", 0.5) or 0.5)
+            if not math.isfinite(trust):
+                raise ValueError("non-finite trust")
+            trust = round(max(0.0, min(1.0, trust)), 4)
         except Exception:
             trust = 0.5
         try:
@@ -399,6 +402,18 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
             last_seen = 0.0
         rel = data.get("relationship") if isinstance(data.get("relationship"), dict) else {}
         state = rel.get("state") if isinstance(rel.get("state"), dict) else None
+        if isinstance(state, dict):
+            safe_state = {}
+            for _key in ("trust", "closeness", "conflict", "repair", "predictability"):
+                try:
+                    _value = float(state.get(_key))
+                    if not math.isfinite(_value):
+                        raise ValueError("non-finite")
+                    safe_state[_key] = round(max(0.0, min(1.0, _value)), 4)
+                except Exception:
+                    safe_state = {}
+                    break
+            state = safe_state or None
         if not isinstance(state, dict):
             try:
                 state = relationship_meta.relationship_state(trust=trust)
@@ -560,6 +575,7 @@ class BioCore:
         self.refusal_readiness = 0.0
         # B-T09: interpersonal coupling (co-regulation proxy, not "being dragged").
         self.interpersonal = {"other_valence_est": 0.0, "coupling": 0.0, "dampening": 1.0}
+        self._metabolic_energy_offset = 0.0
         # Circadian / allostatic paper mechanisms (bounded, no prompt).
         self.circadian_alertness = circadian_alertness(
             time.localtime(time.time()).tm_hour + time.localtime(time.time()).tm_min / 60.0)
@@ -621,18 +637,65 @@ class BioCore:
             if key in d:
                 try:
                     lo = -1 if key in ("v", "d") else 0
-                    hi = 1.5 if key == "a" else 1
+                    hi = 1.0
                     setattr(self, key, _clip(d[key], lo, hi))
                 except Exception:
                     pass
         self._derive()
         try:
-            self.ticks = int(d.get("ticks", self.ticks) or 0)
+            self.ticks = max(0, int(d.get("ticks", self.ticks) or 0))
         except Exception:
             pass
-        for key in ("noise", "ripple", "spiking", "labels", "reflection", "momentum", "appraisal"):
-            if isinstance(d.get(key), dict):
-                setattr(self, key, dict(d[key]))
+        def _num_map(raw, defaults, lo=-1.0, hi=1.0):
+            out = dict(defaults)
+            if not isinstance(raw, dict):
+                return out
+            for key, default in defaults.items():
+                if key not in raw:
+                    continue
+                try:
+                    value = float(raw.get(key))
+                    if not math.isfinite(value):
+                        continue
+                    out[key] = max(lo, min(hi, value))
+                except Exception:
+                    continue
+            return out
+
+        self.noise = _num_map(d.get("noise"),
+                              {"stress": 0.0, "energy": 0.0, "social": 0.0,
+                               "attention": 0.0, "valence": 0.0}, -0.3, 0.3)
+        self.reflection = _num_map(d.get("reflection"),
+                                   {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}, -1.0, 1.0)
+        self.momentum = _num_map(d.get("momentum"),
+                                 {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}, -1.0, 1.0)
+        self.appraisal = _num_map(d.get("appraisal"),
+                                  {"novelty": 0.0, "goal_relevance": 0.0,
+                                   "coping": 0.5, "agency": 0.5}, 0.0, 1.0)
+        self.opponent = _num_map(d.get("opponent"),
+                                 {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}, -1.0, 1.0)
+        # Labels are display/decision proxies: whitelist known values only.
+        _allowed_labels = {
+            "emotion": {"joy", "sadness", "anger", "fear", "loneliness", "neutral"},
+            "intent": {"approach", "hold", "withdraw"},
+            "expression": {"open", "normal", "short"},
+            "need": {"share", "space", "vent", "be_heard", "talk"},
+            "energy": {"low", "normal", "high"},
+            "stress": {"calm", "tense", "overloaded"},
+        }
+        safe_labels = {}
+        raw_labels = d.get("labels") if isinstance(d.get("labels"), dict) else {}
+        for key, allowed in _allowed_labels.items():
+            value = str(raw_labels.get(key) or "").strip()
+            if value in allowed:
+                safe_labels[key] = value
+        self.labels = {**{"emotion": "neutral", "intent": "hold",
+                          "expression": "normal", "need": "talk",
+                          "energy": "normal", "stress": "calm"}, **safe_labels}
+        if isinstance(d.get("ripple"), dict):
+            self.ripple = _num_map(d["ripple"], self.ripple, 0.0, 1.0)
+        if isinstance(d.get("spiking"), dict):
+            self.spiking = _num_map(d["spiking"], self.spiking, 0.0, 10.0)
         if isinstance(d.get("stimuli"), list):
             self.stimuli = [x for x in d["stimuli"] if isinstance(x, dict)][-40:]
         if isinstance(d.get("history"), list):
@@ -643,8 +706,6 @@ class BioCore:
             self.coping_history = [float(x) for x in d["coping_history"] if isinstance(x, (int, float))][-40:]
         if isinstance(d.get("event_anchors"), list):
             self.event_anchors = [x for x in d["event_anchors"] if isinstance(x, dict)][-20:]
-        if isinstance(d.get("opponent"), dict):
-            self.opponent = {k: float(d["opponent"].get(k, 0.0) or 0.0) for k in ("v", "a", "d", "social")}
         if isinstance(d.get("autobiography"), list):
             self.autobiography = [x for x in d["autobiography"] if isinstance(x, dict)][-80:]
         if isinstance(d.get("regulation_stats"), dict):
@@ -663,6 +724,39 @@ class BioCore:
             self.homeostasis = homeostasis.normalize_state(d.get("homeostasis"))
         except Exception:
             self.homeostasis = homeostasis.default_state()
+        # BUG-01: restore the remaining bounded biological fields.
+        for _key in ("novelty_need", "boredom", "boundary_pressure", "refusal_readiness"):
+            if _key in d:
+                try:
+                    setattr(self, _key, _clip(d[_key], 0.0, 1.0))
+                except Exception:
+                    pass
+        raw_inter = d.get("interpersonal") if isinstance(d.get("interpersonal"), dict) else {}
+        self.interpersonal = {
+            "other_valence_est": round(_clip(raw_inter.get("other_valence_est", 0.0), -1.0, 1.0), 6),
+            "coupling": round(_clip(raw_inter.get("coupling", 0.0), 0.0, 1.0), 6),
+            "dampening": round(_clip(raw_inter.get("dampening", 1.0), 0.0, 1.0), 6),
+        }
+        digests = d.get("daily_digests")
+        if isinstance(digests, list):
+            safe_digests = []
+            for item in digests[-30:]:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    safe_digests.append({
+                        "date": str(item.get("date") or "")[:10],
+                        "event_ids": [str(x)[:80] for x in (item.get("event_ids") or [])[:50] if str(x)],
+                        "mean_v": round(_clip(item.get("mean_v", 0.0), -1.0, 1.0), 4),
+                        "mean_a": round(_clip(item.get("mean_a", 0.0), 0.0, 1.0), 4),
+                        "mean_stress": round(_clip(item.get("mean_stress", 0.0), 0.0, 1.0), 4),
+                        "dominant_emotion": str(item.get("dominant_emotion") or "neutral")[:20],
+                        "interaction_count": max(0, int(item.get("interaction_count", 0) or 0)),
+                    })
+                except Exception:
+                    continue
+            self.daily_digests = safe_digests[-30:]
+        self.goal_focus = str(d.get("goal_focus") or "")[:40]
         if isinstance(d.get("meta_emotion"), str):
             self.meta_emotion = d["meta_emotion"]
         if isinstance(d.get("goals"), list):
@@ -702,7 +796,12 @@ class BioCore:
         d = float(getattr(self, "d", 0.55))
         soc = float(getattr(self, "social", 0.55))
         self.stress = _clip(0.45 * max(0.0, -v) * a + 0.35 * (1.0 - d) + 0.20 * (1.0 - soc), 0, 1)
-        self.energy = _clip(0.45 * a + 0.25 * max(0.0, v) + 0.20 * d + 0.10 * soc, 0, 1)
+        _offset = 0.0
+        try:
+            _offset = _clip(float(getattr(self, "_metabolic_energy_offset", 0.0)), 0.0, 0.20)
+        except Exception:
+            _offset = 0.0
+        self.energy = _clip(0.45 * a + 0.25 * max(0.0, v) + 0.20 * d + 0.10 * soc - _offset, 0, 1)
 
     def _intensity(self) -> float:
         """Normalized current emotional intensity (0..1)."""
@@ -1597,12 +1696,17 @@ class BioCore:
         self.a = _clip(0.40 + (self.a - 0.40) * factor(self.arousal_decay_minutes * max(0.5, _ef)), 0, 1)
         self.d = _clip(0.55 + (self.d - 0.55) * factor(self.valence_decay_minutes * _ef), -1, 1)
         self.social = _clip(0.55 + (self.social - 0.55) * factor(self.social_decay_minutes * _ef), 0, 1)
+        self._derive()
         try:
             self._apply_circadian_effects()
             self._update_allostatic_load()
         except Exception:
             pass
-        self._derive()
+        try:
+            self._metabolic_energy_offset = _clip(
+                float(getattr(self, "_metabolic_energy_offset", 0.0)) * 0.98, 0.0, 0.20)
+        except Exception:
+            self._metabolic_energy_offset = 0.0
 
     def record_reply(self, text: str = "", meta=None) -> None:
         try:
@@ -1759,7 +1863,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.66")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.67")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
