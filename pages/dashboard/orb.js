@@ -164,12 +164,19 @@
   // task-45: the left CURRENT EMOTION block is driven by app.js, so orb.js only
   // dispatches focus/exit events with the selected memory's display data. The
   // old bottom-right card is removed to avoid duplicating that panel.
+  // task-46: only llm / fallback / legacy are valid summary states; records
+  // written by older versions have no field and are treated as legacy.
+  function _summaryStatusOf(ev) {
+    const s = String((ev && ev.summary_status) || "legacy").trim().toLowerCase();
+    return (s === "llm" || s === "fallback") ? s : "legacy";
+  }
   function _focusEventDetail(ev) {
     const e = ev || {};
     const check = (e.source_check && typeof e.source_check === "object") ? e.source_check : {};
     return {
       key: String(_focusState.key || ""),
-      title: String(e.title || e.event_key || "记忆球"),
+      title: _tipClean(String(e.title || e.event_key || "记忆球"), 80),
+      summary_status: _summaryStatusOf(e),
       emotion: String(e.emotion || ""),
       emotion_secondary: String(e.emotion_secondary || ""),
       importance: Number(e.importance == null ? .5 : e.importance),
@@ -177,7 +184,7 @@
       source: String(check.status || "ok"),
       confidence: (e.confidence == null || e.confidence === "") ? null : Number(e.confidence),
       recall_count: Number(e.recall_count || 0),
-      small_summary: String(e.small_summary || ""),
+      small_summary: _tipClean(String(e.small_summary || ""), 80),
       big_summary: String(e.big_summary || ""),
       event: String(e.event || ""),
       central_details: String(e.central_details || "")

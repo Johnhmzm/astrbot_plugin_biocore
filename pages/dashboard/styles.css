@@ -589,10 +589,21 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .hero-mem-summary small{display:block;font-size:9px;letter-spacing:.12em;color:var(--faint)}
 .hero-mem-summary p{margin:1px 0 0;font-size:11px;line-height:1.5;color:var(--muted);word-break:break-word;white-space:pre-wrap}
 .hero-mem-hint{margin:0;font-size:9px;line-height:1.4;color:var(--faint)}
+.hero-mem-head{display:flex;align-items:flex-start;gap:8px}
+.hero-mem-head h2{flex:1;min-width:0}
+.hero-mem-badge{flex:none;margin-top:2px;padding:1px 6px;border:1px solid var(--line);border-radius:3px;font-size:9px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}
+.hero-mem-badge.is-llm{color:var(--accent2);border-color:var(--accent2)}
+.hero-mem-badge.is-fallback{color:var(--muted)}
+.hero-mem-badge.is-legacy{color:var(--danger)}
+.hero-mem-big p{max-height:96px;overflow:auto;padding-right:2px}
+.hero-mem-legacy{margin-top:2px;font-size:11px;color:var(--danger)}
+.hero-mem-excerpt{color:var(--muted)}
 @media(max-width:900px){
   .hero-memory{max-height:none;overflow:visible}
   .hero-mem-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .hero-mem-summary p{font-size:12px}
+  .hero-mem-big p{max-height:72px}
+  .hero-mem-badge{font-size:9px}
 }
 .mem-tomb-text{color:var(--faint);font-size:10px;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
