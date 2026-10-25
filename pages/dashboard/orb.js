@@ -1108,7 +1108,7 @@
           style: _ringStyle, ringCount: _rings.length, ringLayers: [],
           alpha: 0, width: 0, highlightAlpha: 0, highlightLen: 0,
           orbitTilt: 0.42, hasAuxEllipse: false, rotates: _ringStyle === "orbit",
-          hasHighlight: _ringStyle === "orbit" && _rings.length > 0, spin: 0,
+          hasHighlight: false, spin: 0,
           orbitYaw: 0, orbitPitch: 0.42, orbitPts: [], highlightAngle: 0,
           orbitHighlightLen: 0, emotionIntensity: Number(_emoIntensity.toFixed(4)),
           speedFactor: Number(speedFactor.toFixed(3)),
@@ -1127,8 +1127,6 @@
           const ringBaseR = size + 4.2 + ringIdx * 2.4;
           const ringAlphaR = _bound(.55 + .30 * weight, .55, .85);
           const ringWidthR = _bound(1.2 + 1.4 * weight, 1.8, 2.8);
-          const ringHighlightAlphaR = _bound(ringAlphaR * 1.15, ringAlphaR,
-            Math.min(0.85, ringAlphaR * 1.2));
           let ringColorR;
           if (ringItem.inferred) {
             ringColorR = "hsla(" + inferredRingHsl.h.toFixed(0) + "," +
@@ -1172,17 +1170,6 @@
             ctx.lineWidth = ringWidthR;
             ctx.stroke();
             if (ringIdx === 0) {
-              const orbitHighlightLen = fullTurn * 0.10;
-              const orbitHighlightStart = (phase * 1.35 * speedFactor) % fullTurn;
-              ctx.globalAlpha = ringHighlightAlphaR;
-              ctx.beginPath();
-              for (let hIdx = 0; hIdx <= 10; hIdx++) {
-                const pnt = orbitPoint(orbitHighlightStart + orbitHighlightLen * (hIdx / 10), ringBaseR);
-                if (hIdx === 0) ctx.moveTo(pnt.x, pnt.y); else ctx.lineTo(pnt.x, pnt.y);
-              }
-              ctx.strokeStyle = ringColorR;
-              ctx.lineWidth = _bound(ringWidthR + .2, 2.0, 3.0);
-              ctx.stroke();
               ctx.globalAlpha = _bound(ringAlphaR * 0.28, 0.10, 0.30);
               ctx.beginPath();
               for (let aIdx = 0; aIdx <= steps; aIdx++) {
@@ -1196,8 +1183,6 @@
               window.__biocoreRing.hasAuxEllipse = true;
               window.__biocoreRing.orbitYaw = Number(yaw.toFixed(4));
               window.__biocoreRing.orbitPitch = Number(pitch.toFixed(4));
-              window.__biocoreRing.orbitHighlightLen = Number(orbitHighlightLen.toFixed(4));
-              window.__biocoreRing.highlightAngle = Number(orbitHighlightStart.toFixed(4));
               window.__biocoreRing.orbitPts = [0, 0.25, 0.5, 0.75].map((t) => {
                 const pnt = orbitPoint(t * fullTurn, ringBaseR);
                 return [Number((pnt.x - b.x).toFixed(2)), Number((pnt.y - b.y).toFixed(2))];
@@ -1224,7 +1209,7 @@
           if (ringIdx === 0) {
             window.__biocoreRing.alpha = Number(ringAlphaR.toFixed(3));
             window.__biocoreRing.width = Number(ringWidthR.toFixed(2));
-            window.__biocoreRing.highlightAlpha = Number(ringHighlightAlphaR.toFixed(3));
+            window.__biocoreRing.highlightAlpha = 0;
             window.__biocoreRing.spin = _ringStyle === "orbit" ? Number(phase.toFixed(4)) : 0;
           }
         });
