@@ -1877,7 +1877,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.69")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.70")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1885,6 +1885,9 @@ class BioCorePlugin(Star):
         self.enabled = bool(self.config.get("enabled", True))
         self.inject_intent = bool(self.config.get("inject_intent", True))
         self.compact_prompt = bool(self.config.get("compact_prompt", True))
+        self.bc_prompt_mode = str(self.config.get("bc_prompt_mode", "telemetry") or "telemetry").strip().lower()
+        if self.bc_prompt_mode not in ("telemetry", "semantic"):
+            self.bc_prompt_mode = "telemetry"
         self.voice_transcription_enabled = bool(self.config.get("voice_transcription_enabled", True))
         try:
             self.event_summary_delay_hours = max(0, int(self.config.get("event_summary_delay_hours", 6) or 6))
@@ -2578,6 +2581,7 @@ class BioCorePlugin(Star):
                 "llm_memory_candidates": bool(
                     getattr(self, "llm_memory_candidates", True)),
                 "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
+            "bc_prompt_mode": str(getattr(self, "bc_prompt_mode", "telemetry") or "telemetry"),
             "llm_only_reply_summary": bool(
                     getattr(self, "llm_only_reply_summary", True)),
                 "persona_id": str(getattr(self, "persona_id", "") or ""),
@@ -4799,6 +4803,7 @@ class BioCorePlugin(Star):
             "llm_memory_candidates": bool(
                 getattr(self, "llm_memory_candidates", True)),
             "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
+            "bc_prompt_mode": str(getattr(self, "bc_prompt_mode", "telemetry") or "telemetry"),
             "llm_only_reply_summary": bool(
                 getattr(self, "llm_only_reply_summary", True)),
             "insight_auto_enabled": bool(getattr(self, "insight_auto_enabled", False)),
@@ -6638,6 +6643,7 @@ class BioCorePlugin(Star):
             answer_confidence=(getattr(self, "_last_memory_meta", {}) or {}).get("answer_confidence"),
             strategy_hint=_strategy_hint,
             continuity=_continuity,
+            prompt_mode=getattr(self, "bc_prompt_mode", "telemetry"),
         ).strip()
         if _compact:
             # Keep the system prompt stable (prefix-cache friendly) and attach

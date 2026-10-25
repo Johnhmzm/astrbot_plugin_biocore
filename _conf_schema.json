@@ -187,6 +187,13 @@
     "type": "int",
     "default": 500
   },
+  "bc_prompt_mode": {
+    "description": "提示词模式（原型）",
+    "hint": "telemetry=现有 [BC] 数值 telemetry（默认）；semantic=60–150 字自然语言 brief 原型。异常自动回退 telemetry。",
+    "type": "string",
+    "default": "telemetry",
+    "options": ["telemetry", "semantic"]
+  },
   "compact_prompt": {
     "description": "紧凑解释层",
     "hint": "只注入一行 [BC] 状态，由 biocore-interpretation skill 解释；关闭后使用旧的多段 prompt。",

@@ -208,16 +208,150 @@ def insight_prompt(events) -> str:
             '{"insight":"从这些事件之间提炼出的一条长期模式洞察（跨事件，80字以内，不要复述事件）"}\n\n' + joined)
 
 
+def _brief_clean(text, limit=30):
+    value = str(text or "").strip()
+    value = value.lstrip("- ")
+    for prefix in ("用户：", "用户:", "你(已总结)：", "你："):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    value = __import__("re").sub(r"\d+\.\d+", "", value)
+    value = __import__("re").sub(r"\s+", " ", value).strip("；;，。 ")
+    return value[:limit]
+
+
+def render_semantic(core, memory="", events="", user=None, continuity=None,
+                    memory_meta=None, open_loops=None) -> str:
+    """Prototype 60-150 char natural-language brief; no raw telemetry/field names."""
+    if core is None:
+        return ""
+    parts = []
+    try:
+        v = float(getattr(core, "v", 0.0) or 0.0)
+        stress = float(getattr(core, "stress", 0.2) or 0.2)
+        energy = float(getattr(core, "energy", 0.55) or 0.55)
+        social = float(getattr(core, "social", 0.5) or 0.5)
+        if v <= -0.35:
+            mood = "心里有点沉"
+        elif v <= -0.12:
+            mood = "心里有点发紧"
+        elif v >= 0.40:
+            mood = "心情不错"
+        else:
+            mood = "整体偏平静"
+        if energy <= 0.35:
+            body = "身体有点累"
+        elif stress >= 0.60:
+            body = "还带着点压力"
+        else:
+            body = "状态还算稳"
+        if social <= 0.35:
+            soc = "不太想说话"
+        elif social >= 0.65:
+            soc = "愿意靠近人"
+        else:
+            soc = "社交一般"
+        parts.append("%s，%s，%s" % (mood, body, soc))
+    except Exception:
+        parts.append("现在整体偏平静，状态还算稳，社交一般")
+    # Relationship stance.
+    stance = "关系一般，先按平常方式接"
+    try:
+        rel = (user or {}).get("relationship") if isinstance(user, dict) else None
+        state = rel.get("state") if isinstance(rel, dict) else {}
+        repair = rel.get("repair_state") if isinstance(rel, dict) else {}
+        absence = (user or {}).get("absence") if isinstance(user, dict) else {}
+        if not isinstance(absence, dict) and isinstance(rel, dict):
+            absence = rel.get("absence") if isinstance(rel.get("absence"), dict) else {}
+        phase = str((repair or {}).get("phase") or "stable")
+        bucket = str((absence or {}).get("bucket") or "same_day")
+        trust = float((state or {}).get("trust", 0.5) or 0.5)
+        closeness = float((state or {}).get("closeness", 0.5) or 0.5)
+        conflict = float((state or {}).get("conflict", 0.0) or 0.0)
+        if phase != "stable":
+            stance = "关系还在修复中，先别急着讲道理"
+        elif bucket in ("long", "medium"):
+            stance = "很久没聊了，先从近况接上"
+        elif conflict >= 0.45:
+            stance = "关系有点紧，先轻轻接"
+        elif trust >= 0.60 and closeness >= 0.60:
+            stance = "关系挺稳，信任还在慢慢长"
+        elif trust >= 0.55:
+            stance = "关系还算稳，别太用力"
+    except Exception:
+        pass
+    parts.append(stance)
+    # One high-confidence memory, else one recent event.
+    try:
+        conf = 0.0
+        if isinstance(memory_meta, dict):
+            conf = float(memory_meta.get("confidence", 0.0) or 0.0)
+        snippet = ""
+        if conf >= 0.60:
+            for line in str(memory or "").splitlines():
+                cleaned = _brief_clean(line, 26)
+                if cleaned:
+                    snippet = cleaned
+                    break
+            if snippet:
+                parts.append("记得：" + snippet)
+        if not snippet:
+            for line in str(events or "").splitlines():
+                cleaned = _brief_clean(line, 24)
+                if cleaned:
+                    parts.append("最近：" + cleaned)
+                    break
+    except Exception:
+        pass
+    # Continuity.
+    try:
+        if isinstance(continuity, dict):
+            summary = _brief_clean(continuity.get("summary"), 24)
+            if summary:
+                for _prefix in ("上次：", "上次:", "上次"):
+                    if summary.startswith(_prefix):
+                        summary = summary[len(_prefix):].lstrip("：:，, ")
+                        break
+                if summary:
+                    parts.append("上次：" + summary)
+    except Exception:
+        pass
+    parts.append("回复自然一点，别解释内部状态，也别报数值")
+    brief = "；".join(part for part in parts if part)
+    brief = __import__("re").sub(r"\s+", " ", brief).strip()
+    if len(brief) > 150:
+        cut = brief[:150]
+        if "；" in cut:
+            cut = cut[:cut.rfind("；")]
+        brief = cut.strip("； ")
+    if len(brief) < 60:
+        brief = (brief + "；像平常聊天那样接就好").strip("； ")
+    return brief[:150]
+
+
+def semantic_brief(*args, **kwargs):
+    """Compatibility alias for the task-33 prototype name."""
+    return render_semantic(*args, **kwargs)
+
+
 def render_compact(core, memory="", events="", self_model=None, user=None,
                    image="", kb="", speaker="", voice="", memory_meta=None,
                    open_loops=None, open_loops_due=0, answer_confidence=None,
-                   strategy_hint="", continuity=None) -> str:
+                   strategy_hint="", continuity=None, prompt_mode="telemetry") -> str:
     """Render biological state into the single compact block the LLM sees.
 
     The interpretation layer owns this string; callers pass raw state/data and
     never build prompt text themselves. Optional fields are rendered only when
     present so the block stays short (prefix-cache friendly).
     """
+    if str(prompt_mode or "telemetry").lower() == "semantic":
+        try:
+            _sem = render_semantic(core, memory=memory, events=events, user=user,
+                                    continuity=continuity, memory_meta=memory_meta,
+                                    open_loops=open_loops)
+            if 40 <= len(_sem) <= 300:
+                return _sem
+        except Exception:
+            pass
     it = core.intent()
     cp = ("[BC] v=%.2f a=%.2f d=%.2f s=%.2f t=%.2f e=%s c=%s n=%s plan=%s reg=%s" % (
         float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
