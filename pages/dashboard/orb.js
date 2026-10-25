@@ -19,18 +19,45 @@
   let phase = 0, lastFrame = 0, frameCount = 0;
   const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
   const isDark = () => document.documentElement.dataset.theme === "dark";
+  // task-42: pure orbit math lives in orb_math.js so evals can run it in node;
+  // the inline copy below is the same formula if that script is missing.
+  const _OM = (typeof window !== "undefined" && window.BioOrbMath) || {
+    ORBIT_COUNT: 8,
+    orbitRadius(metric, R) { return Number(R) * (0.9 + 0.7 * clamp(metric)); },
+    identityOffset(index, count) {
+      const n = Math.max(2, Number(count) || 8);
+      return (Math.max(0, Math.min(n - 1, Number(index) || 0)) / (n - 1) - 0.5) * 0.06;
+    },
+    orbitVolatility(prev, cur, dt, prevEma) {
+      if (prev == null || !Number.isFinite(Number(prev)) || !Number.isFinite(Number(cur))) return 0.5;
+      const secs = Number(dt);
+      if (!Number.isFinite(secs) || secs <= 0) return 0.5;
+      const raw = clamp(Math.abs(Number(cur) - Number(prev)) / secs);
+      const base = (prevEma == null || !Number.isFinite(Number(prevEma))) ? 0.5 : clamp(prevEma);
+      return clamp(0.15 * raw + 0.85 * base);
+    },
+    orbitSpeed(base, vol) { return Number(base || 0) * (0.4 + 1.8 * clamp(vol)); }
+  };
   window.addEventListener("biocore:state", (e) => { if (e.detail) state = Object.assign({}, state, e.detail); });
 
+  // task-42: 8 centre channels share one distance law (orb_math.js); the old
+  // per-channel rx/width are gone. Identity = colour + a fixed +/-0.03R
+  // angle/tilt offset; speed sign stays fixed as part of the identity.
   const orbits = [
-    { key: "echo", angle: 0, rx: 1.24, tilt: .35, speed: .55, phase: 0.0, color: "255,107,0", width: 1.15 },
-    { key: "rippleU", angle: 0, rx: 1.42, tilt: -.36, speed: -.40, phase: 1.4, color: "48,48,46", width: .95 },
-    { key: "noise", angle: 0, rx: 1.58, tilt: .82, speed: .62, phase: 3.0, color: "142,132,120", width: .65 },
-    { key: "rippleL", angle: 0, rx: 1.32, tilt: -1.18, speed: .90, phase: 4.5, color: "255,138,40", width: .70 },
-    { key: "spike", angle: 0, rx: 1.72, tilt: .62, speed: -.28, phase: 5.2, color: "96,96,96", width: .55 },
-    { key: "trust", angle: 0, rx: 1.12, tilt: 1.12, speed: 1.10, phase: 2.0, color: "196,148,82", width: .60 },
-    { key: "dominance", angle: 0, rx: 1.86, tilt: -.70, speed: .34, phase: 2.8, color: "96,140,255", width: .55 },
-    { key: "social", angle: 0, rx: 1.98, tilt: 1.34, speed: -.46, phase: 4.1, color: "64,196,168", width: .50 }
+    { key: "echo", tilt: .35, speed: .55, color: "255,107,0" },
+    { key: "rippleU", tilt: -.36, speed: -.40, color: "48,48,46" },
+    { key: "noise", tilt: .82, speed: .62, color: "142,132,120" },
+    { key: "rippleL", tilt: -1.18, speed: .90, color: "255,138,40" },
+    { key: "spike", tilt: .62, speed: -.28, color: "96,96,96" },
+    { key: "trust", tilt: 1.12, speed: 1.10, color: "196,148,82" },
+    { key: "dominance", tilt: -.70, speed: .34, color: "96,140,255" },
+    { key: "social", tilt: 1.34, speed: -.46, color: "64,196,168" }
   ];
+  orbits.forEach((o, i) => {
+    o.angle = 0;
+    o.ident = _OM.identityOffset(i, orbits.length);   // -0.03 .. +0.03 (x R)
+    o.tiltOff = o.ident * 1.5;                        // small fixed tilt offset
+  });
   function orbitMetric(o, s) {
     const n = s.noise || {}, rp = s.ripple || {}, sp = s.spiking || {};
     if (o.key === "echo") return clamp(Math.abs(s.echo_trace || s.echo || 0));
@@ -311,13 +338,18 @@
   function ring(orbit, ry, rx, front, centerY) {
     const pts = [];
     const mv = orbitMetric(orbit, state.snapshot || {});
-    const rBase = orbit.rx * (0.78 + mv * 0.55);
+    // task-42: all 8 centre channels share rBase = R * (0.9 + 0.7 * metric);
+    // identity comes from colour + a fixed +/-0.03R angle/tilt offset, and
+    // opacity/line width follow the metric instead of a per-channel width.
+    const rBase = _OM.orbitRadius(mv, R);
+    const tilt = orbit.tilt + (orbit.tiltOff || 0);
+    const idShift = (orbit.ident || 0) * R;
     const dy = (typeof centerY === "number" ? centerY : CY) - CY;
     for (let i = 0; i <= 160; i++) {
       const a = i / 160 * Math.PI * 2;
-      let x = Math.cos(a) * rBase;
-      let y = Math.sin(a) * rBase * Math.sin(orbit.tilt);
-      let z = Math.sin(a) * rBase * Math.cos(orbit.tilt);
+      let x = Math.cos(a) * rBase + idShift;
+      let y = Math.sin(a) * rBase * Math.sin(tilt) + idShift * .5;
+      let z = Math.sin(a) * rBase * Math.cos(tilt);
       const ay = orbit.angle;
       const x1 = x * Math.cos(ay) - z * Math.sin(ay);
       const z1 = x * Math.sin(ay) + z * Math.cos(ay);
@@ -337,9 +369,10 @@
       else if (/142,132,120|196,148,82/.test(_c)) _c = "188,168,138";
     }
     // front = visible half; back half is dimmed for depth but keeps the ring
-    // hue instead of fading into a grey smear on the light background.
-    ctx.strokeStyle = "rgba(" + _c + "," + (front ? .82 : .55) + ")";
-    ctx.lineWidth = front ? orbit.width : orbit.width * .85;
+    // hue. Opacity and line width track the channel metric (task-42).
+    ctx.strokeStyle = "rgba(" + _c + "," +
+      ((front ? 1 : .68) * (0.22 + 0.62 * mv)).toFixed(3) + ")";
+    ctx.lineWidth = (front ? 1 : .85) * (0.45 + 1.2 * mv);
     ctx.stroke();
   }
 
@@ -428,9 +461,18 @@
       return { x: q.x, y: q.y + (cy - CY), z: q.z, i };
     });
     const _pDraw = _pPos.slice().sort((a, b) => a.z - b.z);  // back first
+    // task-42: orbit speed follows the metric's EMA change rate, not its
+    // current value. No history => neutral volatility 0.5; the sign of
+    // o.speed keeps each channel's fixed direction.
     orbits.forEach(o => {
       const mv = orbitMetric(o, s);
-      o.angle += o.speed * (0.35 + mv * 1.9) * 0.045;
+      const dt = Math.max(.001, (ts - (o._lastTs == null ? ts : o._lastTs)) / 1000);
+      const first = o._init !== true;
+      o._vol = _OM.orbitVolatility(first ? null : o._prevMetric, mv, dt, o._vol);
+      o._prevMetric = mv;
+      o._lastTs = ts;
+      o._init = true;
+      o.angle += _OM.orbitSpeed(o.speed, o._vol) * 0.045;
     });
 
     // particle links: fixed topology + per-edge alpha fade, only on hover or
@@ -707,11 +749,15 @@
           ctx.fillStyle = bodyFill; ctx.fill();
         }
         // one importance ring: secondary emotion colour. The secondary ring is
-        // a dashed arc slowly rotating around the ball centre (task-41); old
-        // data without emotion_secondary keeps a static primary lightened ring.
-        // The central mood ball is drawn separately, so it never spins here.
+        // one dashed arc slowly rotating around the ball centre; its arc length
+        // is 35% + 65% * importance and its width 1.2 + 1.4 * importance
+        // (task-42). Old data without emotion_secondary keeps a static primary
+        // lightened ring. The central mood ball is drawn separately, so the
+        // centre never spins here.
         const ringBase = size + 4.2;
         const ringAlpha = Math.max(0, (.28 + .40 * b.imp)) * front;
+        const ringWidth = 1.2 + 1.4 * b.imp;
+        const arcLen = Math.PI * 2 * (0.35 + 0.65 * b.imp);
         ctx.save();
         ctx.globalAlpha = ringAlpha;
         if (_secHsl) {
@@ -719,17 +765,20 @@
           ctx.setLineDash([3.2, 4.8]);
           ctx.lineDashOffset = -phase * 6.0;
           ctx.beginPath();
-          ctx.arc(b.x, b.y, ringBase, spin, spin + Math.PI * 1.86);
+          ctx.arc(b.x, b.y, ringBase, spin, spin + arcLen);
           ctx.strokeStyle = ringFill;
-          ctx.lineWidth = .7 + .35 * b.imp;
+          ctx.lineWidth = ringWidth;
           ctx.stroke();
           ctx.setLineDash([]);
         } else {
-          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, 0, Math.PI * 2);
+          // old data/no-secondary fallback: same arc/width geometry, primary
+          // colour lightened one step; no rotation because no secondary channel.
+          const start = -Math.PI / 2;
+          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, start, start + arcLen);
           ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," +
             primaryRingHsl.s.toFixed(0) + "%," +
             Math.min(72, primaryRingHsl.l + 12).toFixed(0) + "%,.55)";
-          ctx.lineWidth = .7 + .25 * b.imp;
+          ctx.lineWidth = ringWidth;
           ctx.stroke();
         }
         ctx.restore();
