@@ -580,24 +580,25 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .orb-focus-exit:hover,.orb-focus-exit:focus-visible{color:var(--accent2);border-color:var(--accent2);outline:none}
 .orb-focus-exit[hidden]{display:none}
 /* task-45: focused memory summary replaces the left CURRENT EMOTION block */
-.hero-memory{display:flex;flex-direction:column;gap:5px;max-height:320px;overflow:auto;padding-right:4px;word-break:break-word}
+.hero-memory{display:flex;flex-direction:column;gap:5px;width:100%;max-width:100%;min-width:0;padding-right:2px;box-sizing:border-box;overflow-wrap:anywhere;word-break:break-word}
 .hero-memory .eyebrow{font-size:9px;letter-spacing:.14em;color:var(--accent2)}
-.hero-memory h2{margin:0;font-size:clamp(15px,2vw,21px);line-height:1.25;word-break:break-word}
-.hero-mem-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px 10px;font-size:10px;color:var(--muted)}
+.hero-memory h2{margin:0;max-width:100%;min-width:0;font-size:clamp(15px,2vw,21px);line-height:1.25;overflow-wrap:anywhere;word-break:break-word}
+.hero-mem-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px 10px;max-width:100%;min-width:0;font-size:10px;color:var(--muted)}
 .hero-mem-grid span{display:flex;gap:4px;min-width:0;align-items:baseline}
-.hero-mem-grid b{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero-mem-grid b{color:var(--ink);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero-mem-summary{max-width:100%;min-width:0}
 .hero-mem-summary small{display:block;font-size:9px;letter-spacing:.12em;color:var(--faint)}
-.hero-mem-summary p{margin:1px 0 0;font-size:11px;line-height:1.5;color:var(--muted);word-break:break-word;white-space:pre-wrap}
-.hero-mem-hint{margin:0;font-size:9px;line-height:1.4;color:var(--faint)}
-.hero-mem-head{display:flex;align-items:flex-start;gap:8px}
-.hero-mem-head h2{flex:1;min-width:0}
+.hero-mem-summary p{margin:1px 0 0;max-width:100%;min-width:0;font-size:11px;line-height:1.5;color:var(--muted);overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap}
+.hero-mem-hint{margin:0;max-width:100%;font-size:9px;line-height:1.4;color:var(--faint);overflow-wrap:anywhere}
+.hero-mem-head{display:flex;align-items:flex-start;gap:8px;max-width:100%;min-width:0;overflow-wrap:anywhere}
+.hero-mem-head h2{flex:1;min-width:0;max-width:100%;overflow-wrap:anywhere}
 .hero-mem-badge{flex:none;margin-top:2px;padding:1px 6px;border:1px solid var(--line);border-radius:3px;font-size:9px;letter-spacing:.06em;color:var(--muted);white-space:nowrap}
 .hero-mem-badge.is-llm{color:var(--accent2);border-color:var(--accent2)}
 .hero-mem-badge.is-fallback{color:var(--muted)}
 .hero-mem-badge.is-legacy{color:var(--danger)}
-.hero-mem-big p{max-height:96px;overflow:auto;padding-right:2px}
-.hero-mem-legacy{margin-top:2px;font-size:11px;color:var(--danger)}
-.hero-mem-excerpt{color:var(--muted)}
+.hero-mem-big p{max-width:100%;min-width:0;overflow-wrap:anywhere;padding-right:0}
+.hero-mem-legacy{margin-top:2px;max-width:100%;font-size:11px;color:var(--danger);overflow-wrap:anywhere}
+.hero-mem-excerpt{max-width:100%;min-width:0;color:var(--muted);overflow-wrap:anywhere}
 /* task-47: regenerate / edit summary controls */
 .hero-mem-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
 .hero-mem-actions .btn{font-size:10px;padding:2px 8px;min-height:24px}
@@ -615,24 +616,89 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .hero-mem-history summary::-webkit-details-marker{display:none}
 .hero-mem-history summary:before{content:"+ "}
 .hero-mem-history[open] summary:before{content:"- "}
-.hero-mem-history-list{display:flex;flex-direction:column;gap:5px;max-height:170px;overflow:auto;margin-top:4px;padding-right:2px}
-.hero-mem-history-item{border-left:2px solid var(--line2);padding:2px 0 2px 7px}
+.hero-mem-history-list{display:flex;flex-direction:column;gap:5px;max-width:100%;min-width:0;margin-top:4px;padding-right:2px;overflow-wrap:anywhere}
+.hero-mem-history-item{max-width:100%;min-width:0;border-left:2px solid var(--line2);padding:2px 0 2px 7px;overflow-wrap:anywhere}
 .hero-mem-history-meta{display:flex;gap:6px;align-items:baseline;font-size:9px;color:var(--faint)}
 .hero-mem-history-meta b{color:var(--muted);font-weight:500;white-space:nowrap}
 .hero-mem-history-meta span{padding:0 4px;border:1px solid var(--line);border-radius:2px;white-space:nowrap}
 .hero-mem-history-meta i{font-style:normal;font-size:8px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
-.hero-mem-history-small{margin:1px 0 0;font-size:10px;line-height:1.45;color:var(--muted);word-break:break-word}
-.hero-mem-history-big{margin:1px 0 0;font-size:10px;line-height:1.45;color:var(--faint);word-break:break-word;white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.hero-mem-history-small{margin:1px 0 0;max-width:100%;min-width:0;font-size:10px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere;word-break:break-word}
+.hero-mem-history-big{margin:1px 0 0;max-width:100%;min-width:0;font-size:10px;line-height:1.45;color:var(--faint);overflow-wrap:anywhere;word-break:break-word;white-space:pre-wrap}
 @media(max-width:900px){
-  .hero-memory{max-height:none;overflow:visible}
   .hero-mem-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .hero-mem-summary p{font-size:12px}
-  .hero-mem-big p{max-height:72px}
   .hero-mem-badge{font-size:9px}
   .hero-mem-edit textarea{font-size:13px}
   .hero-mem-actions .btn{min-height:30px;font-size:11px}
-  .hero-mem-history-list{max-height:220px}
   .hero-mem-history-item p{font-size:11px}
+}
+/* task-50: thin themed scrollbars for the focus panel only (scoped, not global) */
+.hero-memory,
+.hero-mem-big,
+.hero-mem-big p,
+.hero-mem-history-list,
+.hero-mem-edit textarea{
+  scrollbar-width:thin;
+  scrollbar-color: var(--accent) transparent;
+}
+.hero-memory::-webkit-scrollbar,
+.hero-mem-big::-webkit-scrollbar,
+.hero-mem-big p::-webkit-scrollbar,
+.hero-mem-history-list::-webkit-scrollbar,
+.hero-mem-edit textarea::-webkit-scrollbar{
+  width:6px;height:6px;background:transparent;
+}
+.hero-memory::-webkit-scrollbar-track,
+.hero-mem-big::-webkit-scrollbar-track,
+.hero-mem-big p::-webkit-scrollbar-track,
+.hero-mem-history-list::-webkit-scrollbar-track,
+.hero-mem-edit textarea::-webkit-scrollbar-track{
+  background:transparent;border-radius:3px;
+}
+.hero-memory::-webkit-scrollbar-thumb,
+.hero-mem-big::-webkit-scrollbar-thumb,
+.hero-mem-big p::-webkit-scrollbar-thumb,
+.hero-mem-history-list::-webkit-scrollbar-thumb,
+.hero-mem-edit textarea::-webkit-scrollbar-thumb{
+  /* task-50 addendum: horizontal fade, left accent ~.60 -> right ~.15 (never 0) */
+  background:var(--accent);
+  background:linear-gradient(to right,
+    color-mix(in srgb, var(--accent) 60%, transparent),
+    color-mix(in srgb, var(--accent) 15%, transparent));
+  border-radius:3px;
+}
+.hero-memory::-webkit-scrollbar-thumb:hover,
+.hero-mem-big::-webkit-scrollbar-thumb:hover,
+.hero-mem-big p::-webkit-scrollbar-thumb:hover,
+.hero-mem-history-list::-webkit-scrollbar-thumb:hover,
+.hero-mem-edit textarea::-webkit-scrollbar-thumb:hover{
+  background:var(--accent);
+  background:linear-gradient(to right,
+    color-mix(in srgb, var(--accent) 78%, transparent),
+    color-mix(in srgb, var(--accent) 30%, transparent));
+}
+.hero-memory::-webkit-scrollbar-corner,
+.hero-mem-big::-webkit-scrollbar-corner,
+.hero-mem-big p::-webkit-scrollbar-corner,
+.hero-mem-history-list::-webkit-scrollbar-corner,
+.hero-mem-edit textarea::-webkit-scrollbar-corner{
+  background:transparent;
+}
+[data-theme="dark"] .hero-memory,
+[data-theme="dark"] .hero-mem-big,
+[data-theme="dark"] .hero-mem-big p,
+[data-theme="dark"] .hero-mem-history-list,
+[data-theme="dark"] .hero-mem-edit textarea{
+  scrollbar-color: color-mix(in srgb, var(--accent) 65%, transparent) transparent;
+}
+[data-theme="dark"] .hero-memory::-webkit-scrollbar-thumb,
+[data-theme="dark"] .hero-mem-big::-webkit-scrollbar-thumb,
+[data-theme="dark"] .hero-mem-history-list::-webkit-scrollbar-thumb,
+[data-theme="dark"] .hero-mem-edit textarea::-webkit-scrollbar-thumb{
+  /* keep the horizontal fade in dark theme (left .65 -> right .20) */
+  background:linear-gradient(to right,
+    color-mix(in srgb, var(--accent) 65%, transparent),
+    color-mix(in srgb, var(--accent) 20%, transparent));
 }
 .mem-tomb-text{color:var(--faint);font-size:10px;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
