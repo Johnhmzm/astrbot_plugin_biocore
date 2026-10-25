@@ -98,7 +98,7 @@ DEFAULT_PROFILE = {
     "social_baseline": 0.44, "energy_baseline": 0.55,
     "curiosity_baseline": 0.60, "safety_baseline": 0.55,
     "da_baseline": 0.55, "oa_baseline": 0.40, "ht_baseline": 0.35,
-    "autonomy_gain": 1.0, "baseline_v": 0.05, "baseline_a": 0.40,
+    "autonomy_gain": 1.0, "contagion_gain": 0.10, "baseline_v": 0.05, "baseline_a": 0.40,
     "learning_rate": 0.06,
 }
 
@@ -374,6 +374,9 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
                 "repair_state": rel.get("repair_state") if isinstance(rel.get("repair_state"), dict) else {},
                 "absence": rel.get("absence") if isinstance(rel.get("absence"), dict) else {},
                 "calibration": rel.get("calibration") if isinstance(rel.get("calibration"), dict) else {},
+                "social_world": [dict(x) for x in (rel.get("social_world") or [])[:20] if isinstance(x, dict)],
+                "attachment": rel.get("attachment") if isinstance(rel.get("attachment"), dict) else {},
+                "milestones": [dict(x) for x in (rel.get("milestones") or [])[:10] if isinstance(x, dict)],
             },
         })
     return rows
@@ -474,6 +477,15 @@ class BioCore:
         # B-T06: exploration/boredom drive (bounded state; not a claim about feelings).
         self.novelty_need = 0.5
         self.boredom = 0.0
+        # B-T07: autonomy/refusal readiness (bounded state; strategy stays outside).
+        self.boundary_pressure = 0.0
+        self.refusal_readiness = 0.0
+        # B-T09: interpersonal coupling (co-regulation proxy, not "being dragged").
+        self.interpersonal = {"other_valence_est": 0.0, "coupling": 0.0, "dampening": 1.0}
+        # B-T12: deterministic daily digest base (no narrative text).
+        self.daily_digests = []
+        self._daily_accum = {"date": "", "n": 0, "v": 0.0, "a": 0.0, "stress": 0.0,
+                             "emotions": {}, "ticks": 0}
         self.open_loops = []
         self.stimuli = []
         self.goals = [
@@ -983,6 +995,24 @@ class BioCore:
                 # New stimulus: boredom falls, novelty need eases toward baseline.
                 self.boredom = _clip(self.boredom - 0.08, 0.0, 1.0)
                 self.novelty_need = _clip(0.92 * self.novelty_need + 0.08 * 0.5, 0.0, 1.0)
+        # B-T07: boundary pressure/refusal readiness from explicit command cues.
+        _text_b = str(t or "")
+        _commands = sum(1 for w in ("必须", "立刻", "马上", "服从", "不许", "闭嘴", "滚", "废物", "没用", "就该") if w in _text_b)
+        _polite = sum(1 for w in ("请", "可以", "愿意", "谢谢", "麻烦") if w in _text_b)
+        self.boundary_pressure = _clip(0.86 * self.boundary_pressure + 0.14 * min(1.0, _commands) - 0.04 * min(1.0, _polite), 0.0, 1.0)
+        self.refusal_readiness = _clip(
+            0.78 * self.refusal_readiness + 0.30 * self.boundary_pressure * min(1.0, _commands)
+            + 0.08 * self.stress - 0.05 * min(1.0, _polite), 0.0, 1.0)
+        # B-T09: estimate other's valence from the stimulus response, couple with dampening.
+        _other_v = _clip(v_delta * 2.5, -1.0, 1.0)
+        _gain = _clip(float(getattr(self, "profile", {}).get("contagion_gain", 0.10) or 0.10), 0.0, 0.6)
+        _reg = str(getattr(self, "regulation", "none") or "none").lower()
+        _damp = 0.55 if _reg in ("reappraise", "reframe") else (0.75 if _reg in ("suppress", "suppression") else 1.0)
+        _coupling = _clip(_gain * _damp * abs(_other_v), 0.0, 1.0)
+        self.interpersonal = {"other_valence_est": round(_other_v, 4),
+                              "coupling": round(_coupling, 4), "dampening": round(_damp, 3)}
+        self.v = _clip(self.v + 0.05 * _coupling * _other_v, -1, 1)
+        self.a = _clip(self.a + 0.02 * _coupling * abs(_other_v), 0, 1)
         self.v = _clip(0.7 * self.v + 0.3 * v_delta, -1, 1)
         self.a = _clip(0.8 * self.a + 0.2 * (0.4 + a_delta), 0, 1)
         self.d = _clip(0.8 * self.d + 0.2 * (0.55 + d_delta), -1, 1)
@@ -1492,6 +1522,53 @@ class BioCore:
         except Exception:
             pass
 
+    def update_daily_digest(self, now=None, event_ids=None) -> dict:
+        """Deterministic daily digest base; no narrative/LLM. Bounded to 30 days."""
+        try:
+            current = float(time.time() if now is None else now)
+            date = time.strftime("%Y-%m-%d", time.localtime(current))
+            accum = getattr(self, "_daily_accum", None)
+            if not isinstance(accum, dict):
+                accum = {"date": "", "n": 0, "v": 0.0, "a": 0.0, "stress": 0.0,
+                         "emotions": {}, "ticks": 0, "event_ids": []}
+            if accum.get("date") and accum.get("date") != date:
+                if int(accum.get("n", 0) or 0) > 0:
+                    emotions = accum.get("emotions") or {}
+                    dominant = max(emotions.items(), key=lambda kv: kv[1])[0] if emotions else "neutral"
+                    n = int(accum.get("n", 1) or 1)
+                    self.daily_digests.append({
+                        "date": str(accum.get("date")),
+                        "event_ids": [str(x) for x in (accum.get("event_ids") or [])[-50:] if str(x)],
+                        "mean_v": round(float(accum.get("v", 0.0) or 0.0) / n, 4),
+                        "mean_a": round(float(accum.get("a", 0.0) or 0.0) / n, 4),
+                        "mean_stress": round(float(accum.get("stress", 0.0) or 0.0) / n, 4),
+                        "dominant_emotion": dominant,
+                        "interaction_count": n,
+                    })
+                    self.daily_digests = self.daily_digests[-30:]
+                accum = {"date": date, "n": 0, "v": 0.0, "a": 0.0, "stress": 0.0,
+                         "emotions": {}, "ticks": 0, "event_ids": []}
+            accum["date"] = date
+            accum["n"] = int(accum.get("n", 0) or 0) + 1
+            accum["v"] = float(accum.get("v", 0.0) or 0.0) + float(self.v)
+            accum["a"] = float(accum.get("a", 0.0) or 0.0) + float(self.a)
+            accum["stress"] = float(accum.get("stress", 0.0) or 0.0) + float(self.stress)
+            _emo = str((self.labels or {}).get("emotion") or "neutral")
+            emotions = accum.get("emotions") if isinstance(accum.get("emotions"), dict) else {}
+            emotions[_emo] = int(emotions.get(_emo, 0) or 0) + 1
+            accum["emotions"] = emotions
+            accum["ticks"] = int(accum.get("ticks", 0) or 0) + 1
+            if isinstance(event_ids, (list, tuple)):
+                _eids = accum.get("event_ids") if isinstance(accum.get("event_ids"), list) else []
+                for _eid in event_ids:
+                    if str(_eid) and str(_eid) not in _eids:
+                        _eids.append(str(_eid))
+                accum["event_ids"] = _eids[-50:]
+            self._daily_accum = accum
+            return dict(accum)
+        except Exception:
+            return {}
+
     def snapshot(self) -> dict:
         self._decay_to_now()
         return {"v": round(self.v, 4), "a": round(self.a, 4),
@@ -1521,6 +1598,10 @@ class BioCore:
                 "attention": round(float(self.attention), 3),
                 "novelty_need": round(float(getattr(self, "novelty_need", 0.5)), 3),
                 "boredom": round(float(getattr(self, "boredom", 0.0)), 3),
+                "boundary_pressure": round(float(getattr(self, "boundary_pressure", 0.0)), 3),
+                "refusal_readiness": round(float(getattr(self, "refusal_readiness", 0.0)), 3),
+                "interpersonal": {k: round(float(v), 4) for k, v in (getattr(self, "interpersonal", {}) or {}).items()},
+                "daily_digests": [dict(x) for x in (getattr(self, "daily_digests", []) or [])[-30:]],
                 "meta_emotion": self.meta_emotion,
                 "goals": [{"key": g.get("key"), "name": g.get("name"), "horizon": g.get("horizon"),
                            "progress": round(float(g.get("progress", 0) or 0), 3),
@@ -1543,7 +1624,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.57")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.58")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2364,6 +2445,20 @@ class BioCorePlugin(Star):
                 )
                 _mem_doc = self._load_memory(event)
                 _entries = _mem_doc.get("entries") if isinstance(_mem_doc, dict) else []
+                try:
+                    _social_world = relationship_meta.build_social_world(_entries)
+                except Exception:
+                    _social_world = []
+                _milestones = []
+                try:
+                    for _ev in self._event_archive(20):
+                        _mk = relationship_meta.milestone_from_text(
+                            str(_ev.get("title") or "") + " " + str(_ev.get("event") or ""))
+                        if _mk:
+                            _mk["ts"] = float(_ev.get("ts", 0) or 0)
+                            _milestones.append(_mk)
+                except Exception:
+                    _milestones = []
                 d["relationship"] = relationship_meta.update_relationship_record(
                     _prev_rel,
                     state=_rel_state,
@@ -2371,6 +2466,8 @@ class BioCorePlugin(Star):
                     transactive_map=relationship_meta.build_transactive_map(_entries),
                     destination_map=relationship_meta.build_destination_map(_entries),
                     absence=d.get("absence"),
+                    social_world=_social_world,
+                    milestones=_milestones,
                 )
             except Exception:
                 pass
@@ -3256,6 +3353,7 @@ class BioCorePlugin(Star):
                         for i, c in enumerate(candidates)
                     ]
             candidates.sort(key=lambda x: x[0], reverse=True)
+            _digest_event_ids = []
             for score, body, seg_entries, vec, schema, imp in candidates[:2]:
                 title = body.replace("\n", " ").strip()[:28] or "对话事件"
                 _ekey = self._normalize_event_key(title, title)
@@ -3293,6 +3391,7 @@ class BioCorePlugin(Star):
                     "strength": _imp,
                     "source_texts": list(seg_texts)[:12],
                     "ranking_mode": "deterministic_embedding",
+                    "milestone": relationship_meta.milestone_from_text(title + " " + body),
                 }
                 if vec:
                     record["event_embedding"] = [round(float(x), 5) for x in vec]
@@ -3306,9 +3405,15 @@ class BioCorePlugin(Star):
                 except Exception:
                     pass
                 self._append_event_archive(record)
+                _digest_event_ids.append(record.get("id"))
                 logger.info("[biocore] deterministic event archived: %s score=%.2f", title, score)
         except Exception as exc:
             logger.warning("[biocore] deterministic event ranking failed: %s", exc)
+        try:
+            if core is not None:
+                core.update_daily_digest(event_ids=_digest_event_ids)
+        except Exception:
+            pass
         await self._maybe_archive_insight(event, core, "event_archive")
 
     async def _archive_ranked_events(self, event, core, entries):
@@ -3386,6 +3491,11 @@ class BioCorePlugin(Star):
             record["parent_event_id"] = _bnd.get("parent_event_id", "")
             self._append_event_archive(record)
             await self._maybe_archive_insight(event, core, "event_archive")
+            try:
+                if core is not None:
+                    core.update_daily_digest(event_ids=[record.get("id")])
+            except Exception:
+                pass
             self._update_self_narrative(title, reflection or meaning)
             logger.info("[biocore] strong event archived: %s", title)
         except Exception as exc:

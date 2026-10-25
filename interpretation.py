@@ -142,6 +142,17 @@ def user_block(user: dict) -> str:
             float(state.get("conflict", 0.5) or 0.5),
             float(state.get("repair", 0.0) or 0.0),
             float(state.get("predictability", 0.5) or 0.5))
+    repair_state = rel.get("repair_state") if isinstance(rel, dict) else None
+    if isinstance(repair_state, dict):
+        phase = str(repair_state.get("phase") or "stable")
+        if phase != "stable":
+            base += "；修复=" + phase[:16]
+    absence = d.get("absence") if isinstance(d.get("absence"), dict) else (
+        rel.get("absence") if isinstance(rel, dict) else None)
+    if isinstance(absence, dict):
+        bucket = str(absence.get("bucket") or "same_day")
+        if bucket != "same_day":
+            base += "；回归=" + bucket[:16]
     trans = rel.get("transactive_map") if isinstance(rel, dict) else None
     if isinstance(trans, dict) and trans:
         topics = sorted(trans.items(), key=lambda item: (-int(item[1]), str(item[0])))[:3]
@@ -199,6 +210,11 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
         float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
         it.get("emotion") or "neutral", it.get("compound") or "-",
         it.get("need") or "talk", plan(core), it.get("regulation") or "none"))
+    try:
+        if float(getattr(core, "boredom", 0.0) or 0.0) >= 0.7:
+            cp += " bored"
+    except Exception:
+        pass
     mb = memory_block(memory) if isinstance(memory, (list, tuple)) else str(memory or "")[:220]
     eb = event_block(events) if isinstance(events, (list, tuple)) else str(events or "")[:220]
     sb = self_block(self_model)

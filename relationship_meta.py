@@ -23,6 +23,12 @@ __all__ = [
     "update_repair_state",
     "absence_state",
     "calibration_update",
+    "ROLE_TYPES",
+    "build_social_world",
+    "attachment_profile",
+    "refusal_protocol",
+    "milestone_from_text",
+    "merge_milestones",
     "update_relationship_record",
     "summarize_relationship",
 ]
@@ -34,6 +40,9 @@ REPAIR_MAX_EVIDENCE = 20
 REPAIR_RUPTURE_CONFLICT = 0.62
 REPAIR_REPAIRED_CONFLICT = 0.42
 CALIBRATION_MAX_SOURCES = 20
+ROLE_TYPES = ("家人", "朋友", "同事", "伴侣", "宠物", "其他")
+MAX_SOCIAL_WORLD = 20
+MAX_MILESTONES = 10
 
 _STOPWORDS = {
     "这个",
@@ -206,6 +215,115 @@ def calibration_update(state: Any, source: Any, predicted: Any, correct: Any) ->
     return {"sources": sources}
 
 
+
+_ROLE_HINTS = (
+    ("妈妈", "家人"), ("妈", "家人"), ("爸爸", "家人"), ("爸", "家人"),
+    ("朋友", "朋友"), ("同事", "同事"), ("伴侣", "伴侣"),
+    ("老公", "伴侣"), ("老婆", "伴侣"), ("对象", "伴侣"),
+    ("猫", "宠物"), ("狗", "宠物"),
+)
+_SENSITIVE_SKIP = ("工资", "密码", "身份证", "银行卡", "病历", "病", "手机号")
+
+
+def build_social_world(entries: Any) -> list[dict[str, Any]]:
+    """Deterministic bounded people index from explicit role words; no inference."""
+    out = []
+    seen = set()
+    for entry in (entries if isinstance(entries, list) else [])[-200:]:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("text") or "")
+        if not text or any(word in text for word in _SENSITIVE_SKIP):
+            continue
+        for hint, role in _ROLE_HINTS:
+            idx = text.find(hint)
+            while idx >= 0:
+                tail = text[idx + len(hint): idx + len(hint) + 6]
+                name = tail[:4].strip("，。！？、,.!? 的")
+                if not name or name.startswith(("说", "在", "和", "跟", "是", "很", "又")):
+                    name = hint
+                key = (role, name)
+                if key not in seen:
+                    seen.add(key)
+                    out.append({"name": name[:20], "role": role,
+                                "evidence": [{"ts": _num(entry.get("ts"), 0.0),
+                                              "text": text[:40]}]})
+                idx = text.find(hint, idx + len(hint))
+            if len(out) >= MAX_SOCIAL_WORLD:
+                return out[:MAX_SOCIAL_WORLD]
+    return out[:MAX_SOCIAL_WORLD]
+
+
+def attachment_profile(trajectory: Any) -> dict[str, float]:
+    """Deterministic 0..1 attachment-style proxies from trajectory; not clinical."""
+    points = [x for x in (trajectory if isinstance(trajectory, list) else [])[-80:]
+              if isinstance(x, dict)]
+    if len(points) < 2:
+        return {"safe": 0.5, "anxious": 0.25, "avoidant": 0.25}
+    trusts = [_clamp(x.get("trust", 0.5)) for x in points]
+    closes = [_clamp(x.get("closeness", 0.5)) for x in points]
+    conflicts = [_clamp(x.get("conflict", 0.5)) for x in points]
+    repairs = [_clamp(x.get("repair", 0.0)) for x in points]
+    mean_trust = sum(trusts) / len(trusts)
+    mean_close = sum(closes) / len(closes)
+    mean_conf = sum(conflicts) / len(conflicts)
+    mean_rep = sum(repairs) / len(repairs)
+    mean_trust2 = sum(x * x for x in trusts) / len(trusts)
+    variance = max(0.0, mean_trust2 - mean_trust * mean_trust)
+    safe = _clamp(0.25 + mean_trust * 0.35 + mean_rep * 0.25 + mean_close * 0.25 - variance * 0.5)
+    anxious = _clamp(0.15 + variance * 1.5 + mean_conf * 0.35 + (1.0 - mean_rep) * 0.15)
+    avoidant = _clamp(0.15 + (1.0 - mean_close) * 0.35 + max(0.0, mean_conf - 0.3) * 0.25)
+    total = safe + anxious + avoidant
+    if total <= 0:
+        return {"safe": 0.34, "anxious": 0.33, "avoidant": 0.33}
+    return {"safe": round(safe / total, 4), "anxious": round(anxious / total, 4),
+            "avoidant": round(avoidant / total, 4)}
+
+
+def refusal_protocol(state: Any) -> dict[str, Any]:
+    """Coarse refusal mode from boundary pressure; behavior strategy stays elsewhere."""
+    d = state if isinstance(state, dict) else {}
+    pressure = _clamp(d.get("boundary_pressure", 0.0))
+    trust = _clamp(d.get("trust", 0.5))
+    conflict = _clamp(d.get("conflict", 0.0))
+    if pressure >= 0.65 and (trust < 0.55 or conflict >= 0.4):
+        return {"mode": "decline", "reason_code": "boundary_pressure_high"}
+    if pressure >= 0.35:
+        return {"mode": "negotiate", "reason_code": "boundary_pressure"}
+    return {"mode": "comply", "reason_code": "normal"}
+
+
+def milestone_from_text(text: Any) -> dict[str, Any]:
+    t = str(text or "")
+    if any(x in t for x in ("第一次", "初次")):
+        mtype = "first_meet"
+    elif any(x in t for x in ("周年", "纪念日", "一年前")):
+        mtype = "anniversary"
+    elif any(x in t for x in ("答应", "承诺", "说好")) and any(x in t for x in ("做到", "兑现", "守约")):
+        mtype = "promise_kept"
+    elif any(x in t for x in ("和好", "修复", "道歉", "原谅")):
+        mtype = "repair_success"
+    else:
+        return {}
+    key = t.strip()[:80]
+    return {"type": mtype, "key": key, "ts": 0.0}
+
+
+def merge_milestones(existing: Any, additions: Any) -> list[dict[str, Any]]:
+    out = []
+    seen = set()
+    for item in list(existing if isinstance(existing, list) else []) + list(additions if isinstance(additions, list) else []):
+        if not isinstance(item, dict):
+            continue
+        mtype = str(item.get("type") or "")
+        key = str(item.get("key") or "")[:80]
+        if not mtype or not key or (mtype, key) in seen:
+            continue
+        seen.add((mtype, key))
+        out.append({"type": mtype, "key": key, "ts": _num(item.get("ts"), 0.0)})
+    return out[-MAX_MILESTONES:]
+
+
 def relationship_state(
     *,
     trust: Any = 0.5,
@@ -338,6 +456,8 @@ def update_relationship_record(
     transactive_map: Any = None,
     destination_map: Any = None,
     absence: Any = None,
+    social_world: Any = None,
+    milestones: Any = None,
 ) -> dict[str, Any]:
     """Create/update the bounded relationship record stored with the user."""
     prev = previous if isinstance(previous, dict) else {}
@@ -350,6 +470,9 @@ def update_relationship_record(
     else:
         absence_state_value = absence_state(ts, ts)
     calibration = prev.get("calibration") if isinstance(prev.get("calibration"), dict) else {"sources": {}}
+    world = social_world if isinstance(social_world, list) else prev.get("social_world", [])
+    attachment = attachment_profile(trajectory)
+    marks = merge_milestones(prev.get("milestones"), milestones)
     return {
         "schema_version": RELATIONSHIP_SCHEMA_VERSION,
         "state": {
@@ -362,6 +485,9 @@ def update_relationship_record(
         "repair_state": repair_state,
         "absence": absence_state_value,
         "calibration": calibration,
+        "social_world": [dict(x) for x in world[:MAX_SOCIAL_WORLD] if isinstance(x, dict)],
+        "attachment": attachment,
+        "milestones": marks,
     }
 
 
