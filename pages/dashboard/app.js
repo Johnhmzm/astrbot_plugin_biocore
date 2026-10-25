@@ -74,8 +74,19 @@
       tip.textContent="记忆球渲染未启动：请按 Ctrl+F5 强制刷新页面（可能缓存了旧脚本），或到 设置 → 球体图层 点“恢复默认显示”。";
     },2500);
   }
-  const map={neutral:"平静",joy:"开心",sadness:"难过",fear:"害怕",anger:"生气",surprise:"惊讶",trust:"信任",loneliness:"孤独",approach:"靠近",hold:"停住",withdraw:"退开",far:"远",near:"近",soft:"轻",blunt:"直",playful:"俏皮",quiet:"安静",short:"短",normal:"正常",open:"展开",low:"低",high:"高",calm:"松",tense:"紧",overloaded:"过载",be_heard:"被听见",space:"空间",vent:"吐槽",share:"分享",talk:"说话"};
-  const L=(v)=>map[v]||v||"—";
+  // task-58: full emotion vocabulary (EMOTION_SPECTRUM 30+) in Chinese. The
+  // old map only had 8 basic labels, so L("amusement") fell back to raw English
+  // in the focus panel and the session cards.
+  const EMOTION_ZH={neutral:"平静",joy:"开心",sadness:"难过",fear:"害怕",anger:"生气",surprise:"惊讶",trust:"信任",loneliness:"孤独",admiration:"钦佩",adoration:"爱慕",aesthetic:"审美欣赏",amusement:"好笑",anxiety:"焦虑",awe:"敬畏",awkwardness:"尴尬",boredom:"无聊",calmness:"平静",confusion:"困惑",contempt:"轻蔑",contentment:"满足",desire:"欲望",disappointment:"失望",disgust:"厌恶",empathic_pain:"共情痛苦",entrancement:"入迷",envy:"嫉妒",excitement:"兴奋",guilt:"内疚",horror:"恐惧",interest:"兴趣",nostalgia:"怀念",pride:"自豪",satisfaction:"满足",shame:"羞耻"};
+  const UNKNOWN_EMOTION="未知情绪";
+  const map={...EMOTION_ZH,approach:"靠近",hold:"停住",withdraw:"退开",far:"远",near:"近",soft:"轻",blunt:"直",playful:"俏皮",quiet:"安静",short:"短",normal:"正常",open:"展开",low:"低",high:"高",calm:"松",tense:"紧",overloaded:"过载",be_heard:"被听见",space:"空间",vent:"吐槽",share:"分享",talk:"说话"};
+  // task-58: a missing key must never leak raw English into the UI. Unknown
+  // values render as 未知情绪; non-emotion enums stay translated below.
+  const mapExtra={none:"无",closed:"闭",restrained:"克制",seek_comfort:"找安慰",reappraise:"换个角度",suppress:"压住",avoid:"回避",express:"说出",distraction:"分散注意"};
+  Object.assign(map,mapExtra);
+  const L=(v)=>{const k=String(v==null?"":v);if(Object.prototype.hasOwnProperty.call(map,k))return map[k];return UNKNOWN_EMOTION;};
+  function emotionZh(v){const k=String(v==null?"":v).trim().toLowerCase();if(!k)return UNKNOWN_EMOTION;return Object.prototype.hasOwnProperty.call(EMOTION_ZH,k)?EMOTION_ZH[k]:UNKNOWN_EMOTION;}
+  function emotionLabel(v){const k=String(v==null?"":v).trim();return k?emotionZh(k):"—";}
   const clamp=(v)=>Math.max(0,Math.min(1,Number(v)||0));
   const pct=(v)=>Math.round(clamp(v)*100)+"%";
   const fmt=(v,d=2)=>(Number(v)>=0?"+":"")+Number(v||0).toFixed(d);
@@ -110,6 +121,101 @@
     if(!name) name=p.id||String(key||"");
     return name?(typeLabel+" · "+name):typeLabel;
   }
+  // task-55: one real session may be stored under ":" and "_" variants
+  // (events use colons, memory files use underscores). Canonical form unifies
+  // them as platform:Type:id, so dropdowns/cards never duplicate a person and
+  // both raw variants match one selection.
+  function canonicalSessionKey(key){
+    const p=parseSessionKey(key);
+    if(p&&p.type) return (p.platform||"default")+":"+p.type+":"+p.id;
+    return String(key||"").trim().replace(/_/g,":");
+  }
+  function sessionTypeLabel(key){
+    const p=parseSessionKey(key);
+    return SESSION_TYPE_LABELS[p.type]||(p.type?p.type:"会话");
+  }
+  function _relationshipSessionKeys(rel){
+    const out=[];
+    if(!rel||typeof rel!=="object") return out;
+    if(Array.isArray(rel.sessions)) rel.sessions.forEach(x=>{ if(x) out.push(x); });
+    ["session","unified_msg_origin"].forEach(k=>{ if(rel[k]) out.push(rel[k]); });
+    return out;
+  }
+  function collectSessionVariants(){
+    const map=new Map();
+    const add=(raw)=>{
+      const text=String(raw||"").trim();
+      if(!text) return;
+      const canonical=canonicalSessionKey(text);
+      if(!canonical) return;
+      if(!map.has(canonical)) map.set(canonical,new Set());
+      map.get(canonical).add(text);
+    };
+    // union: events + memory index + live cores + relationships + current filters
+    (Array.isArray(data&&data.events)?data.events:[]).forEach(ev=>add(ev&&ev.session));
+    const idx=memoryIndexValue();
+    if(Array.isArray(idx)) idx.forEach(s=>add(s&&s.session));
+    (Array.isArray(data&&data.cores)?data.cores:[]).forEach(c=>add(c&&c.key));
+    const rels=relationshipsValue();
+    if(Array.isArray(rels)) rels.forEach(rel=>_relationshipSessionKeys(rel).forEach(add));
+    if(summarySessionFilter) add(summarySessionFilter);
+    if(memSessionFilter) add(memSessionFilter);
+    return map;
+  }
+  function _sessionHasEvent(canonical){
+    const evs=Array.isArray(data&&data.events)?data.events:[];
+    return evs.some(ev=>canonicalSessionKey(ev&&ev.session)===canonical);
+  }
+  function _sessionHasMemory(canonical){
+    const idx=memoryIndexValue();
+    if(!Array.isArray(idx)) return false;
+    return idx.some(s=>canonicalSessionKey(s&&s.session)===canonical);
+  }
+  function sessionEntries(){
+    const out=[];
+    collectSessionVariants().forEach((variants,canonical)=>{
+      out.push({canonical:canonical,variants:Array.from(variants),
+                hasEvent:_sessionHasEvent(canonical),hasMemory:_sessionHasMemory(canonical),
+                label:sessionLabel(canonical)});
+    });
+    out.sort((a,b)=>{
+      if(a.hasEvent!==b.hasEvent) return a.hasEvent?-1:1;
+      if(a.hasMemory!==b.hasMemory) return a.hasMemory?-1:1;
+      return a.label.localeCompare(b.label,"zh-CN");
+    });
+    return out;
+  }
+  function sessionVariantsOf(canonical){
+    const map=collectSessionVariants();
+    return Array.from(map.get(canonical)||[]);
+  }
+  function renderSessionList(){
+    const box=$("sessionList");
+    const count=$("sessionCount");
+    if(!box) return;
+    const entries=sessionEntries();
+    const cores=Array.isArray(data&&data.cores)?data.cores:[];
+    const coreByCanon={};
+    cores.forEach(c=>{ const k=canonicalSessionKey(c&&c.key); if(k) coreByCanon[k]=c; });
+    const ordered=[];
+    entries.forEach(r=>{ if(coreByCanon[r.canonical]) ordered.push({row:r,core:coreByCanon[r.canonical]}); });
+    entries.forEach(r=>{ if(!coreByCanon[r.canonical]) ordered.push({row:r,core:null}); });
+    if(count) count.textContent=ordered.length+" SESSIONS";
+    box.innerHTML=ordered.length?ordered.map(item=>{
+      const r=item.row, core=item.core;
+      const raw=(r.variants||[]).join(" | ")||r.canonical;
+      let state="无在线状态";
+      if(core){ const i=core.intent||{},ss=core.snapshot||{};
+        state=esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t";
+      } else {
+        const bits=[]; if(r.hasMemory) bits.push("记忆"); if(r.hasEvent) bits.push("事件");
+        state=esc(bits.length?("无在线状态 · 有"+bits.join("+")):"无在线状态");
+      }
+      return '<div class="session" data-session="'+esc(r.canonical)+'" title="'+esc(raw)+'">'+
+        '<div class="session-name">'+esc(r.label)+'</div>'+
+        '<div class="session-state">'+state+'</div></div>';
+    }).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
+  }
   function storeGet(k, fallback){ try { const v = localStorage.getItem(k); return v == null ? fallback : v; } catch (e) { return fallback; } }
   function storeSet(k, v){ try { localStorage.setItem(k, String(v)); } catch (e) {} }
   // One-time migration: earlier builds defaulted the memory-node layer off and
@@ -121,7 +227,7 @@
       localStorage.setItem("bio_vis_defaults_v3","1");
     }
   } catch (e) {}
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65"))};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","solid")==="orbit"?"orbit":"solid"};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -198,7 +304,8 @@
   let summarySessionFilter = "";
   function _coreSnapshot(key){
     const cores=(data&&data.cores)||[];
-    const core=cores.find(c=>String(c.key)===String(key));
+    const want=canonicalSessionKey(key);
+    const core=cores.find(c=>canonicalSessionKey(c.key)===want);
     return core&&core.snapshot?core.snapshot:null;
   }
   function _eventMessages(key, ev){
@@ -229,72 +336,245 @@
     if(text.length>limit) text=text.slice(0,limit-1).trimEnd()+"…";
     return text;
   }
-  function renderSessionMemory(){
-    if(!data) return;
-    const all=Array.isArray(data.events)?data.events:[];
-    const sessions=Array.from(new Set(all.map(ev=>String(ev.session||"").trim()).filter(Boolean)));
-    const sel=$("summarySession"), empty=$("summaryEmpty"), block=$("sessionSummaryBlock"), hint=$("summaryHint");
-    if(!sessions.length){
-      if(sel){sel.innerHTML='<option value="">暂无已总结会话</option>';sel.disabled=true;}
-      if(empty) empty.style.display="block";
-      if(block) block.innerHTML="";
-      if(hint) hint.textContent="还没有已总结的会话";
-      return;
-    }
-    if(sel){
-      sel.disabled=false;
-      if(summarySessionFilter && sessions.indexOf(summarySessionFilter)<0) summarySessionFilter="";
-      sel.innerHTML=sessions.map(s=>'<option value="'+esc(s)+'" title="'+esc(s)+'">'+esc(sessionLabel(s))+'</option>').join("");
-      sel.value = summarySessionFilter || sessions[0];
-      summarySessionFilter=sel.value;
-    }
-    if(!block) return;
-    const evs=all.filter(ev=>String(ev.session||"").trim()===summarySessionFilter)
-      .sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0));
-    if(empty) empty.style.display=evs.length?"none":"block";
-    if(hint) hint.textContent="已总结 "+sessions.length+" 个会话 · 本会话 "+evs.length+" 个重要事件";
-    block.innerHTML=evs.map((ev,idx)=>{
-      const msgs=_eventMessages(summarySessionFilter,ev);
-      const imp=Number(ev.importance||0).toFixed(2);
-      const cent=(ev.centrality==null?0.5:Number(ev.centrality)).toFixed(2);
-      const when=ev.ts?new Date(Number(ev.ts)*1000).toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"}):"";
-      const status=String((ev.source_check&&ev.source_check.status)||"ok");
-      const evConf=(ev.confidence==null||ev.confidence==="")?null:Number(ev.confidence);
-      const warnFlags=(evConf!=null&&evConf<0.6?'<span class="mem-flag mem-flag-warn">低置信 '+evConf.toFixed(2)+'</span>':"")+
-        (status!=="ok"?'<span class="mem-flag mem-flag-warn">来源待核 '+esc(status)+'</span>':"");
-      const smallSrc=String(ev.small_summary||"").trim()||String(ev.event||"").trim();
-      const small=_clipText(smallSrc,80);
-      const sumStatus=String(ev.summary_status||"legacy").toLowerCase();
-      const edited=ev.summary_edited===true||sumStatus==="edited";
-      const badge=edited?"已编辑":({"llm":"AI 总结","fallback":"摘录总结"}[sumStatus]||"旧事件");
-      const badgeCls=edited?"is-edited":("is-"+((sumStatus==="llm"||sumStatus==="fallback")?sumStatus:"legacy"));
-      const bigText=_clipText(ev.big_summary||ev.event||"",600);
-      const hasMsgs=msgs.length>0;
-      return '<div class="memory-card">'+
-        '<div class="memory-card-head"><span class="memory-level-tag">总结</span><b>'+esc(_clipText(ev.title||"重要事件",80))+'</b><span class="hint">'+esc(when)+'</span>'+warnFlags+'</div>'+
-        '<p class="memory-event-small"><small>小总结</small><span>'+esc(small||"—")+'</span></p>'+
-        '<div class="memory-event-big"><div class="memory-event-big-head"><small>大总结</small><span class="memory-status-badge '+badgeCls+'">'+esc(badge)+'</span></div><p class="memory-event-text">'+esc(bigText)+'</p></div>'+
-        '<div class="memory-scores"><small>重要度 '+imp+'</small><small>centrality '+cent+'</small><small>来源 '+esc(status)+'</small></div>'+
-        '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(_clipText(ev.central_details||"",260))+'</small><small>意义：'+esc(_clipText(ev.meaning_to_her||"",220))+'</small><small>事件感悟（单事件）：'+esc(_clipText(ev.reflection||"",220))+'</small></div>'+
-        (hasMsgs
-          ? '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'" data-count="'+msgs.length+'">收起消息 · '+msgs.length+' 条</button>'+
-            '<div class="memory-messages" data-idx="'+idx+'">'+msgs.map(_msgRow).join("")+'</div>'
-          : '<div class="memory-event-nowin">旧事件没有逐条消息窗口</div>')+
-        '</div>';
-    }).join("");
-    if(!block.dataset.bound){
-      block.addEventListener("click",e=>{
-        const target=e.target||{};
-        if(!target.closest) return;
-        const btn=target.closest(".js-msg-toggle");
-        if(!btn) return;
-        const box=block.querySelector('.memory-messages[data-idx="'+btn.dataset.idx+'"]');
-        if(box){ box.hidden=!box.hidden; const n=btn.dataset.count||""; btn.textContent=(box.hidden?"全部消息 · "+n+" 条":"收起消息 · "+n+" 条"); }
-      });
-      block.dataset.bound="1";
+  // task-57: inline regenerate/edit for session-memory event cards. The same
+  // page/event_summary API as the focus panel is reused; each card is bound by
+  // data-event-id so multiple cards never interfere, and the edit draft survives
+  // the 5s status poll (input events update the draft synchronously).
+  let _sessEdit = null;
+  const _sessBusy = {};
+  const _sessMsg = {};
+  function _sessEventById(eventId) {
+    const evs = Array.isArray(data && data.events) ? data.events : [];
+    return evs.find((ev) => String((ev && ev.id) || "") === String(eventId || "")) || null;
+  }
+  function _sessSetMsg(eventId, text, isError) {
+    const id = String(eventId || "");
+    if (!id) return;
+    if (text) _sessMsg[id] = { text: String(text), error: !!isError };
+    else delete _sessMsg[id];
+  }
+  function _sessSummaryStatus(ev) {
+    if (ev && ev.summary_edited === true) return "edited";
+    const s = String((ev && ev.summary_status) || "legacy").toLowerCase();
+    return (s === "llm" || s === "fallback" || s === "edited") ? s : "legacy";
+  }
+  function _sessApplyResult(eventId, body) {
+    const ev = _sessEventById(eventId);
+    if (!ev || !body) return null;
+    if (body.title != null) ev.title = String(body.title);
+    if (body.big_summary != null) ev.big_summary = String(body.big_summary);
+    if (body.small_summary != null) ev.small_summary = String(body.small_summary);
+    ev.summary_status = String(body.summary_status || "edited");
+    ev.summary_edited = body.summary_edited === true;
+    ev.summary_updated_ts = Number(body.summary_updated_ts || 0);
+    if (Array.isArray(body.summary_history)) ev.summary_history = body.summary_history;
+    if (body.emotion_secondary != null) ev.emotion_secondary = String(body.emotion_secondary || "");
+    return ev;
+  }
+  async function _sessRegenerate(eventId) {
+    const id = String(eventId || "");
+    if (!id || _sessBusy[id]) return;
+    _sessBusy[id] = true;
+    _sessSetMsg(id, "");
+    renderSessionMemory();
+    try {
+      const body = await _focusApi({ event_id: id, action: "regenerate" });
+      _sessApplyResult(id, body);
+      _sessSetMsg(id, "已重新总结", false);
+    } catch (err) {
+      _sessSetMsg(id, String((err && err.message) || err), true);
+    } finally {
+      _sessBusy[id] = false;
+      renderSessionMemory();
     }
   }
-
+  function _sessBeginEdit(eventId) {
+    const ev = _sessEventById(eventId);
+    if (!ev) return;
+    _sessEdit = { id: String(eventId),
+      title: String(ev.title || "重要事件").slice(0, 80),
+      small: String(ev.small_summary || "").slice(0, 80),
+      big: String(ev.big_summary || ev.event || ""),
+      busy: false };
+    _sessSetMsg(eventId, "");
+    renderSessionMemory();
+  }
+  function _sessCancelEdit() {
+    if (_sessEdit) _sessSetMsg(_sessEdit.id, "");
+    _sessEdit = null;
+    renderSessionMemory();
+  }
+  async function _sessSaveEdit() {
+    const draft = _sessEdit;
+    if (!draft || draft.busy) return;
+    const title = String(draft.title || "").trim();
+    const small = String(draft.small || "").trim();
+    const big = String(draft.big || "").trim();
+    if (!title) { _sessSetMsg(draft.id, "标题不能为空", true); renderSessionMemory(); return; }
+    if (title.length > 80) { _sessSetMsg(draft.id, "标题不能超过 80 字", true); renderSessionMemory(); return; }
+    if (!big) { _sessSetMsg(draft.id, "大总结不能为空", true); renderSessionMemory(); return; }
+    if (small.length > 80) { _sessSetMsg(draft.id, "小总结不能超过 80 字", true); renderSessionMemory(); return; }
+    draft.busy = true;
+    _sessSetMsg(draft.id, "");
+    renderSessionMemory();
+    try {
+      const body = await _focusApi({ event_id: draft.id, action: "update",
+        title: title, small_summary: small, big_summary: big });
+      _sessApplyResult(draft.id, body);
+      _sessEdit = null;
+      _sessSetMsg(draft.id, "已保存", false);
+    } catch (err) {
+      _sessSetMsg(draft.id, String((err && err.message) || err), true);
+    } finally {
+      if (_sessEdit && _sessEdit.id === draft.id) _sessEdit.busy = false;
+      renderSessionMemory();
+    }
+  }
+  function _sessEditForm(ev) {
+    const draft = _sessEdit || {};
+    const busy = !!draft.busy;
+    return '<div class="memory-card-edit" data-event-id="' + esc(String((ev && ev.id) || "")) + '">' +
+      '<label class="memory-edit-field"><small>标题（≤80 字）</small>' +
+      '<input type="text" class="js-sess-title" maxlength="80" value="' + esc(String(draft.title || "")) + '"></label>' +
+      '<label class="memory-edit-field"><small>小总结（≤80 字）</small>' +
+      '<textarea class="js-sess-small" maxlength="80" rows="2">' + esc(String(draft.small || "")) + '</textarea></label>' +
+      '<label class="memory-edit-field"><small>大总结</small>' +
+      '<textarea class="js-sess-big" rows="6">' + esc(String(draft.big || "")) + '</textarea></label>' +
+      '<div class="memory-card-ops"><button type="button" class="btn mini js-sess-save"' + (busy ? " disabled" : "") + '>保存</button>' +
+      '<button type="button" class="btn mini js-sess-cancel"' + (busy ? " disabled" : "") + '>取消</button></div>' +
+      '</div>';
+  }
+  function _sessCardHtml(ev, idx) {
+    const eventId = String((ev && ev.id) || "");
+    const msgs = _eventMessages(summarySessionFilter, ev);
+    const imp = Number(ev.importance || 0).toFixed(2);
+    const cent = (ev.centrality == null ? 0.5 : Number(ev.centrality)).toFixed(2);
+    const when = ev.ts ? new Date(Number(ev.ts) * 1000).toLocaleString("zh-CN",
+      { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
+    const status = String((ev.source_check && ev.source_check.status) || "ok");
+    const evConf = (ev.confidence == null || ev.confidence === "") ? null : Number(ev.confidence);
+    const warnFlags = (evConf != null && evConf < 0.6
+      ? '<span class="mem-flag mem-flag-warn">低置信 ' + evConf.toFixed(2) + '</span>' : "") +
+      (status !== "ok" ? '<span class="mem-flag mem-flag-warn">来源待核 ' + esc(status) + '</span>' : "");
+    const sessionLabelText = sessionLabel(ev.session);
+    const emoBadges = '<span class="mem-emo-tag">情绪 ' + esc(emotionLabel(ev.emotion)) + '</span>' +
+      '<span class="mem-emo-tag">次 ' + esc(ev.emotion_secondary ? emotionZh(ev.emotion_secondary) : "推断（示意）") + '</span>';
+    const sumStatus = _sessSummaryStatus(ev);
+    const badge = { llm: "AI 总结", fallback: "摘录总结", legacy: "旧事件", edited: "已编辑" }[sumStatus] || "旧事件";
+    const badgeCls = (sumStatus === "edited") ? "is-edited"
+      : ("is-" + ((sumStatus === "llm" || sumStatus === "fallback") ? sumStatus : "legacy"));
+    const smallSrc = String(ev.small_summary || "").trim() || _clipText(ev.title || "", 80);
+    const small = _clipText(smallSrc, 80);
+    const bigText = String(ev.big_summary || ev.event || "").trim();
+    const isEdit = !!(_sessEdit && _sessEdit.id === eventId);
+    const busy = !!_sessBusy[eventId];
+    const msg = _sessMsg[eventId] || null;
+    const updated = (Number(ev.summary_updated_ts || 0) > 0) ? _focusWhen(ev.summary_updated_ts) : "";
+    const readBody = isEdit ? _sessEditForm(ev) : (
+      '<p class="memory-event-small"><small>小总结</small><span>' + esc(small || "—") + '</span></p>' +
+      '<div class="memory-event-big"><div class="memory-event-big-head"><small>大总结</small>' +
+      '<span class="memory-status-badge ' + badgeCls + '">' + esc(badge) + '</span></div>' +
+      '<p class="memory-event-text">' + esc(bigText || "—") + '</p></div>');
+    const opsRow = isEdit ? "" : ('<div class="memory-card-ops">' +
+      '<button type="button" class="btn mini js-sess-regen" data-event-id="' + esc(eventId) + '"' +
+      (busy ? " disabled" : "") + '>' + (busy ? "重新总结中…" : "重新总结") + '</button>' +
+      '<button type="button" class="btn mini js-sess-edit" data-event-id="' + esc(eventId) + '">编辑总结</button>' +
+      '<span class="sess-card-msg' + (msg && msg.error ? " is-error" : "") + '">' +
+      esc(msg ? msg.text : "") + '</span></div>');
+    const hasMsgs = msgs.length > 0;
+    return '<div class="memory-card" data-event-id="' + esc(eventId) + '" data-session="' + esc(String(ev.session || "")) + '">' +
+      '<div class="memory-card-head"><span class="memory-level-tag">总结</span>' +
+      '<b>' + esc(_clipText(ev.title || "重要事件", 80)) + '</b>' +
+      '<span class="hint">' + esc(when) + '</span>' +
+      '<span class="mem-session-tag">' + esc(sessionLabelText) + '</span>' + warnFlags + emoBadges + '</div>' +
+      readBody + opsRow +
+      '<div class="memory-scores"><small>重要度 ' + imp + '</small><small>centrality ' + cent + '</small>' +
+      '<small>来源 ' + esc(status) + '</small>' + (updated ? '<small>更新 ' + esc(updated) + '</small>' : "") + '</div>' +
+      '<div class="memory-important"><span class="memory-level-tag">重要事件</span>' +
+      '<small>' + esc(_clipText(ev.central_details || "", 260)) + '</small>' +
+      '<small>意义：' + esc(_clipText(ev.meaning_to_her || "", 220)) + '</small>' +
+      '<small>事件感悟（单事件）：' + esc(_clipText(ev.reflection || "", 220)) + '</small></div>' +
+      (hasMsgs
+        ? '<button type="button" class="btn mini js-msg-toggle" data-idx="' + idx + '" data-count="' + msgs.length + '">收起消息 · ' + msgs.length + ' 条</button>' +
+          '<div class="memory-messages" data-idx="' + idx + '">' + msgs.map(_msgRow).join("") + '</div>'
+        : '<div class="memory-event-nowin">旧事件没有逐条消息窗口</div>') +
+      '</div>';
+  }
+  function renderSessionMemory() {
+    if (!data) return;
+    const all = Array.isArray(data.events) ? data.events : [];
+    const entries = sessionEntries();
+    const sessions = entries.map((en) => en.canonical);
+    const sel = $("summarySession"), empty = $("summaryEmpty"),
+          block = $("sessionSummaryBlock"), hint = $("summaryHint");
+    if (!sessions.length) {
+      if (sel) { sel.innerHTML = '<option value="">暂无已总结会话</option>'; sel.disabled = true; }
+      if (empty) empty.style.display = "block";
+      if (block) block.innerHTML = "";
+      if (hint) hint.textContent = "还没有已总结的会话";
+      return;
+    }
+    if (sel) {
+      sel.disabled = false;
+      if (!summarySessionFilter || sessions.indexOf(summarySessionFilter) < 0) summarySessionFilter = sessions[0];
+      sel.innerHTML = entries.map((en) => {
+        const raw = (en.variants || []).join(" | ") || en.canonical;
+        return '<option value="' + esc(en.canonical) + '" title="' + esc(raw) + '">' + esc(en.label) + '</option>';
+      }).join("");
+      sel.value = summarySessionFilter;
+    }
+    if (!block) return;
+    const evs = all.filter((ev) => canonicalSessionKey(ev.session) === summarySessionFilter)
+      .sort((a, b) => Number(b.importance || 0) - Number(a.importance || 0) ||
+        Number(b.ts || 0) - Number(a.ts || 0));
+    const entry = entries.filter((en) => en.canonical === summarySessionFilter)[0];
+    if (empty) {
+      empty.style.display = evs.length ? "none" : "block";
+      if (!evs.length) {
+        let extra = "";
+        if (entry && entry.hasMemory) {
+          const idx = memoryIndexValue() || [];
+          const n = idx.filter((s) => canonicalSessionKey(s.session) === summarySessionFilter)
+            .reduce((acc, s) => acc + ((s.entries || []).length), 0);
+          extra = "；该会话另有 " + n + " 条本地记忆，可在「会话记忆 → 记忆元数据」查看";
+        }
+        empty.textContent = "本会话还没有归档的重要事件" + extra + "。";
+      }
+    }
+    if (hint) hint.textContent = "已总结 " + entries.length + " 个会话 · 本会话 " + evs.length + " 个重要事件";
+    block.innerHTML = evs.map((ev, idx) => _sessCardHtml(ev, idx)).join("");
+    if (!block.dataset.bound) {
+      block.addEventListener("click", (e) => {
+        const target = e.target || {};
+        if (!target.closest) return;
+        const regen = target.closest(".js-sess-regen");
+        if (regen) { _sessRegenerate(regen.dataset.eventId); return; }
+        const edit = target.closest(".js-sess-edit");
+        if (edit) { _sessBeginEdit(edit.dataset.eventId); return; }
+        const save = target.closest(".js-sess-save");
+        if (save) { _sessSaveEdit(); return; }
+        const cancel = target.closest(".js-sess-cancel");
+        if (cancel) { _sessCancelEdit(); return; }
+        const btn = target.closest(".js-msg-toggle");
+        if (!btn) return;
+        const box = block.querySelector('.memory-messages[data-idx="' + btn.dataset.idx + '"]');
+        if (box) {
+          box.hidden = !box.hidden;
+          const n = btn.dataset.count || "";
+          btn.textContent = (box.hidden ? "全部消息 · " + n + " 条" : "收起消息 · " + n + " 条");
+        }
+      });
+      block.addEventListener("input", (e) => {
+        if (!_sessEdit) return;
+        const t = e.target || {};
+        if (!t.classList) return;
+        if (t.classList.contains("js-sess-title")) _sessEdit.title = String(t.value || "");
+        else if (t.classList.contains("js-sess-small")) _sessEdit.small = String(t.value || "");
+        else if (t.classList.contains("js-sess-big")) _sessEdit.big = String(t.value || "");
+      });
+      block.dataset.bound = "1";
+    }
+  }
 
   const LLM_FUNCTIONS=["persona_compile","event_summary","event_ranking","insight","memory_summary","image_caption",
   "relationship_impression","repair_hint","empathy_hint","pragmatics_hint","tom_probe","diary","relationship_narrative","humor_hint"];
@@ -447,9 +727,9 @@
   function renderMemoryMeta(){
     const sel=$("memSessionFilter"), list=$("memEntryList"), empty=$("memEmpty"),
           note=$("memIndexNote"), tomb=$("memTombstoneList"), stats=$("memoryMetaStats");
-    const sessions=memoryIndexValue();
+    const memorySessions=memoryIndexValue();
     if(!sel||!list) return;
-    if(sessions===null){
+    if(memorySessions===null){
       sel.innerHTML='<option value="">后端未提供</option>'; sel.disabled=true;
       list.innerHTML="";
       if(tomb) tomb.innerHTML="";
@@ -458,7 +738,7 @@
       if(stats) stats.textContent="当前后端版本只返回记忆数量统计，未提供 source/confidence/tier/conflict/tombstone 明细。";
       return;
     }
-    const valid=sessions.filter(s=>s&&Array.isArray(s.entries));
+    const valid=memorySessions.filter(s=>s&&Array.isArray(s.entries));
     if(!valid.length){
       sel.innerHTML='<option value="">暂无记忆</option>'; sel.disabled=true;
       list.innerHTML="";
@@ -483,23 +763,51 @@
       const hint=String((data&&data.last_strategy_hint)||"").slice(0,60);
       stats.textContent="元数据："+total+" 条 · 低置信 "+low+" · 冲突 "+conflicts+" · 已总结 "+summarized+" · 墓碑 "+tombstones+" · trace "+trace.length+(hint?(" · hint "+hint):"") + "。";
     }
-    const sessionsSorted=valid.slice().sort((a,b)=>String(a.session||"").localeCompare(String(b.session||"")));
-    if(memSessionFilter && sessionsSorted.every(s=>String(s.session||"")!==memSessionFilter)) memSessionFilter="";
-    if(!memSessionFilter) memSessionFilter=String(sessionsSorted[0].session||"");
-    sel.disabled=sessionsSorted.length<2;
-    sel.innerHTML=sessionsSorted.map(s=>{
-      const key=String(s.session||"");
-      const label=key?sessionLabel(key):"（无会话）";
-      return '<option value="'+esc(key)+'" title="'+esc(key)+'">'+esc(label)+'</option>';
+    // task-55: the dropdown is the canonical union (memory + events + live cores
+    // + relationships), and one canonical choice merges every ":"/"_" raw variant
+    // of the same real session. Memory rows without a match stay selectable.
+    const union=sessionEntries();
+    const canonKeys=union.map(en=>en.canonical);
+    // migrate a previously stored raw key (":" or "_") to its canonical form
+    if(memSessionFilter) memSessionFilter=canonicalSessionKey(memSessionFilter);
+    if(memSessionFilter && canonKeys.indexOf(memSessionFilter)<0) memSessionFilter="";
+    if(!memSessionFilter){
+      const firstWithMemory=union.filter(en=>en.hasMemory)[0];
+      memSessionFilter=firstWithMemory?firstWithMemory.canonical:(canonKeys[0]||"");
+    }
+    sel.disabled=union.length<2;
+    sel.innerHTML=union.map(en=>{
+      const raw=(en.variants||[]).join(" | ")||en.canonical;
+      const label=en.label+(en.hasMemory?"":"（无记忆）");
+      return '<option value="'+esc(en.canonical)+'" title="'+esc(raw)+'">'+esc(label)+'</option>';
     }).join("");
     sel.value=memSessionFilter;
-    const current=valid.find(s=>String(s.session||"")===memSessionFilter)||valid[0];
-    const entries=(current.entries||[]).map(normMemEntry).filter(e=>e.id||e.text).sort((a,b)=>Number(b.ts||0)-Number(a.ts||0)).slice(0,40);
-    if(empty) empty.style.display=entries.length?"none":"block";
-    if(empty&&!entries.length) empty.textContent="这个会话还没有可展示的记忆条目。";
-    if(note) note.textContent="已索引 "+sessionsSorted.length+" 个会话 · 本会话 "+entries.length+" 条";
-    list.innerHTML=entries.map((e,idx)=>{
-      const key=memKey(current.session,e.id||("idx"+idx));
+    const matched=valid.filter(s=>canonicalSessionKey(s.session)===memSessionFilter);
+    const currentSession=matched.length?String(matched[0].session||""):"";
+    const mergedEntries=[];
+    const seen={};
+    matched.forEach(s=>{
+      (s.entries||[]).forEach((entry,idx)=>{
+        const e=normMemEntry(entry);
+        const k=String(e.id||("idx"+idx));
+        if(seen[k]) return;
+        seen[k]=1;
+        mergedEntries.push(Object.assign({},e,{_session:String(s.session||"")}));
+      });
+    });
+    const mergedTombstones=[];
+    matched.forEach(s=>{
+      (Array.isArray(s.tombstones)?s.tombstones:[]).forEach(t=>{
+        mergedTombstones.push(Object.assign({},(t&&typeof t==="object")?t:{text:String(t||"")},{_session:String(s.session||"")}));
+      });
+    });
+    const shown=mergedEntries.filter(e=>e.id||e.text).sort((a,b)=>Number(b.ts||0)-Number(a.ts||0)).slice(0,40);
+    if(empty) empty.style.display=shown.length?"none":"block";
+    if(empty&&!shown.length) empty.textContent="这个会话还没有可展示的记忆条目。";
+    if(note) note.textContent="已索引 "+union.length+" 个会话 · 本会话 "+shown.length+" 条"+(matched.length>1?("（合并 "+matched.length+" 个原始 key）"):"");
+    list.innerHTML=shown.map((e,idx)=>{
+      const rowSession=String(e._session||currentSession||memSessionFilter);
+      const key=memKey(rowSession,e.id||("idx"+idx));
       const armed=memOps[key]||null;
       const stateText=memOpStates[key]||"";
       const confText=e.confidence==null?"—":Number(e.confidence).toFixed(2);
@@ -522,11 +830,12 @@
       const delLabel=armed&&armed.op==="delete"?"再点确认删除":"删除";
       const rbLabel=armed&&armed.op==="rollback"?"再点确认回滚":"回滚";
       const rbDisabled=e.versions>0?"":' disabled title="没有上一版本"';
-      return '<div class="mem-card" data-key="'+esc(key)+'">'+
+      const memSessionTag='<span class="mem-session-tag" title="'+esc(rowSession)+'">'+esc(sessionLabel(rowSession))+'</span>';
+      return '<div class="mem-card" data-key="'+esc(key)+'" data-session="'+esc(rowSession)+'" data-id="'+esc(e.id)+'">'+
         '<div class="mem-card-head">'+
           '<span class="mem-tier mem-tier-'+(e.tier||"unknown")+'">'+esc(memTierLabel(e.tier))+'</span>'+
           '<span class="mem-source">来源 '+esc(memSourceLabel(e.source,e.legacy))+'</span>'+
-          flags+
+          memSessionTag+flags+
           '<span class="hint">'+esc(memWhen(e.ts))+' · #'+esc(String(e.id||"").slice(0,12)||"—")+'</span>'+
         '</div>'+
         '<p class="mem-text">'+esc(_clipText(e.text||"",320))+'</p>'+
@@ -537,17 +846,17 @@
           '<small>写入 '+esc(e.lastOp||"—")+'</small>'+
         '</div>'+
         '<div class="mem-actions">'+
-          '<button type="button" class="btn mini" data-mem-op="rollback" data-key="'+esc(key)+'" data-session="'+esc(String(current.session||""))+'" data-id="'+esc(e.id)+'"'+rbDisabled+'>'+rbLabel+'</button>'+
-          '<button type="button" class="btn mini danger" data-mem-op="delete" data-key="'+esc(key)+'" data-session="'+esc(String(current.session||""))+'" data-id="'+esc(e.id)+'"'+(e.id?"":' disabled title="缺少条目 ID，无法删除"')+'>'+delLabel+'</button>'+
+          '<button type="button" class="btn mini" data-mem-op="rollback" data-key="'+esc(key)+'" data-session="'+esc(rowSession)+'" data-id="'+esc(e.id)+'"'+rbDisabled+'>'+rbLabel+'</button>'+
+          '<button type="button" class="btn mini danger" data-mem-op="delete" data-key="'+esc(key)+'" data-session="'+esc(rowSession)+'" data-id="'+esc(e.id)+'"'+(e.id?"":' disabled title="缺少条目 ID，无法删除"')+'>'+delLabel+'</button>'+
           '<span class="mem-op-state">'+esc(stateText)+'</span>'+
         '</div>'+
       '</div>';
     }).join("");
-    const tombs=Array.isArray(current.tombstones)?current.tombstones:[];
     if(tomb){
-      tomb.innerHTML=tombs.length?tombs.slice().reverse().slice(0,10).map(t=>{
+      tomb.innerHTML=mergedTombstones.length?mergedTombstones.slice().reverse().slice(0,10).map(t=>{
         const item=(t&&typeof t==="object")?t:{text:String(t||"")};
-        const _sid=String(current.session||""); const _tid=String(item.id||"");
+        const _sid=String(item._session||currentSession||memSessionFilter);
+        const _tid=String(item.id||"");
         return '<div class="mem-tomb-row"><span class="mem-flag mem-flag-danger">已删除</span><small>'+esc(memWhen(item.ts))+' · #'+esc(_tid.slice(0,12))+'</small><span class="mem-tomb-text">'+esc(String(item.text||"").slice(0,160))+'</span>'+
           (_tid?'<button type="button" class="btn mini" data-mem-restore="1" data-session="'+esc(_sid)+'" data-id="'+esc(_tid)+'">恢复</button>':'')+
           '</div>';
@@ -562,6 +871,7 @@
       tomb.dataset.bound="1";
     }
   }
+
   async function onTombAction(e){
     const target=e.target||{};
     const btn=target.closest?target.closest("[data-mem-restore]"):null;
@@ -923,8 +1233,7 @@
       ["baseline_v",p.baseline_v],["baseline_a",p.baseline_a],["energy",p.energy_baseline],
       ["social",p.social_baseline],["dominance",p.da_baseline],["recovery",p.recovery_rate]
     ].map(x=>'<div><small>'+x[0]+'</small><b>'+(x[1]==null?"–":Number(x[1]).toFixed(2))+'</b></div>').join("");
-    const cores=data.cores||[]; $("sessionCount").textContent=cores.length+" SESSIONS";
-    $("sessionList").innerHTML=cores.length?cores.map(c=>{const i=c.intent||{},ss=c.snapshot||{};return '<div class="session"><div class="session-name" title="'+esc(c.key)+'">'+esc(sessionLabel(c.key))+'</div><div class="session-state">'+esc(L(i.emotion))+" · "+esc(i.compound||"")+" · "+esc(L(i.intent))+" · trust "+Number(ss.trust||0).toFixed(2)+" · "+Number(ss.ticks||0)+"t</div></div>";}).join(""):'<div class="empty">还没有活动会话。等第一条消息。</div>';
+    renderSessionList();
     try{applyApiConfig();}catch(e){}
     try{applyPersonaSelect();}catch(e){ if(window.console&&console.warn) console.warn('[biocore] applyPersonaSelect failed:',e); }
     try{applyLlmFunctions();}catch(e){ if(window.console&&console.warn) console.warn('[biocore] applyLlmFunctions failed:',e); }
@@ -997,7 +1306,7 @@
     $("crumbView").textContent=names[name]||name;
   }
   document.querySelectorAll(".nav-item").forEach(a=>a.addEventListener("click",()=>switchView(a.dataset.view)));
-  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
+  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
   $("swShowNoise").checked=visual.noise; $("swShowEcho").checked=visual.echo; $("swShowRipple").checked=visual.ripple;
   if($("swShowDominance"))$("swShowDominance").checked=visual.dominance;
   if($("swShowSocial"))$("swShowSocial").checked=visual.social;
@@ -1008,6 +1317,7 @@
   if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").checked=visual.memoryBallsImportant;
   if($("swShowEmotionRings"))$("swShowEmotionRings").checked=visual.emotionRings;
   $("orbIntensity").value=visual.intensity;
+  if($("selMemoryRingStyle"))$("selMemoryRingStyle").value=visual.memoryRingStyle;
   $("swShowNoise").addEventListener("change",e=>{visual.noise=e.target.checked;visualSave();});
   $("swShowEcho").addEventListener("change",e=>{visual.echo=e.target.checked;visualSave();});
   $("swShowRipple").addEventListener("change",e=>{visual.ripple=e.target.checked;visualSave();});
@@ -1020,6 +1330,7 @@
   if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();updateOrbLegend();});
   if($("swShowEmotionRings"))$("swShowEmotionRings").addEventListener("change",e=>{visual.emotionRings=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
+  if($("selMemoryRingStyle"))$("selMemoryRingStyle").addEventListener("change",e=>{visual.memoryRingStyle=e.target.value==="orbit"?"orbit":"solid";visualSave();});
   function bindBehaviorToggle(id,key){
     const el=$(id);
     if(!el) return;
@@ -1519,7 +1830,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.87";
+  const BIO_VERSION = "v1.2.88";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1624,7 +1935,14 @@
   }
   function _focusEmotionLabel(key){
     const k = String(key == null ? "" : key).trim();
-    return k ? (L(k) || k) : "—";
+    if (!k) return "—";
+    try {
+      if (typeof emotionLabel === "function") {
+        const zh = emotionLabel(k);
+        if (zh) return zh;
+      }
+    } catch (e) {}
+    return L(k) || k;
   }
   function _focusWhen(ts){
     const n = Number(ts || 0);
@@ -1843,9 +2161,10 @@
     const d = _heroFocusDetail || {};
     if (!panel) return;
     const primary = _focusEmotionLabel(d.emotion);
-    // task-51: an old event without a secondary emotion is honestly "未知",
-    // never "same as primary colour".
-    const secondary = d.emotion_secondary ? _focusEmotionLabel(d.emotion_secondary) : "未知";
+    // task-54 addendum: old event without a real secondary shows an inferred
+    // (示意) secondary; it never pretends to be a genuine secondary emotion.
+    const secondary = d.emotion_secondary
+      ? _focusEmotionLabel(d.emotion_secondary) : "推断（示意）";
     const importance = Number(d.importance == null ? .5 : d.importance).toFixed(2);
     const when = _focusWhen(d.ts);
     const source = _focusSourceLabel(d.source);
@@ -1886,7 +2205,9 @@
         const hLabel = _FOCUS_STATUS_LABELS[hStatus] || String(h.summary_status || "");
         const hWhen = _focusWhen(h.ts);
         const hSmall = _focusClip(String(h.small_summary || ""), 80);
-        const hBig = _focusClip(String(h.big_summary || ""), hStatus === "legacy" ? 200 : 400);
+        // full history text; only legacy raw events stay a 200-char excerpt.
+        const hBigRaw = String(h.big_summary || "");
+        const hBig = hStatus === "legacy" ? _focusClip(hBigRaw, 200) : hBigRaw;
         return '<div class="hero-mem-history-item">' +
           '<div class="hero-mem-history-meta"><b>' + esc(hWhen || "—") + '</b>' +
           '<span>' + esc(hLabel || "历史") + '</span>' +
@@ -1927,12 +2248,16 @@
     const copy = _heroCopyEl();
     if (!copy) return;
     if (!_heroFocusSaved){
+      const hero = document.querySelector("#view-overview .hero") ||
+        document.querySelector(".hero");
       _heroFocusSaved = {
         copy: copy,
+        heroEl: hero,
         children: Array.prototype.slice.call(copy.children).map(
           (el) => ({ el: el, display: el.style.display || "" })),
         panel: null
       };
+      if (hero && hero.classList) hero.classList.add("hero-focus");
       _heroFocusSaved.children.forEach((x) => { x.el.style.display = "none"; });
       const panel = document.createElement("div");
       panel.id = "heroMemoryPanel";
@@ -1952,6 +2277,11 @@
     (saved.children || []).forEach((x) => {
       try { x.el.style.display = x.display; } catch (e) {}
     });
+    try {
+      if (saved.heroEl && saved.heroEl.classList) {
+        saved.heroEl.classList.remove("hero-focus");
+      }
+    } catch (e) {}
     _heroFocusSaved = null;
     _heroFocusDetail = null;
   }

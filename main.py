@@ -87,6 +87,53 @@ IMAGE_CACHE_PATH = DATA_DIR / "image_cache.json"
 EVENT_ARCHIVE_DIR = DATA_DIR / "archives"
 EVENT_SESSION_DIR = EVENT_ARCHIVE_DIR / "sessions"
 EVENT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "events.jsonl"
+def canonical_session_key(raw) -> str:
+    """Canonical session identity: platform:Type:id (colon form).
+
+    Event archive keys use colons ("default:FriendMessage:123"), memory file
+    stems use underscores ("default_FriendMessage_123"); both must compare
+    equal for dedupe/dropdown unions (task-55/task-56). Mixed separators
+    ("default:GroupMessage_664") and platform prefixes with underscores are
+    accepted; ids are kept verbatim.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    match = re.search(
+        r"(FriendMessage|GroupMessage|GuildMessage|TempMessage|OtherMessage)",
+        text)
+    if match:
+        platform = text[:match.start()].strip(":_") or "default"
+        ident = text[match.end():].strip(":_")
+        return platform + ":" + match.group(1) + ":" + ident
+    return text.replace("_", ":")
+
+
+def event_effective_time(record) -> float:
+    """Best-effort real event time for duplicate detection (task-56).
+
+    A re-archived event may carry the archive time in ``ts`` while its
+    ``time_span`` still points at the original conversation. Dedupe must
+    compare the real event time, not the archival moment, or a re-archive
+    days later looks like a different event.
+    """
+    if not isinstance(record, dict):
+        return 0.0
+    try:
+        span = record.get("time_span")
+        if isinstance(span, dict):
+            for key in ("end_ts", "start_ts"):
+                try:
+                    value = float(span.get(key) or 0)
+                except Exception:
+                    value = 0.0
+                if value > 0:
+                    return value
+        return float(record.get("ts", 0) or 0)
+    except Exception:
+        return 0.0
+
+
 EVENT_SUMMARY_ACTIONS = ("regenerate", "update")
 EVENT_SUMMARY_HARD_MAX = 20000
 EVENT_SUMMARY_SMALL_MAX = 80
@@ -218,6 +265,9 @@ MEMORY_UPDATE_MATCH_THRESHOLD = 0.55
 # similarity are treated as the same archived event (duplicates are merged).
 EVENT_KEY_SIM_THRESHOLD = 0.82
 EVENT_DUP_WINDOW_SECONDS = 21600.0
+# One-time canonical cleanup compares the *real* event time (time_span) and may
+# need to span the archival gap between ":"/"_" key generations (task-56).
+EVENT_DEDUPE_CLEANUP_WINDOW = 7 * 86400.0
 
 # Cowen & Keltner (2017) prototype space: which EMOTION_SPECTRUM anchors a
 # basic emotion label may calibrate from this core's own state history.
@@ -433,6 +483,9 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
             "interactions": interactions,
             "trust": trust,
             "last_seen": last_seen,
+            # task-55: session keys from the user file feed the dashboard
+            # session dropdown union (memory + events + relations + live).
+            "sessions": [str(x) for x in (data.get("sessions") or [])][:20],
             "relationship": {
                 "state": {key: state.get(key) for key in
                           ("trust", "closeness", "conflict", "repair", "predictability")},
@@ -1882,7 +1935,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.87")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.88")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2044,6 +2097,10 @@ class BioCorePlugin(Star):
                 self.kb_names = [str(x).strip() for x in _n if str(x).strip()]
         self._load_api_config()
         self._register_page_api()
+        try:
+            self._cleanup_duplicate_events()
+        except Exception as exc:
+            logger.warning("[biocore] dedupe init failed: %s", exc)
         try:
             _d = self._public_api_config()
             logger.info("[biocore] api defaults llm=%s embedding=%s rerank=%s",
@@ -3553,6 +3610,310 @@ class BioCorePlugin(Star):
         payload["summary_history"] = history if isinstance(history, list) else []
         return {"status": "ok", "data": payload}
 
+    def _event_pair_duplicate(self, row, prev,
+                              window: float = EVENT_DEDUPE_CLEANUP_WINDOW) -> bool:
+        """Multi-signal duplicate test for two rows of one canonical session.
+
+        The two real rows from the ":"/"_" key generations share the same
+        original conversation but their archive timestamps can be days apart,
+        so the comparison uses the real event time (time_span) and accepts a
+        merge when source texts overlap strongly or the summaries/titles are
+        near-identical. False positives are limited by requiring the text
+        signals, not just the canonical session.
+        """
+        try:
+            gap = abs(event_effective_time(row) - event_effective_time(prev))
+        except Exception:
+            gap = 0.0
+        if gap > window:
+            return False
+        try:
+            title_sim = self._text_similarity(str(row.get("title") or ""),
+                                              str(prev.get("title") or ""))
+            body_sim = self._text_similarity(str(row.get("event") or ""),
+                                             str(prev.get("event") or ""))
+            summary_sim = max(
+                self._text_similarity(str(row.get("big_summary") or ""),
+                                      str(prev.get("big_summary") or "")),
+                self._text_similarity(str(row.get("small_summary") or ""),
+                                      str(prev.get("small_summary") or "")))
+            left = {str(x) for x in (row.get("source_texts") or []) if str(x)}
+            right = {str(x) for x in (prev.get("source_texts") or []) if str(x)}
+            source_overlap = (len(left & right) / float(len(left | right))
+                              if (left and right) else 0.0)
+        except Exception:
+            return False
+        if source_overlap >= 0.5:
+            return True
+        if body_sim >= 0.6:
+            return True
+        if summary_sim >= 0.5 and (source_overlap >= 0.2 or title_sim >= 0.25
+                                   or body_sim >= 0.3):
+            return True
+        if title_sim >= 0.5 and body_sim >= 0.2:
+            return True
+        return False
+
+    @staticmethod
+    def _drop_ids_from_jsonl(path, ids) -> int:
+        """Remove rows with the given ids from a JSONL file atomically."""
+        try:
+            target = Path(path)
+            drop = {str(x) for x in (ids or []) if str(x)}
+            if not drop or not target.exists():
+                return 0
+            kept = []
+            dropped = 0
+            for line in target.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    kept.append(line)
+                    continue
+                if isinstance(obj, dict) and str(obj.get("id") or "") in drop:
+                    dropped += 1
+                    continue
+                kept.append(json.dumps(obj, ensure_ascii=False))
+            if not dropped:
+                return 0
+            tmp = target.with_name(target.name + ".tmp_%s_%s" % (
+                os.getpid(), int(time.time() * 1000)))
+            tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+            os.replace(tmp, target)
+            return dropped
+        except Exception:
+            return 0
+
+    def _cleanup_duplicate_events(self, force: bool = False) -> int:
+        """One-time cross-key duplicate cleanup for events.jsonl (task-56).
+
+        Canonical sessions unify ":"/"_" key generations. Rows of one real
+        conversation are grouped by canonical session + real event time
+        (time_span) + text signals (source_texts/title/summary/body); the
+        richer/newer row is kept and the poorer row is merged into it
+        (source_texts union, importance/centrality/recall maxima, provenance,
+        summary_history). Group sessions -- including the 664198103 test group
+        -- and unrelated rows are never touched. The global archive and every
+        affected per-session archive are rewritten atomically; each merge is
+        appended to dedupe_log.jsonl and a marker keeps the migration
+        idempotent.
+        """
+        try:
+            EVENT_ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            marker = EVENT_ARCHIVE_DIR / "dedupe_v1.done"
+            if not force and marker.exists():
+                return 0
+            if not EVENT_ARCHIVE_PATH.exists():
+                return 0
+            rows, raw_keep = [], []
+            for line in EVENT_ARCHIVE_PATH.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    raw_keep.append(line)
+                    continue
+                (rows if isinstance(obj, dict) else raw_keep).append(obj)
+        except Exception:
+            return 0
+
+        def _score(row):
+            status = str(row.get("summary_status") or "").lower()
+            score = {"llm": 2.0, "edited": 1.5, "fallback": 0.5}.get(status, 0.0)
+            try:
+                score += float(row.get("importance", 0) or 0) * 0.5
+            except Exception:
+                pass
+            if isinstance(row.get("summary_history"), list) and row.get("summary_history"):
+                score += 0.20
+            if row.get("event_embedding"):
+                score += 0.10
+            if isinstance(row.get("time_span"), dict):
+                score += 0.10
+            try:
+                score += float(row.get("summary_updated_ts", 0) or 0) * 1e-9
+            except Exception:
+                pass
+            try:
+                score += float(row.get("ts", 0) or 0) * 1e-10
+            except Exception:
+                pass
+            return score
+
+        def _merge_into(rich, poor):
+            try:
+                src = [str(x) for x in (rich.get("source_texts") or []) if str(x)]
+                for text in [str(x) for x in (poor.get("source_texts") or []) if str(x)]:
+                    if text not in src:
+                        src.append(text)
+                rich["source_texts"] = src[-24:]
+            except Exception:
+                pass
+            for key in ("importance", "centrality", "recall_count", "strength",
+                        "confidence", "source_count", "last_recall"):
+                try:
+                    rich[key] = max(float(rich.get(key, 0) or 0),
+                                    float(poor.get(key, 0) or 0))
+                except Exception:
+                    continue
+            try:
+                hist = []
+                for item in (list(poor.get("summary_history") or [])
+                             + list(rich.get("summary_history") or [])):
+                    if isinstance(item, dict) and item not in hist:
+                        hist.append(item)
+                if hist:
+                    rich["summary_history"] = hist[:EVENT_SUMMARY_HISTORY_MAX]
+            except Exception:
+                pass
+            try:
+                merged = [str(x) for x in (rich.get("merged_event_keys") or [])]
+                for item in (poor.get("merged_event_keys") or []):
+                    if str(item) and str(item) not in merged:
+                        merged.append(str(item))
+                poor_key = str(poor.get("event_key") or "")
+                if poor_key and poor_key not in merged:
+                    merged.append(poor_key)
+                if merged:
+                    rich["merged_event_keys"] = merged[:12]
+            except Exception:
+                pass
+            try:
+                prov = dict(rich.get("provenance") or {})
+                sources = [x for x in (prov.get("sources") or [])
+                           if isinstance(x, dict)][-24:]
+                for item in ((poor.get("provenance") or {}).get("sources") or []):
+                    if isinstance(item, dict) and item not in sources:
+                        sources.append(item)
+                prov["sources"] = sources[-24:]
+                refs = [str(x) for x in (prov.get("message_refs") or []) if str(x)]
+                for ref in ((poor.get("provenance") or {}).get("message_refs") or []):
+                    ref = str(ref or "")
+                    if ref and ref not in refs:
+                        refs.append(ref)
+                if refs:
+                    prov["message_refs"] = refs[:12]
+                rich["provenance"] = prov
+            except Exception:
+                pass
+            try:
+                rich["merge_count"] = int(rich.get("merge_count", 0) or 0) + 1
+                merged_from = [str(x) for x in (rich.get("merged_from") or [])]
+                poor_id = str(poor.get("id") or "")
+                if poor_id and poor_id not in merged_from:
+                    merged_from.append(poor_id)
+                if merged_from:
+                    rich["merged_from"] = merged_from[-8:]
+            except Exception:
+                pass
+
+        kept, dropped_ids, dropped_sessions, log_rows = [], set(), set(), []
+        for row in rows:
+            session = canonical_session_key(row.get("session"))
+            row_id = str(row.get("id") or "")
+            if not session or not row_id:
+                kept.append(row)
+                continue
+            # Requirement: group events (the 664198103 test group and other
+            # group chats) are out of scope for this private-session migration.
+            if ":GroupMessage:" in session or ":GuildMessage:" in session:
+                kept.append(row)
+                continue
+            current = None
+            for prev in kept:
+                if canonical_session_key(prev.get("session")) != session:
+                    continue
+                if self._event_pair_duplicate(row, prev):
+                    current = prev
+                    break
+            if current is None:
+                kept.append(row)
+                continue
+            keep_new = _score(row) > _score(current)
+            rich = row if keep_new else current
+            poor = current if keep_new else row
+            rich_id = str(rich.get("id") or "")
+            poor_id = str(poor.get("id") or "")
+            if not rich_id or not poor_id:
+                kept.append(row)
+                continue
+            try:
+                gap_seconds = round(abs(event_effective_time(rich)
+                                        - event_effective_time(poor)), 3)
+            except Exception:
+                gap_seconds = 0.0
+            _merge_into(rich, poor)
+            if keep_new:
+                try:
+                    kept[kept.index(current)] = row
+                except Exception:
+                    kept.append(row)
+            dropped_ids.add(poor_id)
+            dropped_sessions.add(canonical_session_key(poor.get("session")))
+            log_rows.append({
+                "ts": round(time.time(), 3),
+                "action": "dedupe_merge",
+                "reason": "canonical_cross_key_duplicate",
+                "session": session,
+                "kept_id": rich_id,
+                "kept_title": str(rich.get("title") or "")[:80],
+                "dropped_id": poor_id,
+                "dropped_title": str(poor.get("title") or "")[:80],
+                "dropped_sessions": sorted({str(poor.get("session") or ""),
+                                            str(rich.get("session") or "")}),
+                "gap_seconds": gap_seconds,
+                "merged_importance": rich.get("importance"),
+                "merged_source_texts": len(rich.get("source_texts") or []),
+            })
+        if not dropped_ids:
+            try:
+                marker.write_text(str(time.time()), encoding="utf-8")
+            except Exception:
+                pass
+            return 0
+        removed = 0
+        try:
+            out = [json.dumps(r, ensure_ascii=False) for r in rows
+                   if str(r.get("id") or "") not in dropped_ids]
+            out += raw_keep
+            tmp = EVENT_ARCHIVE_PATH.with_name(
+                EVENT_ARCHIVE_PATH.name + ".tmp_%s_%s" % (
+                    os.getpid(), int(time.time() * 1000)))
+            tmp.write_text("\n".join(out) + ("\n" if out else ""), encoding="utf-8")
+            os.replace(tmp, EVENT_ARCHIVE_PATH)
+            removed = len(dropped_ids)
+        except Exception as exc:
+            logger.warning("[biocore] dedupe global rewrite failed: %s", exc)
+            return 0
+        # ":" and "_" variants sanitize to the same per-session file name.
+        for session in dropped_sessions:
+            if not session:
+                continue
+            try:
+                safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                               for c in session)[:80]
+                self._drop_ids_from_jsonl(EVENT_SESSION_DIR / safe / "events.jsonl",
+                                          dropped_ids)
+            except Exception:
+                continue
+        try:
+            with open(EVENT_ARCHIVE_DIR / "dedupe_log.jsonl", "a",
+                      encoding="utf-8") as log:
+                for entry in log_rows:
+                    log.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        try:
+            marker.write_text(str(time.time()), encoding="utf-8")
+        except Exception:
+            pass
+        logger.info("[biocore] canonical duplicate cleanup removed %s event(s)",
+                    removed)
+        return removed
+
     def _persist_peripheral_forgetting(self, events) -> None:
         """Persist periphery forgetting to both archive layers.
 
@@ -4097,6 +4458,17 @@ class BioCorePlugin(Star):
                 "gap_seconds": round(gap, 3), "similarity": round(sim, 3)}
 
     @staticmethod
+    def _text_similarity(a: str, b: str) -> float:
+        """Bigram Jaccard similarity shared by archive/dedupe paths (task-56).
+
+        BioCore keeps its own copy for the state machine; the plugin-level
+        archive code calls this through ``self`` so duplicate detection and
+        event boundary scoring actually run instead of raising AttributeError
+        inside the surrounding try/except.
+        """
+        return BioCore._text_similarity(a, b)
+
+    @staticmethod
     def _normalize_event_key(key: str, title: str = "") -> str:
         """Normalize event identity: NFKC, lowercase, punctuation/joiners removed."""
         import unicodedata
@@ -4143,7 +4515,9 @@ class BioCorePlugin(Star):
                 if not prev_key:
                     continue
                 try:
-                    gap = abs(float(ts) - float(prev.get("ts", 0) or 0))
+                    # task-56: compare against the real event time so a
+                    # re-archived row is not treated as a new event.
+                    gap = abs(float(ts) - event_effective_time(prev))
                 except Exception:
                     gap = 0.0
                 if gap > EVENT_DUP_WINDOW_SECONDS:
@@ -4154,6 +4528,32 @@ class BioCorePlugin(Star):
                     body_sim = self._text_similarity(str(body or ""), str(prev.get("event") or ""))
                     if body_sim >= 0.45:
                         return prev
+            # task-57: the same real session may be archived under ":" and "_"
+            # variants; compare canonical keys across the archive too.
+            target_session = canonical_session_key(session)
+            try:
+                _event_key = self._normalize_event_key(str(event_key or ""), "")
+            except Exception:
+                _event_key = str(event_key or "")
+            for prev in self._event_archive(200):
+                if canonical_session_key(prev.get("session")) != target_session:
+                    continue
+                try:
+                    gap = abs(float(ts) - event_effective_time(prev))
+                except Exception:
+                    gap = 0.0
+                if gap > EVENT_DUP_WINDOW_SECONDS:
+                    continue
+                prev_key = self._normalize_event_key(
+                    str(prev.get("event_key") or prev.get("title") or ""),
+                    str(prev.get("title") or ""))
+                if prev_key and prev_key == _event_key:
+                    return prev
+                if prev_key and self._text_similarity(prev_key, _event_key) >= EVENT_KEY_SIM_THRESHOLD:
+                    if self._text_similarity(str(body or ""), str(prev.get("event") or "")) >= 0.45:
+                        return prev
+                if self._text_similarity(str(body or ""), str(prev.get("event") or "")) >= 0.60:
+                    return prev
         except Exception:
             pass
         return None
@@ -4178,7 +4578,7 @@ class BioCorePlugin(Star):
                 if not prev_key:
                     continue
                 try:
-                    gap = abs(float(ts) - float(prev.get("ts", 0) or 0))
+                    gap = abs(float(ts) - event_effective_time(prev))
                 except Exception:
                     gap = 0.0
                 if gap > EVENT_DUP_WINDOW_SECONDS:
@@ -4330,8 +4730,16 @@ class BioCorePlugin(Star):
                 prov = self._event_provenance(event, entries, ts=now)
                 check = self._source_check(body, [str(t) for t in seg_entries],
                                            provenance=prov, record_ts=now)
+                # task-56: duplicate detection compares the real message time
+                # (time_span end), not the archival moment, so a delayed
+                # re-archive of the same conversation still dedupes.
+                try:
+                    _real_ts = max(float(e.get("ts", 0) or 0) for e in seg_entries
+                                   if float(e.get("ts", 0) or 0) > 0)
+                except Exception:
+                    _real_ts = now
                 dup = self._find_any_duplicate_event(
-                    str(getattr(event, "unified_msg_origin", "") or ""), _ekey, body, now)
+                    str(getattr(event, "unified_msg_origin", "") or ""), _ekey, body, _real_ts)
                 if dup is not None:
                     continue
                 _imp = round(max(0.55, min(1.0, imp * 0.7 + score * 0.3)), 3)

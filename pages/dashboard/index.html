@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261026-0016" />
+<link rel="stylesheet" href="./styles.css?v=20261026-0051" />
 </head>
 <body>
 <div class="shell">
@@ -470,6 +470,7 @@
         <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>默认只显示“事件总结球”：已归档的重要事件（如“深夜表白澄清”），通常只有一个；记忆经过巩固/总结后才会追加记忆球（最多 10 个）；普通每轮闲聊不成球。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
         <div class="setting-row"><div><b>只显示重要记忆球</b><small>默认开启：只有重要度≥0.60 或“自指记忆”才成球（普通闲聊/低重要度记忆不成球）；关闭后最多显示 10 条记忆球。</small></div><label class="switch"><input type="checkbox" id="swMemoryBallsImportant" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪强度环</b><small>球体外的虚线环数量随情绪强度（arousal + |valence| + 控制感偏离）变化，1–4 圈；越强圈越多。</small></div><label class="switch"><input type="checkbox" id="swShowEmotionRings" checked><span></span></label></div>
+        <div class="setting-row"><div><b>记忆球次情绪环样式</b><small>实线圆=完整实线圆+旋转高光弧；3D 轨道=倾斜椭圆轨道（透视/慢转）。只影响本地显示，刷新后保留。</small></div><select id="selMemoryRingStyle"><option value="solid">实线圆</option><option value="orbit">3D 椭圆轨道</option></select></div>
         <div class="setting-row"><div><b>恢复默认显示</b><small>清除本地可视化开关缓存并刷新页面（不影响后端数据）。</small></div><button type="button" class="btn mini" id="resetVisualBtn">恢复默认显示</button></div>
         <div class="setting-row"><div><b>外层环</b><small>围绕球体自主运转的环，速度来自 echo / echo_trace。</small></div><label class="switch"><input type="checkbox" id="swShowEcho" checked><span></span></label></div>
         <div class="setting-row"><div><b>外层环 02</b><small>第二条反向环，倾角和速度独立。</small></div><label class="switch"><input type="checkbox" id="swShowRipple" checked><span></span></label></div>
@@ -501,5 +502,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261026-0016"></script><script src="./app.js?v=20261026-0016"></script><script src="./orb.js?v=20261026-0016"></script>
+<script src="./orb_math.js?v=20261026-0051"></script><script src="./app.js?v=20261026-0051"></script><script src="./orb.js?v=20261026-0051"></script>
 </body></html>

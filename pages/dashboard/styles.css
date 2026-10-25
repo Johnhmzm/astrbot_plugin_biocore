@@ -134,6 +134,10 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .telemetry-strip span{font-size:8px;letter-spacing:.16em;color:var(--faint);text-transform:uppercase;flex:0 0 auto}
 .telemetry-strip b{font-size:10px;letter-spacing:.08em;font-weight:600;color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hero{overflow:hidden;padding-right:54px}
+/* task-54: focused panel layout: stretch so the single inner scroll container
+   (.hero-memory) gets a real height instead of being clipped by .hero. */
+.hero.hero-focus{align-items:stretch}
+.hero.hero-focus .hero-copy{min-height:0}
 .hero-index{position:absolute;right:12px;top:-14px;font-size:112px;line-height:1;font-weight:700;letter-spacing:-.06em;color:rgba(20,20,20,.045);pointer-events:none}
 .hero-side{position:absolute;right:14px;top:50%;transform:translateY(-50%) rotate(180deg);writing-mode:vertical-rl;font-size:8px;letter-spacing:.24em;color:var(--faint);text-transform:uppercase}
 .hero-rail{position:absolute;left:7px;top:44px;bottom:30px;width:5px;background:repeating-linear-gradient(180deg,var(--line) 0 1px,transparent 1px 9px)}
@@ -467,7 +471,7 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .memory-card-head{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin-bottom:6px}
 .memory-card-head b{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .memory-level-tag{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent2);border:1px solid var(--line);padding:1px 5px;white-space:nowrap}
-.memory-event-text{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;margin:4px 0 8px;font-size:11px;line-height:1.6;color:var(--ink);word-break:break-word}
+.memory-event-text{display:block;overflow:visible;margin:4px 0 8px;font-size:11px;line-height:1.6;color:var(--ink);word-break:break-word;overflow-wrap:anywhere;white-space:pre-wrap}
 /* task-53: session event card: small summary + labelled/status big summary */
 .memory-event-small{display:flex;gap:6px;align-items:baseline;margin:4px 0 6px;font-size:10px;line-height:1.5;color:var(--muted);word-break:break-word}
 .memory-event-small>small{flex:none;font-size:9px;letter-spacing:.1em;color:var(--accent2)}
@@ -593,7 +597,7 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .orb-focus-exit:hover,.orb-focus-exit:focus-visible{color:var(--accent2);border-color:var(--accent2);outline:none}
 .orb-focus-exit[hidden]{display:none}
 /* task-45: focused memory summary replaces the left CURRENT EMOTION block */
-.hero-memory{display:flex;flex-direction:column;gap:5px;width:100%;max-width:100%;min-width:0;padding-right:2px;box-sizing:border-box;overflow-wrap:anywhere;word-break:break-word}
+.hero-memory{display:flex;flex-direction:column;gap:5px;width:100%;max-width:100%;min-width:0;max-height:min(68vh,560px);overflow-y:auto;overflow-x:hidden;padding-right:2px;box-sizing:border-box;overflow-wrap:anywhere;word-break:break-word}
 .hero-memory .eyebrow{font-size:9px;letter-spacing:.14em;color:var(--accent2)}
 .hero-memory h2{margin:0;max-width:100%;min-width:0;font-size:clamp(15px,2vw,21px);line-height:1.25;overflow-wrap:anywhere;word-break:break-word}
 .hero-mem-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px 10px;max-width:100%;min-width:0;font-size:10px;color:var(--muted)}
@@ -794,4 +798,14 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .btn:disabled{opacity:.42;cursor:not-allowed;filter:grayscale(.35)}
 .btn:disabled:hover{background:var(--panel);color:var(--ink)}
 @media(max-width:640px){.insight-card-actions{align-items:flex-start}}
-
+/* task-55/57/58: session cards, inline summary editor and session/emotion tags */
+.memory-card-ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:2px 0 8px}
+.sess-card-msg{font-size:10px;color:var(--muted)}
+.sess-card-msg.is-error{color:var(--danger)}
+.memory-card-edit{display:flex;flex-direction:column;gap:6px;margin:4px 0 8px}
+.memory-edit-field{display:flex;flex-direction:column;gap:2px}
+.memory-edit-field small{font-size:9px;letter-spacing:.1em;color:var(--faint)}
+.memory-edit-field input[type="text"],.memory-edit-field textarea{width:100%;box-sizing:border-box;padding:5px 6px;font:11px/1.5 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:4px;resize:vertical}
+.mem-session-tag,.mem-emo-tag{font-size:9px;line-height:1.5;padding:0 5px;border:1px solid var(--line);border-radius:999px;color:var(--muted);white-space:nowrap}
+.mem-session-tag{color:var(--accent2);border-color:var(--accent2)}
+.mem-emo-tag{color:var(--muted)}
