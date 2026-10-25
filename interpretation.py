@@ -228,6 +228,29 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
             cp += " bored"
     except Exception:
         pass
+    try:
+        _alert = float(getattr(core, "circadian_alertness", 0.5) or 0.5)
+        if _alert <= 0.33:
+            cp += " alert=low"
+        elif _alert >= 0.80:
+            cp += " alert=high"
+    except Exception:
+        pass
+    try:
+        if float(getattr(core, "allostatic_load", 0.0) or 0.0) >= 0.6:
+            cp += " load=high"
+    except Exception:
+        pass
+    try:
+        _trace = getattr(core, "_last_memory_trace", None)
+        if isinstance(_trace, dict):
+            _tv = float(_trace.get("valence", 0.0) or 0.0)
+            if _tv >= 0.3:
+                cp += " mtrace=warm"
+            elif _tv <= -0.3:
+                cp += " mtrace=heavy"
+    except Exception:
+        pass
     mb = memory_block(memory) if isinstance(memory, (list, tuple)) else str(memory or "")[:220]
     eb = event_block(events) if isinstance(events, (list, tuple)) else str(events or "")[:220]
     sb = self_block(self_model)

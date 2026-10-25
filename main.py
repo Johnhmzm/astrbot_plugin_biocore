@@ -478,6 +478,25 @@ EMOTION_SPECTRUM = [
     ("pride", "自豪", 0.60, 0.50, 0.90, 0.60),
 ]
 
+def circadian_alertness(hour: Any) -> float:
+    """Deterministic local-hour alertness (0..1); no LLM/network."""
+    try:
+        h = float(hour) % 24.0
+    except Exception:
+        h = 12.0
+    anchors = ((0.0, 0.25), (3.0, 0.20), (6.0, 0.35), (8.0, 0.85),
+               (10.0, 0.95), (13.0, 0.78), (15.0, 0.72), (17.0, 0.88),
+               (20.0, 0.70), (23.0, 0.45), (24.0, 0.25))
+    for i in range(1, len(anchors)):
+        if h <= anchors[i][0]:
+            x0, y0 = anchors[i - 1]
+            x1, y1 = anchors[i]
+            if x1 <= x0:
+                return round(y1, 3)
+            return round(y0 + (y1 - y0) * (h - x0) / (x1 - x0), 3)
+    return 0.25
+
+
 class BioCore:
     @staticmethod
     def _word_hit(text: str, word: str) -> bool:
@@ -537,6 +556,10 @@ class BioCore:
         self.refusal_readiness = 0.0
         # B-T09: interpersonal coupling (co-regulation proxy, not "being dragged").
         self.interpersonal = {"other_valence_est": 0.0, "coupling": 0.0, "dampening": 1.0}
+        # Circadian / allostatic paper mechanisms (bounded, no prompt).
+        self.circadian_alertness = circadian_alertness(
+            time.localtime(time.time()).tm_hour + time.localtime(time.time()).tm_min / 60.0)
+        self.allostatic_load = 0.0
         # B-T12: deterministic daily digest base (no narrative text).
         self.daily_digests = []
         self._daily_accum = {"date": "", "n": 0, "v": 0.0, "a": 0.0, "stress": 0.0,
@@ -1556,6 +1579,11 @@ class BioCore:
         self.a = _clip(0.40 + (self.a - 0.40) * factor(self.arousal_decay_minutes * max(0.5, _ef)), 0, 1)
         self.d = _clip(0.55 + (self.d - 0.55) * factor(self.valence_decay_minutes * _ef), -1, 1)
         self.social = _clip(0.55 + (self.social - 0.55) * factor(self.social_decay_minutes * _ef), 0, 1)
+        try:
+            self._apply_circadian_effects()
+            self._update_allostatic_load()
+        except Exception:
+            pass
         self._derive()
 
     def record_reply(self, text: str = "", meta=None) -> None:
@@ -1576,6 +1604,37 @@ class BioCore:
                 self.history = self.history[-80:]
         except Exception:
             pass
+
+    def _apply_circadian_effects(self, alert=None, now=None) -> float:
+        """Small attention/energy modulation from local-hour alertness."""
+        try:
+            if alert is None:
+                current = time.localtime(time.time() if now is None else now)
+                alert = circadian_alertness(current.tm_hour + current.tm_min / 60.0)
+            alert = max(0.0, min(1.0, float(alert)))
+            self.circadian_alertness = round(alert, 3)
+            delta = 0.01 * (alert - 0.5)
+            self.energy = _clip(self.energy + delta, 0.0, 1.0)
+            self.attention = _clip(self.attention + delta * 0.5, 0.0, 1.0)
+            return alert
+        except Exception:
+            return 0.5
+
+    def _update_allostatic_load(self) -> float:
+        """Slow allostatic accumulation/recovery; bounded, tiny stress offset."""
+        try:
+            stress = _clip(self.stress, 0.0, 1.0)
+            if stress > 0.55:
+                self.allostatic_load = _clip(
+                    self.allostatic_load + 0.01 * (stress - 0.55) * (1.0 - self.allostatic_load), 0.0, 1.0)
+            else:
+                self.allostatic_load = _clip(
+                    self.allostatic_load - 0.004 * (0.55 - stress), 0.0, 1.0)
+            if self.allostatic_load > 0:
+                self.stress = _clip(self.stress + 0.005 * self.allostatic_load, 0.0, 1.0)
+            return float(self.allostatic_load)
+        except Exception:
+            return 0.0
 
     def update_daily_digest(self, now=None, event_ids=None) -> dict:
         """Deterministic daily digest base; no narrative/LLM. Bounded to 30 days."""
@@ -1653,6 +1712,8 @@ class BioCore:
                 "attention": round(float(self.attention), 3),
                 "novelty_need": round(float(getattr(self, "novelty_need", 0.5)), 3),
                 "boredom": round(float(getattr(self, "boredom", 0.0)), 3),
+                "circadian_alertness": round(float(getattr(self, "circadian_alertness", 0.5)), 3),
+                "allostatic_load": round(float(getattr(self, "allostatic_load", 0.0)), 3),
                 "boundary_pressure": round(float(getattr(self, "boundary_pressure", 0.0)), 3),
                 "refusal_readiness": round(float(getattr(self, "refusal_readiness", 0.0)), 3),
                 "interpersonal": {k: round(float(v), 4) for k, v in (getattr(self, "interpersonal", {}) or {}).items()},
@@ -1679,7 +1740,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.60")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.61")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -4618,6 +4679,7 @@ class BioCorePlugin(Star):
             "memory_index": _memory_index_rows(MEMORY_DIR),
             "relationships": _relationship_rows(USER_DIR),
             "last_memory_meta": dict(getattr(self, "_last_memory_meta", {}) or {}),
+            "last_memory_trace": dict(getattr(self, "_last_memory_trace", {}) or {}),
             # L-T02/L-T03..L-T12 read-only runtime surface (bounded, no prompt text)
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
@@ -5142,7 +5204,17 @@ class BioCorePlugin(Star):
         parts = self._memory_score_parts(
             core, entry, cosine, query_text=query_text,
             hybrid=hybrid, sensitive_protect=sensitive_protect)
-        return float(parts.get("score", 0.0))
+        score = float(parts.get("score", 0.0))
+        try:
+            trace = getattr(core, "_last_memory_trace", None) if core is not None else None
+            if isinstance(trace, dict):
+                eid = str(entry.get("id") or "")
+                if eid and eid in [str(x) for x in (trace.get("entry_ids") or [])]:
+                    valence = max(-1.0, min(1.0, float(trace.get("valence", 0.0) or 0.0)))
+                    score *= 1.0 + 0.04 * valence
+        except Exception:
+            pass
+        return max(0.0, score)
 
     def _memory_top_k(self, core) -> int:
         k = 4
@@ -5643,6 +5715,54 @@ class BioCorePlugin(Star):
         except Exception:
             return []
 
+    def _apply_memory_trace(self, core, entries) -> dict:
+        """Bounded memory-trace -> body nudge from recalled entries; trace read-only."""
+        if core is None:
+            return {}
+        selected = [e for e in (entries or []) if isinstance(e, dict)][:8]
+        if not selected:
+            return {}
+        total_w = 0.0
+        val_sum = 0.0
+        loop_count = 0
+        ids = []
+        for entry in selected:
+            try:
+                imp = max(0.05, min(1.0, float(entry.get("importance", 0.5) or 0.5)))
+            except Exception:
+                imp = 0.5
+            try:
+                val = float(entry.get("encoding_valence", entry.get("valence", 0.0)) or 0.0)
+            except Exception:
+                val = 0.0
+            val = max(-1.0, min(1.0, val))
+            val_sum += val * imp
+            total_w += imp
+            try:
+                loop_count += max(0, int(entry.get("open_loop", 0) or 0))
+            except Exception:
+                pass
+            eid = str(entry.get("id") or "")[:20]
+            if eid:
+                ids.append(eid)
+        avg_val = (val_sum / total_w) if total_w > 0 else 0.0
+        v_delta = max(-0.05, min(0.05, 0.05 * avg_val))
+        stress_delta = max(-0.02, min(0.05, 0.005 * abs(avg_val) + 0.01 * min(3, loop_count)))
+        try:
+            core.v = _clip(float(core.v) + v_delta, -1.0, 1.0)
+            core.stress = _clip(float(core.stress) + stress_delta, 0.0, 1.0)
+        except Exception:
+            pass
+        trace = {"count": len(selected), "valence": round(avg_val, 3),
+                 "stress_delta": round(stress_delta, 4),
+                 "entry_ids": ids[:8], "ts": round(time.time(), 3)}
+        self._last_memory_trace = trace
+        try:
+            core._last_memory_trace = trace
+        except Exception:
+            pass
+        return trace
+
     async def _memory_recall(self, event, text: str, core=None, extra: str = "", vec=None, voice: str = "") -> str:
         self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown",
                                   "abstain": False, "tiers": {}, "answer_confidence": 0.0,
@@ -5850,6 +5970,10 @@ class BioCorePlugin(Star):
         top = memory_meta.select_top(
             scored, self._memory_top_k(core),
             lambda_=(0.72 if getattr(self, "hybrid_retrieval", True) else 1.0))
+        try:
+            self._apply_memory_trace(core, [e for _s, e in top])
+        except Exception as exc:
+            logger.warning("[biocore] memory trace apply failed: %s", exc)
         # L-T02 / C-T01: auditable retrieval-contribution trace (deterministic,
         # bounded to 8 rows, no text beyond the entry id). This is a trace of
         # ranking factors, not a claim of psychological causation, and it is
@@ -6143,6 +6267,30 @@ class BioCorePlugin(Star):
     # It is injected only when the user returns after A4_CONTINUITY_GAP_SECONDS
     # and at least one of the three sources is non-empty.
     # ------------------------------------------------------------------
+    def _record_continuity_feedback(self, event, continuity) -> None:
+        """Persist A4 continuity usage/feedback into the memory doc (bounded)."""
+        if not isinstance(continuity, dict) or not continuity:
+            return
+        try:
+            doc = self._load_memory(event)
+            loops = continuity.get("open_loops") if isinstance(continuity.get("open_loops"), list) else []
+            doc["last_continuity"] = {
+                "ts": round(time.time(), 3),
+                "summary": str(continuity.get("summary") or "")[:80],
+                "open_loops": [str(x.get("text") or "")[:60] for x in loops[:3] if isinstance(x, dict)],
+                "relationship_used": bool(continuity.get("relationship")),
+            }
+            doc["continuity_feedback_count"] = int(doc.get("continuity_feedback_count", 0) or 0) + 1
+            self._save_memory(event, doc)
+            try:
+                for loop in (getattr(self, "_continuity_last_loops", None) or [])[:3]:
+                    if isinstance(loop, dict):
+                        loop["last_mentioned_ts"] = time.time()
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning("[biocore] continuity feedback write failed: %s", exc)
+
     def _continuity_summary(self, event, core):
         """Return a bounded last-session summary text, or "" when none exists."""
         try:
@@ -6289,6 +6437,10 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] continuity context failed: %s", exc)
             _continuity = {}
+        try:
+            self._record_continuity_feedback(event, _continuity)
+        except Exception:
+            pass
         _img = await self._image_context(event)
         _voice = await self._voice_context(event)
         _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice)
