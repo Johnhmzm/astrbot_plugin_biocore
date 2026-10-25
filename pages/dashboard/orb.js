@@ -1028,33 +1028,33 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
-        // one importance ring: secondary emotion colour. The secondary ring is
-        // one dashed arc slowly rotating around the ball centre; its arc length
-        // is 35% + 65% * importance and its width 1.2 + 1.4 * importance
-        // (task-42). Old data without emotion_secondary keeps a static primary
-        // lightened ring. The central mood ball is drawn separately, so the
-        // centre never spins here.
+        // one importance ring: secondary emotion colour, now a COMPLETE 360
+        // degree circle (task-50): the 35%+65%*importance arc looked like a
+        // missing piece. Importance is expressed by line width
+        // (1.2 + 1.4 * importance) instead; slow dash rotation is kept.
+        // Old data without emotion_secondary keeps a static primary-lightened
+        // full ring. The central mood ball never spins here.
         const ringBase = size + 4.2;
         const ringAlpha = clamp(Math.max(0, (.28 + .40 * b.imp)) * depthK * dimK);
         const ringWidth = 1.2 + 1.4 * b.imp;
-        const arcLen = Math.PI * 2 * (0.35 + 0.65 * b.imp);
+        const fullTurn = Math.PI * 2;
         ctx.save();
         ctx.globalAlpha = ringAlpha;
         if (_secHsl) {
-          const spin = phase * 1.15;              // slow: about one turn per 15s
+          const spin = phase * 1.15;              // slow dash travel, full circle
           ctx.setLineDash([3.2, 4.8]);
           ctx.lineDashOffset = -phase * 6.0;
           ctx.beginPath();
-          ctx.arc(b.x, b.y, ringBase, spin, spin + arcLen);
+          ctx.arc(b.x, b.y, ringBase, spin, spin + fullTurn);
           ctx.strokeStyle = ringFill;
           ctx.lineWidth = ringWidth;
           ctx.stroke();
           ctx.setLineDash([]);
         } else {
-          // old data/no-secondary fallback: same arc/width geometry, primary
-          // colour lightened one step; no rotation because no secondary channel.
+          // old data/no-secondary fallback: primary colour lightened one step,
+          // same full-circle/width geometry, no rotation (no secondary channel).
           const start = -Math.PI / 2;
-          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, start, start + arcLen);
+          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, start, start + fullTurn);
           ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," +
             primaryRingHsl.s.toFixed(0) + "%," +
             Math.min(72, primaryRingHsl.l + 12).toFixed(0) + "%,.55)";
