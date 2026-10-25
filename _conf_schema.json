@@ -23,12 +23,6 @@
     "type": "bool",
     "default": true
   },
-  "sensitive_memory_protection": {
-    "description": "敏感记忆保护",
-    "hint": "默认开启。自动识别手机号/证件/银行卡/邮箱/密码等敏感内容，召回时以 ••• 掩码交给模型，且敏感记忆不跨会话共享。",
-    "type": "bool",
-    "default": true
-  },
   "hybrid_retrieval": {
     "description": "混合检索（词法 + MMR）",
     "hint": "默认开启。embedding 余弦之外加入字符二元组词法分，并用 MMR 降低近重复记忆占位；关闭则只用余弦。",
@@ -52,12 +46,6 @@
     "hint": "默认开启。只允许事件总结/记忆总结调用 LLM；人格数值编译、事件排序抽取、长期模式洞察、图片描述都不再额外调用 LLM（用确定性回退）。关闭后恢复全部 LLM 能力。",
     "type": "bool",
     "default": true
-  },
-  "cross_session_memory": {
-    "description": "跨会话记忆（谨慎开启）",
-    "hint": "默认关闭。开启后同一发送者在其他会话的记忆可在当前会话被召回，并标注“其他会话”；仅按发送者隔离，群聊场景请确认隐私边界后再开。",
-    "type": "bool",
-    "default": false
   },
   "kb_enabled": {
     "description": "启用 AstrBot 知识库",

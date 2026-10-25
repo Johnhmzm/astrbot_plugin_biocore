@@ -981,24 +981,9 @@
       }
     });
   }
-  bindBehaviorToggle("swSensitiveMemory","sensitive_memory_protection");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
   bindBehaviorToggle("swLlmOnlyReplySummary","llm_only_reply_summary");
-  const swCrossSession=$("swCrossSession");
-  if(swCrossSession) swCrossSession.addEventListener("change",async e=>{
-    const val=!!e.target.checked;
-    if(!bridge){ e.target.checked=!val; if(window.alert) window.alert("静态预览模式无法保存设置，请从 AstrBot 插件视图打开。"); return; }
-    try{
-      const raw=await bridge.apiPost("page/toggle",{key:"cross_session_memory",value:val});
-      const payload=raw&&raw.data?raw.data:raw;
-      if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
-      if(data) data.cross_session_memory=val;
-    }catch(err){
-      e.target.checked=!val;
-      if(window.alert) window.alert("跨会话记忆设置保存失败："+String(err&&err.message||err));
-    }
-  });
   const personaSel=$("personaSelect");
   if(personaSel) personaSel.addEventListener("change",async e=>{
     const val=String(e.target.value||"");
@@ -1092,10 +1077,6 @@
     const comp = cfg.compression || {};
     const swc = $("swCompress"), th = $("compressThreshold"), mx = $("compressMax");
     if (swc) swc.checked = !!comp.enabled;
-    const swCross = $("swCrossSession");
-    if (swCross) swCross.checked = !!data.cross_session_memory;
-    const swSensitive = $("swSensitiveMemory");
-    if (swSensitive) swSensitive.checked = data.sensitive_memory_protection !== false;
     const swHybrid = $("swHybridRetrieval");
     if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
     const swLlmCand = $("swLlmCandidates");
@@ -1479,7 +1460,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.53";
+  const BIO_VERSION = "v1.2.54";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
