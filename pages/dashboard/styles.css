@@ -650,10 +650,8 @@ input[type=range]{width:180px;accent-color:var(--accent)}
   .hero-mem-actions .btn{min-height:30px;font-size:11px}
   .hero-mem-history-item p{font-size:11px}
 }
-/* task-50/62: themed scrollbars for the focus panel only (scoped, not global).
-   8px wide; the thumb uses an EXPLICIT rgba horizontal fade so it stays
-   visible even where color-mix() is unsupported; Firefox keeps a solid
-   scrollbar-color fallback. */
+/* task-50/62: focus-panel-only scrollbar: 8px, explicit rgba fade thumb,
+   Firefox keeps a solid scrollbar-color fallback. */
 .hero-memory,
 .hero-mem-big,
 .hero-mem-big p,
@@ -824,3 +822,6 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .rel-event-imp{font-size:9px;color:var(--accent2);white-space:nowrap;padding:0 5px;border:1px solid var(--line);border-radius:999px}
 .rel-event-small{grid-column:1/-1;margin:0;font-size:10px;line-height:1.5;color:var(--muted);word-break:break-word;overflow-wrap:anywhere}
 @media (max-width:640px){.rel-event-row{grid-template-columns:1fr}.rel-event-ts,.rel-event-imp{grid-row:auto}}
+/* task-64: hidden/composite emotion layer line (does not replace main/secondary) */
+.mem-emotion-nuance{margin:2px 0 6px;font-size:10px;line-height:1.5;color:var(--muted);word-break:break-word}
+.hero-mem-nuance p{font-size:11px;color:var(--muted)}

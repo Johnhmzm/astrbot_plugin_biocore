@@ -1935,7 +1935,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.89")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.90")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3098,6 +3098,57 @@ class BioCorePlugin(Star):
             pass
         return ""
 
+    def _event_emotion_layers(self, core) -> list:
+        """Emotion layers snapshot for the memory-ball rings (task-65).
+
+        Top-4 EMOTION_SPECTRUM probabilities including the primary emotion,
+        normalized to sum 1: [{"emotion": key, "p": weight}, ...]. The field
+        is stored once with the archive record, so a later regenerate does not
+        rewrite the historical layers. No spectrum data -> [] (rings then use
+        the old secondary/inferred fallback; nothing is fabricated).
+        """
+        try:
+            if core is None:
+                return []
+            probs = core._spectrum_probs() if callable(getattr(core, "_spectrum_probs", None)) else []
+            rows = []
+            for item in (probs or []):
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key") or "").strip().lower()[:32]
+                if not key:
+                    continue
+                try:
+                    weight = float(item.get("p", 0) or 0)
+                except Exception:
+                    weight = 0.0
+                if weight <= 0:
+                    continue
+                rows.append((key, weight))
+            primary = str((getattr(core, "labels", {}) or {}).get("emotion") or "").strip().lower()
+            if not rows:
+                return [{"emotion": primary, "p": 1.0}] if primary else []
+            merged = {}
+            for key, weight in rows:
+                merged[key] = merged.get(key, 0.0) + weight
+            ordered = sorted(merged.items(), key=lambda pair: pair[1], reverse=True)[:4]
+            picked = [{"emotion": key, "p": weight} for key, weight in ordered]
+            if primary and primary not in [x["emotion"] for x in picked]:
+                # The primary emotion must be part of the snapshot even when its
+                # spectrum probability is missing/zero; give it a minimal weight
+                # so normalization keeps it at the tail.
+                picked = picked[:3] + [{"emotion": primary,
+                                       "p": max(0.01, merged.get(primary, 0.0))}]
+            total = sum(x["p"] for x in picked)
+            if total <= 0:
+                return []
+            out = [{"emotion": x["emotion"], "p": round(x["p"] / total, 4)}
+                   for x in picked if x["p"] > 0]
+            out.sort(key=lambda x: x["p"], reverse=True)
+            return out
+        except Exception:
+            return []
+
     def _event_secondary_for_record(self, record) -> str:
         """Secondary emotion for an archived event, from its session core.
 
@@ -3142,6 +3193,19 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] event secondary lookup failed: %s", exc)
         return ""
+
+    @staticmethod
+    def _normalize_emotion_nuance(value) -> list:
+        """Hidden/composite emotion layer from event_summary (task-64).
+
+        Delegates to the interpretation-layer cleaner: max 3 short Chinese
+        labels, deduped, empties dropped. Unknown/garbage input returns [] so
+        the deterministic fallback never fabricates a nuance layer.
+        """
+        try:
+            return interpretation.clean_emotion_nuance(value, 3)
+        except Exception:
+            return []
 
     def _mask_if_safety(self, text) -> str:
         value = str(text or "")
@@ -3502,6 +3566,7 @@ class BioCorePlugin(Star):
         now = time.time()
         big = small = ""
         new_title = ""
+        nuance = []
         status = "fallback"
         llm_ok = False
         try:
@@ -3530,6 +3595,8 @@ class BioCorePlugin(Star):
                             str(llm_small or llm_big))[:EVENT_SUMMARY_SMALL_MAX]
                         if llm_title:
                             new_title = llm_title[:80]
+                        nuance = interpretation.clean_emotion_nuance(
+                            data.get("emotion_nuance"))
                         llm_ok = True
         except Exception as exc:
             logger.warning("[biocore] event summary regenerate via LLM failed: %s", exc)
@@ -3537,6 +3604,7 @@ class BioCorePlugin(Star):
         if not llm_ok:
             big, small = self._dual_event_summary_fallback(source_text, title)
             status = "fallback"
+            nuance = []   # deterministic fallback never fabricates a nuance layer
         else:
             status = "llm"
         if not new_title:
@@ -3548,6 +3616,7 @@ class BioCorePlugin(Star):
         return {"title": str(new_title or "对话事件")[:80],
                 "big_summary": str(big or "")[:EVENT_SUMMARY_HARD_MAX],
                 "small_summary": str(small or "")[:EVENT_SUMMARY_SMALL_MAX],
+                "emotion_nuance": interpretation.clean_emotion_nuance(nuance),
                 "summary_status": status,
                 "summary_edited": False,
                 "summary_updated_ts": now}
@@ -3607,6 +3676,11 @@ class BioCorePlugin(Star):
         payload = dict({"event_id": event_id, "action": action}, **updates)
         if "emotion_secondary" not in payload and str(saved.get("emotion_secondary") or "").strip():
             payload["emotion_secondary"] = str(saved.get("emotion_secondary") or "").strip()
+        if isinstance(saved.get("emotion_nuance"), list):
+            payload["emotion_nuance"] = list(saved.get("emotion_nuance") or [])[:3]
+        if isinstance(saved.get("emotion_layers"), list):
+            payload["emotion_layers"] = [dict(x) for x in (saved.get("emotion_layers") or [])[:4]
+                                         if isinstance(x, dict)]
         payload["summary_history"] = history if isinstance(history, list) else []
         return {"status": "ok", "data": payload}
 
@@ -4763,6 +4837,8 @@ class BioCorePlugin(Star):
                     "reflection": "",
                     "emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral") if core else "neutral",
                     "emotion_secondary": self._secondary_emotion(core),
+                    "emotion_nuance": [],
+                    "emotion_layers": self._event_emotion_layers(core),
                     "importance": _imp,
                     "appraisal": dict(core.appraisal) if core is not None else {},
                     "confidence": round(max(0.2, min(1.0, 0.55 + 0.45 * float(check.get("overlap", 0)))), 3),
@@ -4865,6 +4941,9 @@ class BioCorePlugin(Star):
                 "reflection": reflection,
                 "emotion": str(core.labels.get("emotion") or "neutral"),
                 "emotion_secondary": self._secondary_emotion(core),
+                "emotion_nuance": self._normalize_emotion_nuance(
+                    data.get("emotion_nuance")),
+                "emotion_layers": self._event_emotion_layers(core),
                 "importance": round(max(0.5, min(1.0, intensity)), 3),
                 "appraisal": dict(core.appraisal),
                 "confidence": _conf,
