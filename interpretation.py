@@ -242,6 +242,28 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
     except Exception:
         pass
     try:
+        _h = getattr(core, "homeostasis", None)
+        if isinstance(_h, dict):
+            _ready = float(_h.get("readiness", 0.6) or 0.6)
+            if _ready <= 0.35:
+                cp += " ready=low"
+            elif _ready >= 0.75:
+                cp += " ready=high"
+            _intero = _h.get("interoception") if isinstance(_h.get("interoception"), dict) else {}
+            _ilabel = str(_intero.get("label") or "")
+            if _ilabel in ("low", "high"):
+                cp += " intero=" + _ilabel
+            _need = _h.get("need_pyramid") if isinstance(_h.get("need_pyramid"), dict) else {}
+            _dom = str(_need.get("dominant") or "")
+            if _dom:
+                cp += " need=" + _dom[:20]
+            _action = _h.get("action") if isinstance(_h.get("action"), dict) else {}
+            _amode = str(_action.get("mode") or "")
+            if _amode:
+                cp += " action=" + _amode[:16]
+    except Exception:
+        pass
+    try:
         _trace = getattr(core, "_last_memory_trace", None)
         if isinstance(_trace, dict):
             _tv = float(_trace.get("valence", 0.0) or 0.0)
