@@ -1877,7 +1877,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.71")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.72")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1885,6 +1885,10 @@ class BioCorePlugin(Star):
         self.enabled = bool(self.config.get("enabled", True))
         self.inject_intent = bool(self.config.get("inject_intent", True))
         self.compact_prompt = bool(self.config.get("compact_prompt", True))
+        try:
+            self.summary_max_chars = max(0, int(self.config.get("summary_max_chars", 0) or 0))
+        except Exception:
+            self.summary_max_chars = 0
         self.bc_prompt_mode = str(self.config.get("bc_prompt_mode", "telemetry") or "telemetry").strip().lower()
         if self.bc_prompt_mode not in ("telemetry", "semantic"):
             self.bc_prompt_mode = "telemetry"
@@ -2582,6 +2586,7 @@ class BioCorePlugin(Star):
                     getattr(self, "llm_memory_candidates", True)),
                 "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
             "bc_prompt_mode": str(getattr(self, "bc_prompt_mode", "telemetry") or "telemetry"),
+            "summary_max_chars": int(getattr(self, "summary_max_chars", 0) or 0),
             "llm_only_reply_summary": bool(
                     getattr(self, "llm_only_reply_summary", True)),
                 "persona_id": str(getattr(self, "persona_id", "") or ""),
@@ -2969,6 +2974,14 @@ class BioCorePlugin(Star):
                             "evidence_refs": [str(entry.get("id") or entry.get("ts") or "m")[:80]]})
                 break
         return relationship_meta.merge_we_memory([], out)
+
+    def _summary_cap(self, text) -> str:
+        value = str(text or "")
+        try:
+            cap = int(getattr(self, "summary_max_chars", 0) or 0)
+        except Exception:
+            cap = 0
+        return value[:cap] if cap > 0 else value
 
     def _touch_user(self, event, core=None) -> dict:
         try:
@@ -4029,11 +4042,11 @@ class BioCorePlugin(Star):
             prompt = interpretation.event_summary_prompt(texts)
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
-            data = interpretation.parse_event_summary(raw)
+            data = interpretation.parse_event_summary(raw, getattr(self, "summary_max_chars", 0))
             title = str(data.get("title") or summary or "重要事件").strip()[:80]
-            ev = str(data.get("event") or summary or "").strip()[:600]
-            meaning = str(data.get("meaning_to_her") or "").strip()[:400]
-            reflection = str(data.get("reflection") or "").strip()[:400]
+            ev = self._summary_cap(str(data.get("event") or summary or "").strip())
+            meaning = self._summary_cap(str(data.get("meaning_to_her") or "").strip())
+            reflection = self._summary_cap(str(data.get("reflection") or "").strip())
             if not ev:
                 return
             _prov = self._event_provenance(event, None, ts=time.time())
@@ -4804,6 +4817,7 @@ class BioCorePlugin(Star):
                 getattr(self, "llm_memory_candidates", True)),
             "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
             "bc_prompt_mode": str(getattr(self, "bc_prompt_mode", "telemetry") or "telemetry"),
+            "summary_max_chars": int(getattr(self, "summary_max_chars", 0) or 0),
             "llm_only_reply_summary": bool(
                 getattr(self, "llm_only_reply_summary", True)),
             "insight_auto_enabled": bool(getattr(self, "insight_auto_enabled", False)),
@@ -5496,14 +5510,15 @@ class BioCorePlugin(Star):
                     try:
                         resp = await provider.text_chat(prompt=prompt)
                         payload = interpretation.parse_memory_summary_payload(
-                            str(getattr(resp, "completion_text", "") or ""))
+                            str(getattr(resp, "completion_text", "") or ""),
+                            getattr(self, "summary_max_chars", 0))
                     except Exception as exc:
                         logger.warning("[biocore] memory summary failed: %s", exc)
                 else:
                     # Deterministic extractive summary from embedding-grouped and
                     # deduped representatives; no LLM involved.
-                    payload["summary"] = "；".join(texts[:5])[:180]
-                summary = str(payload.get("summary") or "")
+                    payload["summary"] = "；".join(texts[:5])
+                summary = self._summary_cap(str(payload.get("summary") or ""))
                 candidates = payload.get("candidates") or []
                 if not getattr(self, "llm_memory_candidates", True):
                     candidates = []
@@ -5539,7 +5554,7 @@ class BioCorePlugin(Star):
                 _summary_source = "inferred"
                 _summary_conf = memory_meta.initial_confidence(_summary_source, importance)
                 _summary_sens = memory_meta.classify_sensitivity(summary)
-                entries.append({"id": _sum_id, "text": summary[:1200], "role": "summary",
+                entries.append({"id": _sum_id, "text": self._summary_cap(summary), "role": "summary",
                                 "scope": "session",
                                 "vector": vec, "ts": now, "hits": 1,
                                 "importance": importance, "last_used": now,

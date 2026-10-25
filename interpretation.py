@@ -197,8 +197,9 @@ def image_caption_prompt(base_prompt: str = "") -> str:
 def event_summary_prompt(texts) -> str:
     joined = "\n".join("- " + str(t)[:400] for t in (texts or [])[:12])
     return ("把下面一段聊天记录总结成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
-            '{"title":"短标题","event":"事件经过≤80字","meaning_to_her":"对她的意义≤60字","reflection":"事件感悟≤60字"}\n'
-            "事件覆盖整件事，意义只写她的感受/立场/关系变化；reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。\n\n" + joined)
+            '{"title":"短标题","event":"完整事件经过","meaning_to_her":"对她的意义","reflection":"事件感悟"}\n'
+            "基于提供的聊天事件完整总结整件事，不设固定字数上限；只总结事件本身，不要把原始聊天上下文原样拼进摘要；"
+            "意义只写她的感受/立场/关系变化；reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。\n\n" + joined)
 
 
 def insight_prompt(events) -> str:
@@ -549,6 +550,15 @@ def _bounded(value, low: float, high: float, default: float = 0.0) -> float:
     return max(float(low), min(float(high), number))
 
 
+def _summary_text(value, max_chars: int = 0) -> str:
+    text = str(value or "").strip()
+    try:
+        cap = int(max_chars or 0)
+    except Exception:
+        cap = 0
+    return text[:cap] if cap > 0 else text
+
+
 def _clean_text(value, limit: int = 400) -> str:
     return str(value or "").strip()[:max(1, int(limit))]
 
@@ -665,20 +675,21 @@ def memory_summary_prompt(texts) -> str:
     """
     joined = "\n".join("- " + str(t)[:500] for t in (texts or []) if str(t).strip())
     return ("把下面这些长期记忆整理成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
-            '{"summary":"≤180字摘要，保留人物/关系/偏好/承诺/事件/情绪变化，不编造",\n'
+            '{"summary":"完整摘要，保留人物/关系/偏好/承诺/事件/情绪变化，不编造",\n'
             ' "candidates":[{"text":"≤40字长期有用事实","source":"told|inferred",\n'
             ' "confidence":0.0-1.0,"kind":"add|update"}]}\n'
+            "summary 按提供的记忆上下文完整总结，不设固定字数上限；只总结记忆本身，不要把原始上下文原样拼进摘要；"
             "candidates≤3，只提长期有用信息（偏好/关系/承诺/重要经历）；相似用 update，否则 add；禁止 delete；没有给 []。\n\n" + joined)
 
 
-def parse_memory_summary(raw: str, limit: int = 240) -> str:
+def parse_memory_summary(raw: str, limit: int = 0) -> str:
     """Parse a model summary into bounded plain text for the biological layer."""
     text = _strip_code_fence(raw)
     text = re.sub(r"\s+", " ", text).strip().strip("\"'“”")
     for prefix in ("摘要：", "摘要:", "总结：", "总结:"):
         if text.startswith(prefix):
             text = text[len(prefix):].strip()
-    return text[:max(1, int(limit))]
+    return _summary_text(text, limit)
 
 
 def parse_memory_candidates(raw) -> list:
@@ -711,7 +722,7 @@ def parse_memory_candidates(raw) -> list:
     return out
 
 
-def parse_memory_summary_payload(raw: str) -> dict:
+def parse_memory_summary_payload(raw: str, limit: int = 0) -> dict:
     """Parse consolidation output into {summary, candidates}.
 
     Plain-text summaries (legacy/fake providers) are still accepted; only a
@@ -721,9 +732,9 @@ def parse_memory_summary_payload(raw: str) -> dict:
     if isinstance(data, dict):
         # Any JSON object is treated as the payload form; a bare "{}" must not
         # become a literal summary entry.
-        return {"summary": parse_memory_summary(str(data.get("summary") or "")),
+        return {"summary": parse_memory_summary(str(data.get("summary") or ""), limit),
                 "candidates": parse_memory_candidates(data.get("candidates"))}
-    return {"summary": parse_memory_summary(raw), "candidates": []}
+    return {"summary": parse_memory_summary(raw, limit), "candidates": []}
 
 
 def parse_event_ranking(raw: str) -> list:
@@ -758,16 +769,16 @@ def parse_event_ranking(raw: str) -> list:
     return out
 
 
-def parse_event_summary(raw: str) -> dict:
-    """Parse + validate the single-event summary output."""
+def parse_event_summary(raw: str, max_chars: int = 0) -> dict:
+    """Parse the single-event summary; summary fields are uncapped by default."""
     data = _extract_json_object(raw)
     if not isinstance(data, dict):
         return {}
     return {
         "title": _clean_text(data.get("title"), 80),
-        "event": _clean_text(data.get("event"), 600),
-        "meaning_to_her": _clean_text(data.get("meaning_to_her"), 400),
-        "reflection": _clean_text(data.get("reflection"), 400),
+        "event": _summary_text(data.get("event"), max_chars),
+        "meaning_to_her": _summary_text(data.get("meaning_to_her"), max_chars),
+        "reflection": _summary_text(data.get("reflection"), max_chars),
     }
 
 
