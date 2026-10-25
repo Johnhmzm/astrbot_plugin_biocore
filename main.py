@@ -1878,7 +1878,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.76")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.77")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2995,6 +2995,21 @@ class BioCorePlugin(Star):
             return cut[:pos + 1].strip()
         return cut.rstrip() + "…"
 
+    def _dual_event_summary_fallback(self, text, title: str = ""):
+        """Deterministic big/small summary fallback for event records (no LLM).
+
+        big_summary keeps the event excerpt (not a fixed hard cap); small_summary
+        is bounded to 80 chars for the memory-ball tooltip. Old data/titles are
+        accepted so a record always carries both fields when written.
+        """
+        big = self._mask_if_safety(self._event_excerpt(text, 600))
+        small = self._mask_if_safety(self._event_excerpt(text, 80))[:80]
+        if not small:
+            small = self._mask_if_safety(str(title or "").strip())[:80]
+        if not big:
+            big = small
+        return big, small
+
     def _secondary_emotion(self, core) -> str:
         """Second-highest spectrum emotion excluding the current primary label."""
         if core is None:
@@ -4005,12 +4020,15 @@ class BioCorePlugin(Star):
                 _imp = round(max(0.55, min(1.0, imp * 0.7 + score * 0.3)), 3)
                 _safe_title = self._mask_if_safety(title)
                 _safe_body = self._mask_if_safety(self._event_excerpt(body, 220))
+                _safe_big, _safe_small = self._dual_event_summary_fallback(body, title)
                 record = {
                     "id": "evt_" + str(int(now)) + "_" + str(abs(hash(title + body)) % 100000),
                     "ts": now,
                     "session": str(getattr(event, "unified_msg_origin", "") or ""),
                     "title": _safe_title,
                     "event": _safe_body[:600],
+                    "big_summary": _safe_big,
+                    "small_summary": _safe_small,
                     "event_key": _ekey,
                     "centrality": round(max(0.0, min(1.0, schema)), 3),
                     "central_details": _safe_body[:180],
@@ -4092,6 +4110,10 @@ class BioCorePlugin(Star):
             title = str(data.get("title") or summary or "重要事件").strip()[:80]
             title = self._mask_if_safety(title)
             ev = self._mask_if_safety(self._summary_cap(str(data.get("event") or summary or "").strip()))
+            big_summary = self._mask_if_safety(self._summary_cap(
+                str(data.get("big_summary") or ev or summary or "").strip()))
+            small_summary = self._mask_if_safety(
+                str(data.get("small_summary") or big_summary or ev).strip())[:80]
             meaning = self._mask_if_safety(self._summary_cap(str(data.get("meaning_to_her") or "").strip()))
             reflection = self._mask_if_safety(self._summary_cap(str(data.get("reflection") or "").strip()))
             if not ev:
@@ -4106,6 +4128,8 @@ class BioCorePlugin(Star):
                 "session": str(getattr(event, "unified_msg_origin", "") or ""),
                 "title": title,
                 "event": ev,
+                "big_summary": big_summary,
+                "small_summary": small_summary,
                 "event_key": _ekey,
                 "meaning_to_her": meaning,
                 "reflection": reflection,

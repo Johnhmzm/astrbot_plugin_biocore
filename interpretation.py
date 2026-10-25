@@ -197,9 +197,11 @@ def image_caption_prompt(base_prompt: str = "") -> str:
 def event_summary_prompt(texts) -> str:
     joined = "\n".join("- " + str(t)[:400] for t in (texts or [])[:12])
     return ("把下面一段聊天记录总结成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
-            '{"title":"短标题","event":"完整事件经过","meaning_to_her":"对她的意义","reflection":"事件感悟"}\n'
-            "基于提供的聊天事件完整总结整件事，不设固定字数上限；只总结事件本身，不要把原始聊天上下文原样拼进摘要；"
-            "意义只写她的感受/立场/关系变化；reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。\n\n" + joined)
+            '{"title":"短标题","event":"完整事件经过","meaning_to_her":"对她的意义","reflection":"事件感悟",'
+            '"big_summary":"完整总结（不设固定字数上限）","small_summary":"≤80字 tooltip 短总结"}\n'
+            "基于提供的聊天事件完整总结整件事，不设固定字数上限；big_summary 是完整总结，small_summary 是给 tooltip 的≤80字短总结；"
+            "只总结事件本身，不要把原始聊天上下文原样拼进摘要；意义只写她的感受/立场/关系变化；"
+            "reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。\n\n" + joined)
 
 
 def insight_prompt(events) -> str:
@@ -774,11 +776,18 @@ def parse_event_summary(raw: str, max_chars: int = 0) -> dict:
     data = _extract_json_object(raw)
     if not isinstance(data, dict):
         return {}
+    title_text = _clean_text(data.get("title"), 80)
+    event_text = _summary_text(data.get("event"), max_chars)
+    big_text = _summary_text(data.get("big_summary") or event_text or title_text, max_chars)
+    small_seed = str(data.get("small_summary") or big_text or event_text or title_text).strip()
+    small_text = _clean_text(small_seed, 80)
     return {
-        "title": _clean_text(data.get("title"), 80),
-        "event": _summary_text(data.get("event"), max_chars),
+        "title": title_text,
+        "event": event_text,
         "meaning_to_her": _summary_text(data.get("meaning_to_her"), max_chars),
         "reflection": _summary_text(data.get("reflection"), max_chars),
+        "big_summary": big_text,
+        "small_summary": small_text,
     }
 
 

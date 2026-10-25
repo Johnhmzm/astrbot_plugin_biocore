@@ -264,7 +264,7 @@
         (status!=="ok"?'<span class="mem-flag mem-flag-warn">来源待核 '+esc(status)+'</span>':"");
       return '<div class="memory-card">'+
         '<div class="memory-card-head"><span class="memory-level-tag">总结</span><b>'+esc(_clipText(ev.title||"重要事件",80))+'</b><span class="hint">'+esc(when)+'</span>'+warnFlags+'</div>'+
-        '<p class="memory-event-text">'+esc(_clipText(ev.event||"",280))+'</p>'+
+        '<p class="memory-event-text">'+esc(_clipText(ev.big_summary||ev.event||"",280))+'</p>'+
         '<div class="memory-scores"><small>重要度 '+imp+'</small><small>centrality '+cent+'</small><small>来源 '+esc(status)+'</small></div>'+
         '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(_clipText(ev.central_details||"",260))+'</small><small>意义：'+esc(_clipText(ev.meaning_to_her||"",220))+'</small><small>事件感悟（单事件）：'+esc(_clipText(ev.reflection||"",220))+'</small></div>'+
         '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'" data-count="'+msgs.length+'">收起消息 · '+msgs.length+' 条</button>'+
@@ -375,6 +375,8 @@
       if(!text) return null;
       return {_kind:"event", id:String(e.id||("evt_"+Number(e.ts||0))),
         title:String(e.title||text.slice(0,28)), event:text.slice(0,160),
+        big_summary:String(e.big_summary||e.event||text),
+        small_summary:String(e.small_summary||""),
         meaning_to_her:String(e.meaning_to_her||""),
         central_details:String(e.central_details||""),
         ts:Number(e.ts||0), importance:Number(e.importance==null?0.5:e.importance),
@@ -1505,7 +1507,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.76";
+  const BIO_VERSION = "v1.2.77";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

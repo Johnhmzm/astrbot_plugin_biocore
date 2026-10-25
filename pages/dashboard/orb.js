@@ -144,14 +144,19 @@
     const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
       (_secKey ? " / " + _emotionZh(_secKey) : " / 同主色") +
       " · 来源 " + _status;
-    // Keep the hover card small: old memories may store a whole chat turn in
-    // meaning_to_her; never render the raw block into the orb tooltip.
-    const meaning = _tipClean(ev.meaning_to_her || ev.central_details || "", 180);
+    // Keep the hover card small: prefer the <=80-char small_summary (task-41);
+    // old events without it fall back to the archived event / central details,
+    // never to a whole raw chat turn.
+    const small = _tipClean(ev.small_summary || "", 80);
+    const fallbackText = _tipClean(ev.event || ev.central_details || ev.meaning_to_her || "", 180);
+    const bodyHtml = small
+      ? '<div class="orb-tip-body">小总结：' + _tipEsc(small) + "</div>"
+      : (fallbackText ? '<div class="orb-tip-body">' + _tipEsc(fallbackText) + "</div>" : "");
     orbTip.innerHTML = "<b>" + _tipEsc(title) + "</b>" +
       (when ? '<div class="orb-tip-meta">' + _tipEsc(when) + "</div>" : "") +
       '<div class="orb-tip-meta">' + _tipEsc(_emoLine) + "</div>" +
       '<div class="orb-tip-meta">' + _tipEsc(impLine) + "</div>" +
-      (meaning ? '<div class="orb-tip-body">' + _tipEsc(meaning) + "</div>" : "");
+      bodyHtml;
     orbTip.hidden = false;
     orbTip.classList.add("show");
     if (!orbTipHost) return;
@@ -701,14 +706,33 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
-        // one importance ring only: secondary emotion colour; old data
-        // without emotion_secondary falls back to the primary colour lightened.
+        // one importance ring: secondary emotion colour. The secondary ring is
+        // a dashed arc slowly rotating around the ball centre (task-41); old
+        // data without emotion_secondary keeps a static primary lightened ring.
+        // The central mood ball is drawn separately, so it never spins here.
         const ringBase = size + 4.2;
-        ctx.globalAlpha = Math.max(0, (.28 + .40 * b.imp)) * front;
-        ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, 0, Math.PI * 2);
-        ctx.strokeStyle = ringFill;
-        ctx.lineWidth = .7 + .35 * b.imp;
-        ctx.stroke();
+        const ringAlpha = Math.max(0, (.28 + .40 * b.imp)) * front;
+        ctx.save();
+        ctx.globalAlpha = ringAlpha;
+        if (_secHsl) {
+          const spin = phase * 1.15;              // slow: about one turn per 15s
+          ctx.setLineDash([3.2, 4.8]);
+          ctx.lineDashOffset = -phase * 6.0;
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, ringBase, spin, spin + Math.PI * 1.86);
+          ctx.strokeStyle = ringFill;
+          ctx.lineWidth = .7 + .35 * b.imp;
+          ctx.stroke();
+          ctx.setLineDash([]);
+        } else {
+          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, 0, Math.PI * 2);
+          ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," +
+            primaryRingHsl.s.toFixed(0) + "%," +
+            Math.min(72, primaryRingHsl.l + 12).toFixed(0) + "%,.55)";
+          ctx.lineWidth = .7 + .25 * b.imp;
+          ctx.stroke();
+        }
+        ctx.restore();
         // Source state lives in the tooltip; only a suspect source gets the
         // orange dashed ring (no normal source ring anymore).
         if (suspect) {
@@ -820,8 +844,10 @@
           " · 年龄 " + Math.round(hit.ageDays) + "d" +
           (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
           ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
-        const meaning = String(ev.meaning_to_her || ev.central_details || "");
-        const lines = [title, when, impLine, meaning].filter(Boolean);
+        const small = String(ev.small_summary || "").trim();
+        const fallbackText = small ? "小总结：" + small
+          : String(ev.event || ev.central_details || ev.meaning_to_her || "");
+        const lines = [title, when, impLine, fallbackText].filter(Boolean);
         const pad = 10, lineH = 17, boxW = 300;
         const boxH = pad * 2 + lines.length * lineH;
         let tx = _mouse.x + 14, ty = _mouse.y + 14;
