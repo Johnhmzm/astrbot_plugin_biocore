@@ -90,6 +90,7 @@ EVENT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "events.jsonl"
 EVENT_SUMMARY_ACTIONS = ("regenerate", "update")
 EVENT_SUMMARY_HARD_MAX = 20000
 EVENT_SUMMARY_SMALL_MAX = 80
+EVENT_SUMMARY_HISTORY_MAX = 20
 USER_DIR = DATA_DIR / "users"
 SELF_MODEL_PATH = DATA_DIR / "self_model.json"
 INSIGHT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "insights.jsonl"
@@ -1881,7 +1882,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.84")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.85")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3294,6 +3295,56 @@ class BioCorePlugin(Star):
         record.update(updates)
         return True
 
+    @staticmethod
+    def _event_summary_history_source(record) -> str:
+        """Where the OLD summary came from: edit / regenerate / legacy."""
+        if not isinstance(record, dict):
+            return "legacy"
+        status = str(record.get("summary_status") or "legacy").strip().lower()
+        if record.get("summary_edited") is True or status == "edited":
+            return "edit"
+        if not status or status == "legacy":
+            return "legacy"
+        return "regenerate"
+
+    def _event_summary_history_entry(self, record) -> dict:
+        rec = record if isinstance(record, dict) else {}
+        try:
+            ts = float(rec.get("summary_updated_ts") or rec.get("ts") or time.time())
+        except Exception:
+            ts = time.time()
+        status = str(rec.get("summary_status") or "legacy").strip().lower() or "legacy"
+        return {"ts": ts,
+                "summary_status": status,
+                "big_summary": str(rec.get("big_summary") or "")[:EVENT_SUMMARY_HARD_MAX],
+                "small_summary": str(rec.get("small_summary") or "")[:EVENT_SUMMARY_SMALL_MAX],
+                "source": self._event_summary_history_source(rec)}
+
+    def _apply_event_summary_with_history(self, record, event_id: str, updates: dict) -> bool:
+        """Mutation for the atomic rewrite: archive the old summary, then update.
+
+        Keeps the newest 20 versions (newest first) so regenerating/editing never
+        loses what the panel used to show.
+        """
+        if not isinstance(record, dict) or not isinstance(updates, dict):
+            return False
+        if str(record.get("id") or "") != str(event_id or ""):
+            return False
+        old_big = str(record.get("big_summary") or "").strip()
+        old_small = str(record.get("small_summary") or "").strip()
+        if old_big or old_small:
+            entry = self._event_summary_history_entry(record)
+            history = record.get("summary_history")
+            if not isinstance(history, list):
+                history = []
+            kept = [h for h in history if isinstance(h, dict)]
+            record["summary_history"] = [entry] + kept
+            record["summary_history"] = record["summary_history"][:EVENT_SUMMARY_HISTORY_MAX]
+        elif "summary_history" in record and not isinstance(record.get("summary_history"), list):
+            record["summary_history"] = []
+        record.update(updates)
+        return True
+
     def _find_event_summary_record(self, event_id: str):
         try:
             target = str(event_id or "").strip()
@@ -3407,14 +3458,17 @@ class BioCorePlugin(Star):
         try:
             changed = self._rewrite_jsonl_atomic(
                 EVENT_ARCHIVE_PATH,
-                lambda obj: self._apply_event_summary_fields(obj, event_id, updates))
+                lambda obj: self._apply_event_summary_with_history(obj, event_id, updates))
         except Exception as exc:
             logger.warning("[biocore] event summary rewrite failed: %s", exc)
             changed = 0
         if changed <= 0:
             return {"status": "error", "message": "事件不存在或写入失败"}
-        return {"status": "ok",
-                "data": dict({"event_id": event_id, "action": action}, **updates)}
+        saved = self._find_event_summary_record(event_id) or {}
+        history = saved.get("summary_history")
+        payload = dict({"event_id": event_id, "action": action}, **updates)
+        payload["summary_history"] = history if isinstance(history, list) else []
+        return {"status": "ok", "data": payload}
 
     def _persist_peripheral_forgetting(self, events) -> None:
         """Persist periphery forgetting to both archive layers.
