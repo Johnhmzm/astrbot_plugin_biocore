@@ -349,6 +349,7 @@
           self_defining:!!e.self_defining,
           emotion:String(e.encoding_emotion||"neutral")||"neutral",
           emotion_known:!!String(e.encoding_emotion||"").trim(),
+          emotion_secondary:String(e.encoding_emotion_secondary||""),
           memory_source:String(e.memory_source||""),
           memory_confidence:e.memory_confidence==null?null:Number(e.memory_confidence),
           last_recall:Number(e.last_used||e.ts||0),
@@ -381,6 +382,7 @@
         recall_count:Number(e.recall_count||0), merge_count:Number(e.merge_count||0),
         self_defining:!!e.self_defining,
         emotion:String(e.emotion||"neutral"), emotion_known:!!String(e.emotion||"").trim(),
+        emotion_secondary:String(e.emotion_secondary||""),
         last_recall:Number(e.last_recall||e.ts||0), summarized:true, role:"event"};
     }).filter(Boolean).sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0)).slice(0,10);
   }
@@ -1503,7 +1505,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.75";
+  const BIO_VERSION = "v1.2.76";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
