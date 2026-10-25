@@ -659,6 +659,10 @@ class BioCore:
                     setattr(self, _key, _clip(d[_key], 0, 1))
                 except Exception:
                     pass
+        try:
+            self.homeostasis = homeostasis.normalize_state(d.get("homeostasis"))
+        except Exception:
+            self.homeostasis = homeostasis.default_state()
         if isinstance(d.get("meta_emotion"), str):
             self.meta_emotion = d["meta_emotion"]
         if isinstance(d.get("goals"), list):
@@ -1755,7 +1759,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.65")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.66")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)

@@ -216,6 +216,61 @@ def dominance_low(state: Any) -> bool:
         return False
 
 
+def normalize_state(state: Any) -> dict[str, Any]:
+    """Normalize a persisted homeostasis dict; malformed input falls back safely."""
+    base = default_state()
+    if not isinstance(state, dict):
+        return base
+    try:
+        for group, keys in (("drives", DRIVE_KEYS), ("set_points", DRIVE_KEYS),
+                            ("body", BODY_KEYS)):
+            raw = state.get(group) if isinstance(state.get(group), dict) else {}
+            for key in keys:
+                base[group][key] = round(_clamp(raw.get(key, base[group][key])), 6)
+        for key in ("tick", "setpoint_ticks"):
+            try:
+                base[key] = max(0, min(10 ** 9, int(float(state.get(key, 0) or 0))))
+            except Exception:
+                base[key] = 0
+        base["L_int"] = round(_clamp(state.get("L_int", 0.0)), 6)
+        base["readiness"] = round(_clamp(state.get("readiness", 0.6)), 6)
+        pyramid = state.get("need_pyramid") if isinstance(state.get("need_pyramid"), dict) else {}
+        raw_deficits = pyramid.get("deficits") if isinstance(pyramid.get("deficits"), dict) else {}
+        deficits = {}
+        for layer in NEED_LAYERS:
+            deficits[layer] = round(_clamp(raw_deficits.get(layer, 0.0)), 6)
+        base["need_pyramid"] = {
+            "deficits": deficits,
+            "score": round(_clamp(pyramid.get("score", 0.0)), 6),
+            "dominant": str(pyramid.get("dominant") or ""),
+        }
+        if base["need_pyramid"]["dominant"] not in NEED_LAYERS:
+            base["need_pyramid"]["dominant"] = max(deficits, key=lambda k: deficits[k])
+        intero = state.get("interoception") if isinstance(state.get("interoception"), dict) else {}
+        label = str(intero.get("label") or "steady")
+        if label not in ("low", "steady", "high"):
+            label = "steady"
+        hint = str(intero.get("expression_hint") or "normal")[:24]
+        base["interoception"] = {"signal": round(_clamp(intero.get("signal", 0.55)), 6),
+                                 "label": label, "expression_hint": hint}
+        action = state.get("action") if isinstance(state.get("action"), dict) else {}
+        mode = str(action.get("mode") or "engage")
+        if mode not in ACTION_MODES:
+            mode = "engage"
+        base["action"] = {"mode": mode,
+                          "reason": str(action.get("reason") or "baseline")[:40],
+                          "strength": round(_clamp(action.get("strength", 0.5)), 6)}
+        base["last_metabolic_cost"] = round(_clamp(
+            state.get("last_metabolic_cost", 0.0), 0.0, 0.10), 6)
+        try:
+            base["updated_ts"] = round(float(state.get("updated_ts", 0.0) or 0.0), 3)
+        except Exception:
+            base["updated_ts"] = 0.0
+        return base
+    except Exception:
+        return default_state()
+
+
 def step(core: Any, dt: float = 60.0, relationship: Any = None) -> dict[str, Any]:
     """One deterministic homeostasis update; attaches and returns the state."""
     state = _ensure_state(getattr(core, "homeostasis", None))
