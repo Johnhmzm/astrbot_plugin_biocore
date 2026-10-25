@@ -1066,101 +1066,151 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
-        // one importance ring: secondary/inferred colour. task-60: orbit
-        // (default) draws a complete 3D tilted ellipse; solid draws a complete
-        // 360° static circle. Importance = line width (floored for visibility).
-        const ringBase = size + 4.2;
-        // task-59: the full 360 shape must be visible on its own, not only the
-        // rotating highlight. Base ring alpha floor .55 (cap .85), width >= 1.8
-        // so the 18-25% highlight cannot be the only visible arc.
-        const ringAlphaBase = _bound(Math.max(0.55, .28 + .40 * b.imp), 0.55, 0.85);
-        const ringAlpha = _bound(ringAlphaBase * (0.94 + 0.06 * depthK), 0.55, 0.85);
-        const ringWidth = _bound(1.2 + 1.4 * b.imp, 1.8, 2.8);
-        const ringHighlightAlpha = _bound(ringAlpha * 1.15,
-          ringAlpha, Math.min(0.85, ringAlpha * 1.2));
-        window.__biocoreRing = { style: null, alpha: Number(ringAlpha.toFixed(3)),
-          width: Number(ringWidth.toFixed(2)),
-          highlightAlpha: Number(ringHighlightAlpha.toFixed(3)),
-          highlightLen: Number((0.18 + 0.07 * b.imp).toFixed(3)),
-          orbitTilt: 0.42, hasAuxEllipse: false,
-          rotates: false, hasHighlight: false, spin: 0 };
-        const fullTurn = Math.PI * 2;
-        // task-59 contract: highlight length stays 18-25% (solid no longer
-        // draws a highlight arc; orbit rotates the whole ellipse instead).
-        const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);
-        const ringColor = _secHsl
-          ? ringFill
-          : ("hsla(" + inferredRingHsl.h.toFixed(0) + "," +
-             inferredRingHsl.s.toFixed(0) + "%," +
-             inferredRingHsl.l.toFixed(0) + "%," +
-             "0.95)");   // solid: globalAlpha carries the visibility
-        // task-60: two ring styles. orbit (default) = 3D tilted ellipse with
-        // perspective + slow rotation (same family as the big mood ball);
-        // solid = complete 360° static circle (no rotation, no highlight arc).
+        // task-65: 0-3 emotion rings, one per non-primary emotion layer.
+        // New archive records carry emotion_layers (top-4 spectrum probs incl.
+        // the primary). Rings exclude the primary, keep p >= .15, sort desc and
+        // cap at 3 -- never pad to a fixed count. Old records fall back to ONE
+        // secondary ring (or ONE inferred ring when no secondary was stored);
+        // they never fabricate a 3rd/4th ring.
+        const _primaryEmo = String(ev.emotion || "neutral").trim().toLowerCase();
+        const _rawLayers = Array.isArray(ev.emotion_layers) ? ev.emotion_layers : null;
+        let _rings = [];
+        if (_rawLayers) {
+          _rings = _rawLayers.map((item) => ({
+            emotion: String((item && item.emotion) || "").trim().toLowerCase(),
+            p: Number((item && item.p) || 0),
+            inferred: false
+          })).filter((item) => item.emotion && item.emotion !== _primaryEmo
+              && item.p >= 0.15)
+            .sort((a, b2) => b2.p - a.p)
+            .slice(0, 3);
+        } else {
+          _rings = [{ emotion: _secKey, p: null, inferred: !_secKey }];
+        }
+        const _outerRing = size + 4.2 + Math.max(0, _rings.length - 1) * 2.4;
         const _ringStyle = String((state.visual && state.visual.memoryRingStyle) || "orbit")
           .toLowerCase() === "solid" ? "solid" : "orbit";
         window.__biocoreMemoryRingStyle = _ringStyle;
-        if (window.__biocoreRing) {
-          window.__biocoreRing.style = _ringStyle;
-          // orbit rotates slowly; solid is a static 360° circle with no
-          // highlight arc (task-60).
-          window.__biocoreRing.rotates = _ringStyle === "orbit";
-          window.__biocoreRing.hasHighlight = false;
-          window.__biocoreRing.spin = _ringStyle === "orbit"
-            ? Number(phase.toFixed(4)) : 0;
-        }
-        ctx.save();
-        ctx.globalAlpha = ringAlpha;
-        ctx.setLineDash([]);                               // no dash blocks in either style
-        if (_ringStyle === "orbit") {
-          const orbitTilt = 0.42;
-          const orbitSpin = phase * 0.55;                  // slow 3D rotation
-          const steps = 56;
-          ctx.beginPath();
-          for (let i = 0; i <= steps; i++) {
-            const a = i / steps * fullTurn + orbitSpin;
-            const ex = Math.cos(a) * ringBase;
-            const ey = Math.sin(a) * ringBase * Math.sin(orbitTilt);
-            const ez = Math.sin(a) * ringBase * Math.cos(orbitTilt);
-            const persp = 1 + (ez / Math.max(1, ringBase)) * 0.16;
-            const px = b.x + ex * persp;
-            const py = b.y + ey * persp + (ez / Math.max(1, ringBase)) * 2.0;
-            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        window.__biocoreRing = {
+          style: _ringStyle, ringCount: _rings.length, ringLayers: [],
+          alpha: 0, width: 0, highlightAlpha: 0, highlightLen: 0,
+          orbitTilt: 0.42, hasAuxEllipse: false, rotates: _ringStyle === "orbit",
+          hasHighlight: _ringStyle === "orbit" && _rings.length > 0, spin: 0,
+          orbitYaw: 0, orbitPitch: 0.42, orbitPts: [], highlightAngle: 0,
+          orbitHighlightLen: 0
+        };
+        const fullTurn = Math.PI * 2;
+        const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);
+        const _orbitTilts = [0.42, 0.30, 0.18];
+        const _phaseYaw = phase * 0.42;
+        const _phasePitch = 0.42 + 0.10 * Math.sin(phase * 0.7);
+        _rings.forEach((ringItem, ringIdx) => {
+          const weight = ringItem.p == null ? b.imp : ringItem.p;
+          const ringBaseR = size + 4.2 + ringIdx * 2.4;
+          const ringAlphaR = _bound(.55 + .30 * weight, .55, .85);
+          const ringWidthR = _bound(1.2 + 1.4 * weight, 1.8, 2.8);
+          const ringHighlightAlphaR = _bound(ringAlphaR * 1.15, ringAlphaR,
+            Math.min(0.85, ringAlphaR * 1.2));
+          let ringColorR;
+          if (ringItem.inferred) {
+            ringColorR = "hsla(" + inferredRingHsl.h.toFixed(0) + "," +
+              inferredRingHsl.s.toFixed(0) + "%," +
+              inferredRingHsl.l.toFixed(0) + "%,0.95)";
+          } else if (ringItem.p == null && _secHsl) {
+            ringColorR = ringFill;   // old records: keep the previous secondary colour
+          } else {
+            const rgb = _ec[_emotionFamily[ringItem.emotion] || ringItem.emotion] || _ec.neutral;
+            const hsl = _vividHsl(rgb, _bound(weight, 0.15, 1));
+            ringColorR = "hsl(" + hsl.h.toFixed(0) + "," + hsl.s.toFixed(0) + "%," +
+              Math.min(60, hsl.l + 7).toFixed(0) + "%)";
           }
-          ctx.closePath();
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = ringWidth;
-          ctx.stroke();
-          // task-60: very faint second ellipse in the same orbit family adds
-          // 3D depth without competing with the primary ring/highlight.
-          const orbitTilt2 = -0.30;
-          ctx.globalAlpha = _bound(ringAlpha * 0.28, 0.10, 0.30);
-          ctx.beginPath();
-          for (let i = 0; i <= steps; i++) {
-            const a2 = i / steps * fullTurn - orbitSpin * 0.8;
-            const ex2 = Math.cos(a2) * ringBase * 1.06;
-            const ey2 = Math.sin(a2) * ringBase * 1.06 * Math.sin(orbitTilt2);
-            const ez2 = Math.sin(a2) * ringBase * 1.06 * Math.cos(orbitTilt2);
-            const persp2 = 1 + (ez2 / Math.max(1, ringBase)) * 0.16;
-            const px2 = b.x + ex2 * persp2;
-            const py2 = b.y + ey2 * persp2 + (ez2 / Math.max(1, ringBase)) * 2.0;
-            if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+          ctx.save();
+          ctx.globalAlpha = ringAlphaR;
+          ctx.setLineDash([]);
+          if (_ringStyle === "orbit") {
+            const tilt = _orbitTilts[Math.min(ringIdx, 2)];
+            const yaw = _phaseYaw;
+            const pitch = _phasePitch + (tilt - 0.42) * 0.5;
+            const steps = 48;
+            const orbitPoint = (a, radius) => {
+              const cx0 = Math.cos(a) * radius;
+              const cz0 = Math.sin(a) * radius;
+              const ey = cz0 * Math.sin(pitch);
+              const ez = cz0 * Math.cos(pitch);
+              const yawCos = Math.cos(yaw), yawSin = Math.sin(yaw);
+              const ex2 = cx0 * yawCos - ez * yawSin;
+              const ez2 = cx0 * yawSin + ez * yawCos;
+              const persp = 1 + (ez2 / Math.max(1, radius)) * 0.16;
+              return { x: b.x + ex2 * persp,
+                       y: b.y + ey * persp + (ez2 / Math.max(1, radius)) * 2.0 };
+            };
+            ctx.beginPath();
+            for (let sIdx = 0; sIdx <= steps; sIdx++) {
+              const pnt = orbitPoint(sIdx / steps * fullTurn, ringBaseR);
+              if (sIdx === 0) ctx.moveTo(pnt.x, pnt.y); else ctx.lineTo(pnt.x, pnt.y);
+            }
+            ctx.closePath();
+            ctx.strokeStyle = ringColorR;
+            ctx.lineWidth = ringWidthR;
+            ctx.stroke();
+            if (ringIdx === 0) {
+              const orbitHighlightLen = fullTurn * 0.10;
+              const orbitHighlightStart = (phase * 1.35) % fullTurn;
+              ctx.globalAlpha = ringHighlightAlphaR;
+              ctx.beginPath();
+              for (let hIdx = 0; hIdx <= 10; hIdx++) {
+                const pnt = orbitPoint(orbitHighlightStart + orbitHighlightLen * (hIdx / 10), ringBaseR);
+                if (hIdx === 0) ctx.moveTo(pnt.x, pnt.y); else ctx.lineTo(pnt.x, pnt.y);
+              }
+              ctx.strokeStyle = ringColorR;
+              ctx.lineWidth = _bound(ringWidthR + .2, 2.0, 3.0);
+              ctx.stroke();
+              ctx.globalAlpha = _bound(ringAlphaR * 0.28, 0.10, 0.30);
+              ctx.beginPath();
+              for (let aIdx = 0; aIdx <= steps; aIdx++) {
+                const pnt = orbitPoint(aIdx / steps * fullTurn, ringBaseR * 1.06);
+                if (aIdx === 0) ctx.moveTo(pnt.x, pnt.y); else ctx.lineTo(pnt.x, pnt.y);
+              }
+              ctx.closePath();
+              ctx.strokeStyle = ringColorR;
+              ctx.lineWidth = _bound(ringWidthR * 0.5, 0.9, 1.4);
+              ctx.stroke();
+              window.__biocoreRing.hasAuxEllipse = true;
+              window.__biocoreRing.orbitYaw = Number(yaw.toFixed(4));
+              window.__biocoreRing.orbitPitch = Number(pitch.toFixed(4));
+              window.__biocoreRing.orbitHighlightLen = Number(orbitHighlightLen.toFixed(4));
+              window.__biocoreRing.highlightAngle = Number(orbitHighlightStart.toFixed(4));
+              window.__biocoreRing.orbitPts = [0, 0.25, 0.5, 0.75].map((t) => {
+                const pnt = orbitPoint(t * fullTurn, ringBaseR);
+                return [Number((pnt.x - b.x).toFixed(2)), Number((pnt.y - b.y).toFixed(2))];
+              });
+            }
+          } else {
+            // solid: complete 360° static circle for every layer (no rotation,
+            // no highlight arc).
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, ringBaseR, 0, fullTurn);
+            ctx.strokeStyle = ringColorR;
+            ctx.lineWidth = ringWidthR;
+            ctx.stroke();
           }
-          ctx.closePath();
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = _bound(ringWidth * 0.5, 0.9, 1.4);
-          ctx.stroke();
-          if (window.__biocoreRing) window.__biocoreRing.hasAuxEllipse = true;
-        } else {
-          // task-60: solid is a COMPLETE 360° circle but STATIC: no rotation
-          // and no highlight arc (the highlight made the ring look partial).
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, ringBase, 0, fullTurn);
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = ringWidth;
-          ctx.stroke();
-        }
-        ctx.restore();
+          ctx.restore();
+          window.__biocoreRing.ringLayers.push({
+            emotion: ringItem.inferred ? "" : ringItem.emotion,
+            inferred: !!ringItem.inferred,
+            p: ringItem.p == null ? null : Number(weight.toFixed(4)),
+            width: Number(ringWidthR.toFixed(2)),
+            alpha: Number(ringAlphaR.toFixed(3)),
+            tilt: _ringStyle === "orbit" ? _orbitTilts[Math.min(ringIdx, 2)] : 0
+          });
+          if (ringIdx === 0) {
+            window.__biocoreRing.alpha = Number(ringAlphaR.toFixed(3));
+            window.__biocoreRing.width = Number(ringWidthR.toFixed(2));
+            window.__biocoreRing.highlightAlpha = Number(ringHighlightAlphaR.toFixed(3));
+            window.__biocoreRing.spin = _ringStyle === "orbit" ? Number(phase.toFixed(4)) : 0;
+          }
+        });
+        const ringBase = _outerRing;   // suspect/focus rings + hit radius
         // Source state lives in the tooltip; only a suspect source gets the
         // orange dashed ring (no normal source ring anymore).
         if (suspect) {

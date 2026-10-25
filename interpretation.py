@@ -198,10 +198,12 @@ def event_summary_prompt(texts) -> str:
     joined = "\n".join("- " + str(t)[:400] for t in (texts or [])[:12])
     return ("把下面一段聊天记录总结成一个 JSON 对象，只输出 JSON、不要代码块、不要解释：\n"
             '{"title":"短标题","event":"完整事件经过","meaning_to_her":"对她的意义","reflection":"事件感悟",'
-            '"big_summary":"完整总结（不设固定字数上限）","small_summary":"≤80字 tooltip 短总结"}\n'
+            '"big_summary":"完整总结（不设固定字数上限）","small_summary":"≤80字 tooltip 短总结",'
+            '"emotion_nuance":["0-3个隐含/复合情绪中文标签，如 遗憾/难过/失落/释然/心动；没有就空数组，不要重复主情绪/次情绪"]}\n'
             "基于提供的聊天事件完整总结整件事，不设固定字数上限；big_summary 是完整总结，small_summary 是给 tooltip 的≤80字短总结；"
             "只总结事件本身，不要把原始聊天上下文原样拼进摘要；意义只写她的感受/立场/关系变化；"
-            "reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。\n\n" + joined)
+            "reflection 字段是「事件感悟（单事件）」，不复述事件；不编造。"
+            "emotion_nuance 只提取主情绪/次情绪之外隐含或复合的情绪层次（0-3 个中文短标签），没有就输出空数组，不能编造。\n\n" + joined)
 
 
 def insight_prompt(events) -> str:
@@ -806,6 +808,36 @@ def parse_event_ranking(raw: str) -> list:
     return out
 
 
+def clean_emotion_nuance(value, limit: int = 3) -> list:
+    """Normalize the hidden/composite emotion layer (task-64).
+
+    Only short Chinese-ish labels are kept (max limit, deduped, no empty
+    entries). Missing/garbage input returns [] -- the deterministic fallback
+    never fabricates a nuance layer. A plain string is tolerated by splitting
+    common separators so an older model's output still parses.
+    """
+    if isinstance(value, str):
+        raw = re.split(r"[/、,，;；·|]+", value)
+    elif isinstance(value, (list, tuple)):
+        raw = list(value)
+    else:
+        return []
+    out = []
+    for item in raw:
+        text = re.sub(r"\s+", "", str(item or ""))
+        text = text.strip(" \t\r\n，。；、,.!?！？:：;\"'“”‘’()（）[]【】")
+        if not text or len(text) > 12:
+            continue
+        if not re.search(r"[\u4e00-\u9fff]", text):
+            continue
+        if text in out:
+            continue
+        out.append(text)
+        if len(out) >= max(1, int(limit or 0)):
+            break
+    return out[:max(0, int(limit or 0))]
+
+
 def parse_event_summary(raw: str, max_chars: int = 0) -> dict:
     """Parse the single-event summary; summary fields are uncapped by default."""
     data = _extract_json_object(raw)
@@ -823,6 +855,7 @@ def parse_event_summary(raw: str, max_chars: int = 0) -> dict:
         "reflection": _summary_text(data.get("reflection"), max_chars),
         "big_summary": big_text,
         "small_summary": small_text,
+        "emotion_nuance": clean_emotion_nuance(data.get("emotion_nuance")),
     }
 
 
