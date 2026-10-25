@@ -1877,7 +1877,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.74")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.75")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -6527,8 +6527,6 @@ class BioCorePlugin(Star):
         self._save_memory(event, doc)
         self._schedule_consolidation(event, core)
 
-    @filter.on_llm_request()
-
     # ------------------------------------------------------------------
     # A4 continuity opener ("上次聊到").
     #
@@ -6674,6 +6672,7 @@ class BioCorePlugin(Star):
             return {}
         return {"summary": summary, "loops": loops, "relationship": rel}
 
+    @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.enabled or not self.inject_intent:
             return
