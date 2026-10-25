@@ -124,17 +124,24 @@
     orbTip.classList.remove("show");
     orbTip.hidden = true;
   }
+  function _tipClean(value, limit) {
+    let text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    if (text.length > limit) text = text.slice(0, limit - 1).trimEnd() + "…";
+    return text;
+  }
   function updateOrbTip(hit) {
     if (!orbTip) return;
     const ev = hit.ev || {};
-    const title = String(ev.title || ev.event_key || "事件");
+    const title = _tipClean(ev.title || ev.event_key || "事件", 60);
     const when = hit.tsS > 0 ? new Date(hit.tsS * 1000).toLocaleString("zh-CN",
       { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }) : "";
     const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
       " · 年龄 " + Math.round(hit.ageDays) + "d" +
       (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
       ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
-    const meaning = String(ev.meaning_to_her || ev.central_details || "");
+    // Keep the hover card small: old memories may store a whole chat turn in
+    // meaning_to_her; never render the raw block into the orb tooltip.
+    const meaning = _tipClean(ev.meaning_to_her || ev.central_details || "", 180);
     orbTip.innerHTML = "<b>" + _tipEsc(title) + "</b>" +
       (when ? '<div class="orb-tip-meta">' + _tipEsc(when) + "</div>" : "") +
       '<div class="orb-tip-meta">' + _tipEsc(impLine) + "</div>" +

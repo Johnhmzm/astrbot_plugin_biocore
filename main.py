@@ -1877,7 +1877,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.73")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.74")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2983,6 +2983,17 @@ class BioCorePlugin(Star):
             cap = 0
         return value[:cap] if cap > 0 else value
 
+    def _event_excerpt(self, text, limit: int = 220) -> str:
+        """Compact deterministic-event display text; raw evidence stays in source_texts."""
+        value = re.sub(r"\s+", " ", str(text or "").replace("\n", " ")).strip()
+        if len(value) <= limit:
+            return value
+        cut = value[:limit]
+        pos = max(cut.rfind("。"), cut.rfind("！"), cut.rfind("？"), cut.rfind("；"))
+        if pos >= int(limit * 0.5):
+            return cut[:pos + 1].strip()
+        return cut.rstrip() + "…"
+
     def _mask_if_safety(self, text) -> str:
         value = str(text or "")
         try:
@@ -3975,7 +3986,7 @@ class BioCorePlugin(Star):
                     continue
                 _imp = round(max(0.55, min(1.0, imp * 0.7 + score * 0.3)), 3)
                 _safe_title = self._mask_if_safety(title)
-                _safe_body = self._mask_if_safety(body)
+                _safe_body = self._mask_if_safety(self._event_excerpt(body, 220))
                 record = {
                     "id": "evt_" + str(int(now)) + "_" + str(abs(hash(title + body)) % 100000),
                     "ts": now,
@@ -3984,7 +3995,7 @@ class BioCorePlugin(Star):
                     "event": _safe_body[:600],
                     "event_key": _ekey,
                     "centrality": round(max(0.0, min(1.0, schema)), 3),
-                    "central_details": _safe_body[:400],
+                    "central_details": _safe_body[:180],
                     "peripheral_details": "",
                     "meaning_to_her": "",
                     "reflection": "",
