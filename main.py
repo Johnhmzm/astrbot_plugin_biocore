@@ -1877,7 +1877,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.72")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.73")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2983,6 +2983,15 @@ class BioCorePlugin(Star):
             cap = 0
         return value[:cap] if cap > 0 else value
 
+    def _mask_if_safety(self, text) -> str:
+        value = str(text or "")
+        try:
+            if getattr(self, "safety_enabled", False):
+                return memory_meta.mask_sensitive(value)
+        except Exception:
+            pass
+        return value
+
     def _touch_user(self, event, core=None) -> dict:
         try:
             sid, name = self._speaker(event)
@@ -3395,6 +3404,12 @@ class BioCorePlugin(Star):
                             trigger, decision["new_count"])
                 return False
             new_events = decision["new_events"]
+            # BUG-05: _event_archive returns newest-first; use [:6], not [-6:].
+            recent = (events[:6] if len(events) >= 3 else new_events[:6])
+            ok = await self._generate_insight(event, core, recent)
+            if not ok:
+                logger.info("[biocore] insight trigger produced nothing (%s); state not advanced", trigger)
+                return False
             now = time.time()
             latest_ts = max([decision["last_event_ts"]] +
                             [float(e.get("ts", 0) or 0) for e in events] or [0.0])
@@ -3404,8 +3419,6 @@ class BioCorePlugin(Star):
                 "last_event_ts": latest_ts,
                 "seen_ids": seen[-100:],
             })
-            recent = (events[-6:] if len(events) >= 3 else new_events[-6:])
-            await self._generate_insight(event, core, recent)
             logger.info("[biocore] insight triggered (%s): new=%s events=%s",
                         trigger, decision["new_count"], len(recent))
             return True
@@ -3428,7 +3441,7 @@ class BioCorePlugin(Star):
             provider = await self._provider_for("insight", event)
             if provider is None:
                 return False
-            prompt = interpretation.insight_prompt(events[-6:])
+            prompt = interpretation.insight_prompt(events[:6])
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             insight = interpretation.parse_insight(raw)
@@ -3467,7 +3480,7 @@ class BioCorePlugin(Star):
         events = self._event_archive(6)
         if len(events) < 3:
             return
-        await self._generate_insight(event, core, events[-6:])
+        await self._generate_insight(event, core, events[:6])
 
     def _segment_event_texts(self, entries) -> list:
         try:
@@ -3961,15 +3974,17 @@ class BioCorePlugin(Star):
                 if dup is not None:
                     continue
                 _imp = round(max(0.55, min(1.0, imp * 0.7 + score * 0.3)), 3)
+                _safe_title = self._mask_if_safety(title)
+                _safe_body = self._mask_if_safety(body)
                 record = {
                     "id": "evt_" + str(int(now)) + "_" + str(abs(hash(title + body)) % 100000),
                     "ts": now,
                     "session": str(getattr(event, "unified_msg_origin", "") or ""),
-                    "title": title,
-                    "event": body[:600],
+                    "title": _safe_title,
+                    "event": _safe_body[:600],
                     "event_key": _ekey,
                     "centrality": round(max(0.0, min(1.0, schema)), 3),
-                    "central_details": body[:400],
+                    "central_details": _safe_body[:400],
                     "peripheral_details": "",
                     "meaning_to_her": "",
                     "reflection": "",
@@ -3985,7 +4000,7 @@ class BioCorePlugin(Star):
                     "recall_count": 0,
                     "last_recall": now,
                     "strength": _imp,
-                    "source_texts": list(seg_texts)[:12],
+                    "source_texts": [self._mask_if_safety(t) for t in seg_texts[:12]],
                     "ranking_mode": "deterministic_embedding",
                     "milestone": relationship_meta.milestone_from_text(title + " " + body),
                 }
@@ -4035,6 +4050,7 @@ class BioCorePlugin(Star):
             return
         if not self._llm_allowed("event_summary"):
             return
+        texts = [self._mask_if_safety(t) for t in texts if str(t).strip()]
         try:
             provider = await self._provider_for("event_summary", event)
             if provider is None:
@@ -4044,9 +4060,10 @@ class BioCorePlugin(Star):
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             data = interpretation.parse_event_summary(raw, getattr(self, "summary_max_chars", 0))
             title = str(data.get("title") or summary or "重要事件").strip()[:80]
-            ev = self._summary_cap(str(data.get("event") or summary or "").strip())
-            meaning = self._summary_cap(str(data.get("meaning_to_her") or "").strip())
-            reflection = self._summary_cap(str(data.get("reflection") or "").strip())
+            title = self._mask_if_safety(title)
+            ev = self._mask_if_safety(self._summary_cap(str(data.get("event") or summary or "").strip()))
+            meaning = self._mask_if_safety(self._summary_cap(str(data.get("meaning_to_her") or "").strip()))
+            reflection = self._mask_if_safety(self._summary_cap(str(data.get("reflection") or "").strip()))
             if not ev:
                 return
             _prov = self._event_provenance(event, None, ts=time.time())
@@ -4074,7 +4091,7 @@ class BioCorePlugin(Star):
                 "recall_count": 0,
                 "last_recall": time.time(),
                 "strength": round(max(0.5, min(1.0, intensity)), 3),
-                "source_texts": texts[:12],
+                "source_texts": [self._mask_if_safety(t) for t in texts[:12]],
             }
             _dup = self._find_any_duplicate_event(record.get("session") or "", _ekey, ev,
                                                  record.get("ts") or time.time())
@@ -4096,6 +4113,47 @@ class BioCorePlugin(Star):
             logger.info("[biocore] strong event archived: %s", title)
         except Exception as exc:
             logger.warning("[biocore] strong event summary failed: %s", exc)
+
+    async def _maybe_archive_events(self, event, core=None):
+        """Request-path hook: make deterministic event archive reachable."""
+        if not self._llm_allowed("event_ranking"):
+            return
+        now = time.time()
+        if now - float(getattr(self, "_last_event_archive", 0.0)) < 300:
+            return
+        try:
+            doc = self._load_memory(event)
+            entries = doc.get("entries") if isinstance(doc, dict) else []
+            if not isinstance(entries, list) or not entries:
+                return
+            self._last_event_archive = now
+            await self._archive_ranked_events(event, core, entries)
+        except Exception as exc:
+            logger.warning("[biocore] request-path event archive failed: %s", exc)
+
+    async def _maybe_archive_strong_event(self, event, core, text=""):
+        """Request-path hook: wire the single-event summary path (BUG-01)."""
+        if not self._llm_allowed("event_summary"):
+            return
+        key = str(getattr(event, "unified_msg_origin", "") or "")
+        now = time.time()
+        try:
+            last_map = getattr(self, "_last_strong_event_summary", None)
+            if not isinstance(last_map, dict):
+                last_map = {}
+                self._last_strong_event_summary = last_map
+            if now - float(last_map.get(key, 0.0) or 0.0) < 600:
+                return
+            texts = [str(h.get("text") or "").strip() for h in (getattr(core, "history", None) or [])[-6:]
+                     if isinstance(h, dict) and str(h.get("text") or "").strip()]
+            if str(text or "").strip():
+                texts.append(str(text).strip())
+            if not texts:
+                return
+            last_map[key] = now
+            await self._archive_strong_event(event, core, texts, str(text or texts[-1])[:160])
+        except Exception as exc:
+            logger.warning("[biocore] request-path strong event failed: %s", exc)
 
     async def _voice_context(self, event) -> str:
         if not getattr(self, "voice_transcription_enabled", True):
@@ -4951,7 +5009,7 @@ class BioCorePlugin(Star):
             core = BioCore(dict(DEFAULT_PROFILE))
         key = next(iter(self.cores), "") or ""
         ev = types.SimpleNamespace(unified_msg_origin=key)
-        ok = await self._generate_insight(ev, core, events[-6:])
+        ok = await self._generate_insight(ev, core, events[:6])
         insight = ""
         try:
             if INSIGHT_ARCHIVE_PATH.exists():
@@ -5227,6 +5285,43 @@ class BioCorePlugin(Star):
             pass
         return {"entries": []}
 
+    def _merge_memory_doc(self, doc, latest) -> dict:
+        """Merge concurrently-written entries into the consolidation doc (BUG-03)."""
+        if not isinstance(doc, dict):
+            return doc
+        if not isinstance(latest, dict):
+            return doc
+        cur = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+        new = latest.get("entries") if isinstance(latest.get("entries"), list) else []
+        known_ids = {str(x.get("id") or "") for x in cur if isinstance(x, dict)}
+        known_keys = {(str(x.get("text") or ""), round(float(x.get("ts", 0) or 0), 3))
+                      for x in cur if isinstance(x, dict)}
+        for entry in new:
+            if not isinstance(entry, dict):
+                continue
+            eid = str(entry.get("id") or "")
+            key = (str(entry.get("text") or ""), round(float(entry.get("ts", 0) or 0), 3))
+            if (eid and eid in known_ids) or (not eid and key in known_keys):
+                continue
+            cur.append(entry)
+            if eid:
+                known_ids.add(eid)
+            known_keys.add(key)
+        doc["entries"] = cur
+        if isinstance(latest.get("write_log"), list):
+            logs = doc.get("write_log") if isinstance(doc.get("write_log"), list) else []
+            for row in latest["write_log"]:
+                if isinstance(row, dict) and row not in logs:
+                    logs.append(row)
+            doc["write_log"] = logs[-200:]
+        if isinstance(latest.get("working_set"), list):
+            ws = doc.get("working_set") if isinstance(doc.get("working_set"), list) else []
+            for item in latest["working_set"]:
+                if str(item) and str(item) not in {str(x) for x in ws}:
+                    ws.append(str(item))
+            doc["working_set"] = ws[-32:]
+        return doc
+
     def _save_memory(self, event, doc):
         try:
             if isinstance(doc, dict):
@@ -5486,8 +5581,12 @@ class BioCorePlugin(Star):
                         group.append(j)
                         used.add(j)
                 if len(group) >= 2:
-                    groups.append(group)
-                if len(groups) >= 3:
+                    # BUG-06: summarize in batches, never drop entries beyond 8.
+                    for _off in range(0, len(group), 8):
+                        _chunk = group[_off:_off + 8]
+                        if len(_chunk) >= 2:
+                            groups.append(_chunk)
+                if len(groups) >= 9:
                     break
             if not groups:
                 if time.time() - float(getattr(self, "_last_event_archive", 0.0)) > 300:
@@ -5497,11 +5596,11 @@ class BioCorePlugin(Star):
                 return
             changed = False
             for group in groups:
-                _raw_texts = [str(entries[i].get("text", "")).strip() for i in group
+                _raw_texts = [self._mask_if_safety(str(entries[i].get("text", "")).strip()) for i in group
                               if str(entries[i].get("text", "")).strip()]
                 # Dedupe near-identical memories before spending summary tokens;
                 # grouping above already uses embedding cosine (>=0.86).
-                texts = memory_meta.dedupe_texts(_raw_texts, threshold=0.88, limit=8)
+                texts = memory_meta.dedupe_texts(_raw_texts, threshold=0.88, limit=0)
                 if len(texts) < 2:
                     continue
                 payload = {"summary": "", "candidates": []}
@@ -5518,7 +5617,7 @@ class BioCorePlugin(Star):
                     # Deterministic extractive summary from embedding-grouped and
                     # deduped representatives; no LLM involved.
                     payload["summary"] = "；".join(texts[:5])
-                summary = self._summary_cap(str(payload.get("summary") or ""))
+                summary = self._mask_if_safety(self._summary_cap(str(payload.get("summary") or "")))
                 candidates = payload.get("candidates") or []
                 if not getattr(self, "llm_memory_candidates", True):
                     candidates = []
@@ -5610,6 +5709,10 @@ class BioCorePlugin(Star):
             if changed:
                 await self._archive_ranked_events(event, core, entries)
                 await self._maybe_archive_insight(event, core, "compression")
+                try:
+                    self._merge_memory_doc(doc, self._load_memory(event))
+                except Exception:
+                    pass
                 self._trim_memory(doc, core)
                 self._save_memory(event, doc)
                 logger.info("[biocore] memory consolidated groups=%s entries=%s", len(groups), len(entries))
@@ -6604,6 +6707,11 @@ class BioCorePlugin(Star):
         _img = await self._image_context(event)
         _voice = await self._voice_context(event)
         _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice)
+        try:
+            asyncio.create_task(self._maybe_archive_events(event, core))
+            asyncio.create_task(self._maybe_archive_strong_event(event, core, text))
+        except Exception:
+            pass
         try:
             _recent_turns = [str(h.get("text") or "") for h in (core.history or [])[-6:]]
             core.bind_goal_context(memory_text=_mem, self_model=self.self_model,
