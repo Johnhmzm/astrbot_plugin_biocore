@@ -19,45 +19,85 @@
   let phase = 0, lastFrame = 0, frameCount = 0;
   const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
   const isDark = () => document.documentElement.dataset.theme === "dark";
-  // task-42: pure orbit math lives in orb_math.js so evals can run it in node;
-  // the inline copy below is the same formula if that script is missing.
-  const _OM = (typeof window !== "undefined" && window.BioOrbMath) || {
-    ORBIT_COUNT: 8,
-    orbitRadius(metric, R) { return Number(R) * (0.9 + 0.7 * clamp(metric)); },
-    identityOffset(index, count) {
-      const n = Math.max(2, Number(count) || 8);
+  // task-42/44: pure orbit math lives in orb_math.js so evals can run it in
+  // node (world units, R applied once). The inline copy below is the same
+  // formula if that script is missing.
+  const _OM = (typeof window !== "undefined" && window.BioOrbMath) || (() => {
+    const _clamp01 = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0; };
+    const _channels = [
+      { key: "echo", tilt: .35, speed: .55, color: "255,107,0" },
+      { key: "rippleU", tilt: -.36, speed: -.40, color: "48,48,46" },
+      { key: "noise", tilt: .82, speed: .62, color: "142,132,120" },
+      { key: "rippleL", tilt: -1.18, speed: .90, color: "255,138,40" },
+      { key: "spike", tilt: .62, speed: -.28, color: "96,96,96" },
+      { key: "trust", tilt: 1.12, speed: 1.10, color: "196,148,82" },
+      { key: "dominance", tilt: -.70, speed: .34, color: "96,140,255" },
+      { key: "social", tilt: 1.34, speed: -.46, color: "64,196,168" }
+    ];
+    const _ident = (index, count) => {
+      const n = Math.max(2, Number(count) || _channels.length);
       return (Math.max(0, Math.min(n - 1, Number(index) || 0)) / (n - 1) - 0.5) * 0.06;
-    },
-    orbitVolatility(prev, cur, dt, prevEma) {
-      if (prev == null || !Number.isFinite(Number(prev)) || !Number.isFinite(Number(cur))) return 0.5;
-      const secs = Number(dt);
-      if (!Number.isFinite(secs) || secs <= 0) return 0.5;
-      const raw = clamp(Math.abs(Number(cur) - Number(prev)) / secs);
-      const base = (prevEma == null || !Number.isFinite(Number(prevEma))) ? 0.5 : clamp(prevEma);
-      return clamp(0.15 * raw + 0.85 * base);
-    },
-    orbitSpeed(base, vol) { return Number(base || 0) * (0.4 + 1.8 * clamp(vol)); }
-  };
+    };
+    const _build = () => _channels.map((c, i) => ({
+      key: c.key, tilt: c.tilt, speed: c.speed, color: c.color, angle: 0,
+      ident: _ident(i, _channels.length), tiltOff: _ident(i, _channels.length) * 1.5
+    }));
+    const _radius = (metric) => 0.9 + 0.7 * _clamp01(metric);
+    const _project = (x, y, z, ry, rx, R) => {
+      const cY = Math.cos(Number(ry) || 0), sY = Math.sin(Number(ry) || 0);
+      const cX = Math.cos(Number(rx) || 0), sX = Math.sin(Number(rx) || 0);
+      const x0 = Number(x) || 0, y0 = Number(y) || 0, z0 = Number(z) || 0;
+      let x1 = x0 * cY - z0 * sY;
+      let z1 = x0 * sY + z0 * cY;
+      let y1 = y0 * cX - z1 * sX;
+      z1 = y0 * sX + z1 * cX;
+      const p = 1 + z1 * .16;
+      return { x: x1 * Number(R) * p, y: y1 * Number(R) * p, z: z1 };
+    };
+    const _ringPts = (orbit, metric, angle, ry, rx, R, samples) => {
+      const n = Math.max(8, Math.floor(Number(samples) || 160));
+      const rBase = _radius(metric);
+      const tilt = Number(orbit && orbit.tilt || 0) + Number(orbit && orbit.tiltOff || 0);
+      const idShift = Number(orbit && orbit.ident || 0);
+      const ay = Number(angle) || 0;
+      const cA = Math.cos(ay), sA = Math.sin(ay), sT = Math.sin(tilt), cT = Math.cos(tilt);
+      const pts = [];
+      for (let i = 0; i <= n; i++) {
+        const a = i / n * Math.PI * 2;
+        const x = Math.cos(a) * rBase + idShift;
+        const y = Math.sin(a) * rBase * sT + idShift * .5;
+        const z = Math.sin(a) * rBase * cT;
+        const x1 = x * cA - z * sA;
+        const z1 = x * sA + z * cA;
+        pts.push(_project(x1, y, z1, ry, rx, R));
+      }
+      return pts;
+    };
+    return {
+      ORBIT_COUNT: 8,
+      ORBIT_CHANNELS: _channels,
+      buildOrbits: _build,
+      orbitRadius: _radius,
+      identityOffset: _ident,
+      projectPoint: _project,
+      orbitRingPoints: _ringPts,
+      orbitVolatility(prev, cur, dt, prevEma) {
+        if (prev == null || !Number.isFinite(Number(prev)) || !Number.isFinite(Number(cur))) return 0.5;
+        const secs = Number(dt);
+        if (!Number.isFinite(secs) || secs <= 0) return 0.5;
+        const raw = _clamp01(Math.abs(Number(cur) - Number(prev)) / secs);
+        const base = (prevEma == null || !Number.isFinite(Number(prevEma))) ? 0.5 : _clamp01(prevEma);
+        return _clamp01(0.15 * raw + 0.85 * base);
+      },
+      orbitSpeed(base, vol) { return Number(base || 0) * (0.4 + 1.8 * _clamp01(vol)); }
+    };
+  })();
   window.addEventListener("biocore:state", (e) => { if (e.detail) state = Object.assign({}, state, e.detail); });
 
-  // task-42: 8 centre channels share one distance law (orb_math.js); the old
-  // per-channel rx/width are gone. Identity = colour + a fixed +/-0.03R
-  // angle/tilt offset; speed sign stays fixed as part of the identity.
-  const orbits = [
-    { key: "echo", tilt: .35, speed: .55, color: "255,107,0" },
-    { key: "rippleU", tilt: -.36, speed: -.40, color: "48,48,46" },
-    { key: "noise", tilt: .82, speed: .62, color: "142,132,120" },
-    { key: "rippleL", tilt: -1.18, speed: .90, color: "255,138,40" },
-    { key: "spike", tilt: .62, speed: -.28, color: "96,96,96" },
-    { key: "trust", tilt: 1.12, speed: 1.10, color: "196,148,82" },
-    { key: "dominance", tilt: -.70, speed: .34, color: "96,140,255" },
-    { key: "social", tilt: 1.34, speed: -.46, color: "64,196,168" }
-  ];
-  orbits.forEach((o, i) => {
-    o.angle = 0;
-    o.ident = _OM.identityOffset(i, orbits.length);   // -0.03 .. +0.03 (x R)
-    o.tiltOff = o.ident * 1.5;                        // small fixed tilt offset
-  });
+  // task-42/44: 8 centre channels share one world-unit distance law. Identity =
+  // colour + fixed +/-0.03 world-unit offset (orb_math.js buildOrbits); the
+  // speed sign stays fixed as part of the identity.
+  const orbits = _OM.buildOrbits();
   function orbitMetric(o, s) {
     const n = s.noise || {}, rp = s.ripple || {}, sp = s.spiking || {};
     if (o.key === "echo") return clamp(Math.abs(s.echo_trace || s.echo || 0));
@@ -227,13 +267,10 @@
     return { hue, sat: 26 + clamp(s.energy) * 18, stress: clamp(s.stress) };
   }
   function project(x, y, z, ry, rx) {
-    const cy = Math.cos(ry), sy = Math.sin(ry), cx = Math.cos(rx), sx = Math.sin(rx);
-    let x1 = x * cy - z * sy;
-    let z1 = x * sy + z * cy;
-    let y1 = y * cx - z1 * sx;
-    z1 = y * sx + z1 * cx;
-    const p = 1 + z1 * .16;
-    return { x: CX + x1 * R * p, y: CY + y1 * R * p, z: z1 };
+    // task-44: single geometry source in orb_math.js; R is applied exactly once
+    // there, so callers pass WORLD units (1 unit = R px).
+    const q = _OM.projectPoint(x, y, z, ry, rx, R);
+    return { x: CX + q.x, y: CY + q.y, z: q.z };
   }
 
   let sig = null;
@@ -336,27 +373,13 @@
   }
 
   function ring(orbit, ry, rx, front, centerY) {
-    const pts = [];
     const mv = orbitMetric(orbit, state.snapshot || {});
-    // task-42: all 8 centre channels share rBase = R * (0.9 + 0.7 * metric);
-    // identity comes from colour + a fixed +/-0.03R angle/tilt offset, and
-    // opacity/line width follow the metric instead of a per-channel width.
-    const rBase = _OM.orbitRadius(mv, R);
-    const tilt = orbit.tilt + (orbit.tiltOff || 0);
-    const idShift = (orbit.ident || 0) * R;
+    // task-44: world-unit geometry sampled in orb_math.js; projectPoint applies
+    // R once, so every channel is a CLOSED 3D ellipse of on-screen radius
+    // R * (0.9 + 0.7 * metric) = 0.9R .. 1.6R (never a radial line / open arc).
     const dy = (typeof centerY === "number" ? centerY : CY) - CY;
-    for (let i = 0; i <= 160; i++) {
-      const a = i / 160 * Math.PI * 2;
-      let x = Math.cos(a) * rBase + idShift;
-      let y = Math.sin(a) * rBase * Math.sin(tilt) + idShift * .5;
-      let z = Math.sin(a) * rBase * Math.cos(tilt);
-      const ay = orbit.angle;
-      const x1 = x * Math.cos(ay) - z * Math.sin(ay);
-      const z1 = x * Math.sin(ay) + z * Math.cos(ay);
-      const q = project(x1, y, z1, ry, rx);
-      q.y += dy;
-      pts.push(q);
-    }
+    const pts = _OM.orbitRingPoints(orbit, mv, orbit.angle, ry, rx, R, 160)
+      .map((q) => ({ x: CX + q.x, y: CY + q.y + dy, z: q.z }));
     ctx.beginPath();
     for (let i = 0; i < pts.length - 1; i++) {
       const a = pts[i], b = pts[i + 1];
