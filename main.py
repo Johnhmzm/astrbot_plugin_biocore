@@ -114,6 +114,17 @@ LLM_FUNCTIONS = (
     "insight",
     "memory_summary",
     "image_caption",
+    # L-T01..L-T12: proposal-only LLM functions, all OFF by default. Each one
+    # is routed through _provider_for and its prompt/parser lives in
+    # interpretation.py; model output never writes biological state directly.
+    "relationship_impression",
+    "repair_hint",
+    "empathy_hint",
+    "pragmatics_hint",
+    "tom_probe",
+    "diary",
+    "relationship_narrative",
+    "humor_hint",
 )
 LLM_FUNCTION_DEFAULTS = {
     "persona_compile": False,
@@ -122,6 +133,14 @@ LLM_FUNCTION_DEFAULTS = {
     "insight": False,
     "memory_summary": True,
     "image_caption": False,
+    "relationship_impression": False,
+    "repair_hint": False,
+    "empathy_hint": False,
+    "pragmatics_hint": False,
+    "tom_probe": False,
+    "diary": False,
+    "relationship_narrative": False,
+    "humor_hint": False,
 }
 INSIGHT_MIN_NEW_EVENTS = 3
 INSIGHT_COOLDOWN_SECONDS = 60 * 60
@@ -132,6 +151,25 @@ LLM_FUNCTION_ALIASES = {
     "ranking": "event_ranking",
     "caption": "image_caption",
     "summary": "event_summary",
+    "impression": "relationship_impression",
+    "repair": "repair_hint",
+    "empathy": "empathy_hint",
+    "pragmatics": "pragmatics_hint",
+    "tom": "tom_probe",
+    "narrative": "relationship_narrative",
+    "humor": "humor_hint",
+}
+
+# L-T01..L-T12 cooldowns (seconds); all functions stay OFF by default.
+LLM_V2_COOLDOWNS = {
+    "relationship_impression": 3600,
+    "repair_hint": 900,
+    "empathy_hint": 900,
+    "pragmatics_hint": 900,
+    "tom_probe": 600,
+    "diary": 72000,
+    "relationship_narrative": 86400,
+    "humor_hint": 900,
 }
 
 # ACT-R retrieval constants (Anderson & Reder 1999; partial matching per
@@ -359,6 +397,7 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
                 state = {"trust": trust, "closeness": 0.5, "conflict": 0.5,
                          "repair": 0.0, "predictability": 0.5}
         trajectory = rel.get("trajectory") if isinstance(rel.get("trajectory"), list) else []
+        belief = data.get("belief_state") if isinstance(data.get("belief_state"), dict) else {}
         rows.append({
             "sender_id": str(data.get("sender_id") or ""),
             "sender_name": str(data.get("sender_name") or ""),
@@ -377,6 +416,17 @@ def _relationship_rows(user_dir: Path, *, max_users: int = 50,
                 "social_world": [dict(x) for x in (rel.get("social_world") or [])[:20] if isinstance(x, dict)],
                 "attachment": rel.get("attachment") if isinstance(rel.get("attachment"), dict) else {},
                 "milestones": [dict(x) for x in (rel.get("milestones") or [])[:10] if isinstance(x, dict)],
+                "we_memory": [dict(x) for x in (rel.get("we_memory") or [])[:20] if isinstance(x, dict)],
+                "commitment": round(float(rel.get("commitment", 0.0) or 0.0), 4),
+                "investment": round(float(rel.get("investment", 0.0) or 0.0), 4),
+                "annotations": [dict(x) for x in (rel.get("annotations") or [])[:10]
+                                if isinstance(x, dict)],
+            },
+            "belief_state": {
+                "beliefs": [str(x)[:60] for x in (belief.get("beliefs") or [])[:3] if str(x)],
+                "desires": [str(x)[:60] for x in (belief.get("desires") or [])[:3] if str(x)],
+                "intentions": [str(x)[:60] for x in (belief.get("intentions") or [])[:3] if str(x)],
+                "confidence": round(float(belief.get("confidence", 0.0) or 0.0), 3),
             },
         })
     return rows
@@ -1624,7 +1674,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.58")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.59")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1647,6 +1697,15 @@ class BioCorePlugin(Star):
         # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
         self.hybrid_retrieval = bool(self.config.get("hybrid_retrieval", True))
         self.llm_memory_candidates = bool(self.config.get("llm_memory_candidates", True))
+        # B-T02 we-memory is evidence-gated and OFF by default (needs real
+        # shared-ritual evidence before it writes relationship state).
+        self.we_memory_enabled = bool(self.config.get("we_memory_enabled", False))
+        # L-T02..L-T12 bounded runtime state. Only the last trace/hint is kept
+        # in memory; no prompt text is stored and no reply is generated.
+        self._last_cause_trace = []
+        self._last_strategy_hint = ""
+        self._last_memory_entries = []
+        self._llm_v2_last = {}
         # LLM scope: user requirement is "LLM only for reply + summary".
         # When true, BioCore only calls the LLM for event/memory summaries;
         # persona compile / event ranking / reflection / image caption are
@@ -1749,7 +1808,14 @@ class BioCorePlugin(Star):
         self._persona_compiled_hash = ""
         # Schema slots proposed once by the persona compiler (bounded strings).
         self.schema_texts = []
+        # L-T07: bounded persona style slots proposed by the compiler (never
+        # prompt text; the interpretation layer stays the only prompt owner).
+        self.persona_style = {"intimacy_style": "neutral", "address_terms": []}
         self.self_model = self._load_self_model()
+        if not isinstance(self.self_model.get("diary"), list):
+            self.self_model["diary"] = []
+        if not isinstance(self.self_model.get("relationship_narratives"), list):
+            self.self_model["relationship_narratives"] = []
         self.api_config = {}
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -1784,6 +1850,14 @@ class BioCorePlugin(Star):
                 if isinstance(_schema, list):
                     self.schema_texts = [str(x).strip()[:60] for x in _schema
                                          if str(x).strip()][:6]
+                _style = d.get("style")
+                if isinstance(_style, dict):
+                    _tag = str(_style.get("intimacy_style") or "neutral")
+                    if _tag not in ("neutral", "playful", "gentle", "reserved"):
+                        _tag = "neutral"
+                    _terms = [str(x).strip()[:12] for x in (_style.get("address_terms") or [])
+                              if str(x).strip()][:3]
+                    self.persona_style = {"intimacy_style": _tag, "address_terms": _terms}
                 logger.info("[biocore] loaded profile %s", PROFILE_PATH)
         except Exception as exc:
             logger.warning("[biocore] profile load failed: %s", exc)
@@ -1884,6 +1958,263 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] main LLM provider lookup failed for %s: %s", kind, exc)
             return None
 
+
+    # ------------------------------------------------------------------
+    # LLM v2 (L-T01..L-T12): proposal-only model calls.
+    #
+    # Contract:
+    #   * every function is registered in LLM_FUNCTIONS and defaults to OFF;
+    #   * prompt text + output parsing only live in interpretation.py;
+    #   * a model output is validated before storage (relationship_meta);
+    #   * no function writes core v/a/d/trust/goals or generates a reply;
+    #   * strict/legacy mode (_llm_allowed) skips every extra call.
+    # ------------------------------------------------------------------
+    async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None):
+        if not self._llm_allowed(kind):
+            return None
+        try:
+            provider = await self._provider_for(kind, event)
+        except Exception as exc:
+            logger.warning("[biocore] llm v2 provider failed (%s): %s", kind, exc)
+            return None
+        if provider is None:
+            return None
+        try:
+            if system_prompt:
+                resp = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
+            else:
+                resp = await provider.text_chat(prompt=prompt)
+            raw = str(getattr(resp, "completion_text", "") or "").strip()
+            if not raw:
+                return None
+            return parser(raw)
+        except Exception as exc:
+            logger.warning("[biocore] llm v2 call/paser failed (%s): %s", kind, exc)
+            return None
+
+    def _llm_v2_cooldown_ok(self, kind):
+        try:
+            last = float((getattr(self, "_llm_v2_last", {}) or {}).get(kind, 0.0) or 0.0)
+        except Exception:
+            last = 0.0
+        return (time.time() - last) >= float(LLM_V2_COOLDOWNS.get(kind, 600))
+
+    def _llm_v2_mark(self, kind):
+        if not isinstance(getattr(self, "_llm_v2_last", None), dict):
+            self._llm_v2_last = {}
+        self._llm_v2_last[kind] = time.time()
+
+    def _user_record(self, event):
+        try:
+            path = self._user_path(event)
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+        except Exception:
+            pass
+        return {}
+
+    def _save_user_record(self, event, data):
+        try:
+            if not isinstance(data, dict):
+                return
+            path = self._user_path(event)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception as exc:
+            logger.warning("[biocore] user record save failed: %s", exc)
+
+    def _relationship_of(self, user_data):
+        rel = (user_data or {}).get("relationship") if isinstance(user_data, dict) else None
+        return rel if isinstance(rel, dict) else {}
+
+    def _deterministic_hint(self, text, user_data, events_raw, memory_meta):
+        """One bounded deterministic token; interpretation owns the wording."""
+        rel = self._relationship_of(user_data)
+        repair_state = rel.get("repair_state") if isinstance(rel.get("repair_state"), dict) else {}
+        hint = interpretation.repair_strategy_block(repair_state)
+        if not hint and interpretation.cause_question(text):
+            hint = interpretation.cause_trace_block(getattr(self, "_last_cause_trace", []))
+        if not hint:
+            hint = interpretation.memory_receipt_block(memory_meta, text)
+        if not hint:
+            hint = interpretation.grounding_check_block(memory_meta, text)
+        if not hint:
+            hint = interpretation.response_strategy_block(events_raw)
+        return hint
+
+    async def _maybe_llm_hints(self, event, core, user_data, events_raw, memory_meta, text):
+        """Optional per-turn strategy refinement; only when a function is ON."""
+        parts = [self._deterministic_hint(text, user_data, events_raw, memory_meta)]
+        rel = self._relationship_of(user_data)
+        state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+        repair_state = rel.get("repair_state") if isinstance(rel.get("repair_state"), dict) else {}
+        phase = str(repair_state.get("phase") or "stable")
+        gate = str((memory_meta or {}).get("gate") or "none")
+        try:
+            conflict = float(state.get("conflict", 0.5) or 0.5)
+            trust = float(state.get("trust", 0.5) or 0.5)
+        except Exception:
+            conflict, trust = 0.5, 0.5
+        try:
+            if phase != "stable" and self._llm_v2_cooldown_ok("repair_hint"):
+                tag = await self._llm_v2_call(
+                    "repair_hint", interpretation.repair_hint_prompt(repair_state),
+                    interpretation.parse_repair_hint, event)
+                if tag:
+                    parts.append("llm_repair=" + tag)
+                    self._llm_v2_mark("repair_hint")
+            elif events_raw and self._llm_v2_cooldown_ok("empathy_hint"):
+                tag = await self._llm_v2_call(
+                    "empathy_hint", interpretation.empathy_hint_prompt(events_raw),
+                    interpretation.parse_empathy_hint, event)
+                if tag:
+                    parts.append("llm_empathy=" + tag)
+                    self._llm_v2_mark("empathy_hint")
+            elif gate in ("semi", "force") and self._llm_v2_cooldown_ok("pragmatics_hint"):
+                tag = await self._llm_v2_call(
+                    "pragmatics_hint", interpretation.pragmatics_hint_prompt(memory_meta),
+                    interpretation.parse_pragmatics_hint, event)
+                if tag:
+                    parts.append("llm_pragma=" + tag)
+                    self._llm_v2_mark("pragmatics_hint")
+            elif (conflict < 0.45 and trust > 0.5 and self._llm_v2_cooldown_ok("humor_hint")):
+                tag = await self._llm_v2_call(
+                    "humor_hint", interpretation.humor_hint_prompt(rel),
+                    interpretation.parse_humor_hint, event)
+                if tag and tag != "none":
+                    parts.append("humor=" + tag)
+                    self._llm_v2_mark("humor_hint")
+        except Exception as exc:
+            logger.warning("[biocore] llm v2 hint failed: %s", exc)
+        hint = interpretation.combine_strategy_hint(*parts)
+        self._last_strategy_hint = hint
+        return hint
+
+    async def _maybe_tom_probe(self, event, core, text, user_data, memory_meta):
+        """L-T06: optional bounded ToM annotation; never changes core state."""
+        if not self._llm_allowed("tom_probe") or not self._llm_v2_cooldown_ok("tom_probe"):
+            return
+        try:
+            recent = [str(h.get("text") or "") for h in (core.history or [])[-6:]]
+            refs = [str(x) for x in (getattr(self, "_last_memory_entries", []) or []) if str(x)][:6]
+            proposal = await self._llm_v2_call(
+                "tom_probe",
+                interpretation.tom_prompt(user_data, recent, memory_lines=refs),
+                lambda raw: interpretation.parse_tom_update(raw, allowed_refs=refs),
+                event)
+            if not proposal:
+                return
+            updated = relationship_meta.apply_tom_update(user_data, proposal, allowed_refs=refs)
+            if updated:
+                self._save_user_record(event, updated)
+                self._llm_v2_mark("tom_probe")
+        except Exception as exc:
+            logger.warning("[biocore] tom probe failed: %s", exc)
+
+    async def _maybe_relationship_impression(self, event, core):
+        """L-T01: event-driven bounded impression proposals (default OFF)."""
+        if not self._llm_allowed("relationship_impression"):
+            return
+        if not self._llm_v2_cooldown_ok("relationship_impression"):
+            return
+        try:
+            events = [e for e in self._event_archive(12) if isinstance(e, dict)]
+            important = [e for e in events
+                         if float(e.get("importance", 0.0) or 0.0) >= 0.6]
+            if len(important) < 3:
+                return
+            allowed = [str(e.get("id") or "") for e in important if str(e.get("id") or "")]
+            if len(allowed) < 3:
+                return
+            user_data = self._user_record(event)
+            proposal = await self._llm_v2_call(
+                "relationship_impression",
+                interpretation.relationship_impression_prompt(
+                    important, self._relationship_of(user_data)),
+                lambda raw: interpretation.parse_relationship_impression(
+                    raw, allowed_refs=allowed),
+                event)
+            if not proposal:
+                return
+            current = self._relationship_of(user_data)
+            updated = relationship_meta.apply_relationship_impression(
+                current, proposal, allowed_refs=allowed)
+            if not updated:
+                return
+            user_data["relationship"] = updated
+            self._save_user_record(event, user_data)
+            self._llm_v2_mark("relationship_impression")
+        except Exception as exc:
+            logger.warning("[biocore] relationship impression failed: %s", exc)
+
+    async def _maybe_diary(self, event, core):
+        """L-T08: at most one bounded diary entry per cooldown (default OFF)."""
+        if not self._llm_allowed("diary") or not self._llm_v2_cooldown_ok("diary"):
+            return
+        try:
+            digests = [d for d in (getattr(core, "daily_digests", []) or [])
+                       if isinstance(d, dict)]
+            if not digests:
+                return
+            digest = digests[-1]
+            allowed = [str(x) for x in (digest.get("event_ids") or []) if str(x)]
+            if not allowed:
+                return
+            titles = [str(e.get("title") or "")
+                      for e in self._event_archive(10) if isinstance(e, dict)]
+            parsed = await self._llm_v2_call(
+                "diary", interpretation.diary_prompt(digest, titles),
+                lambda raw: interpretation.parse_diary(raw, allowed_event_ids=allowed),
+                event)
+            if not parsed:
+                return
+            diary = self.self_model.get("diary")
+            if not isinstance(diary, list):
+                diary = []
+            diary.append({"ts": time.time(), "date": str(digest.get("date") or ""),
+                          "text": parsed["diary"], "evidence": parsed["evidence"],
+                          "generated": True})
+            self.self_model["diary"] = diary[-30:]
+            self._save_self_model()
+            self._llm_v2_mark("diary")
+        except Exception as exc:
+            logger.warning("[biocore] diary failed: %s", exc)
+
+    async def _maybe_relationship_narrative(self, event, core):
+        """L-T12: manual/periodic bounded relationship narrative (default OFF)."""
+        if not self._llm_allowed("relationship_narrative"):
+            return
+        if not self._llm_v2_cooldown_ok("relationship_narrative"):
+            return
+        try:
+            user_data = self._user_record(event)
+            rel = self._relationship_of(user_data)
+            marks = [m for m in (rel.get("milestones") or []) if isinstance(m, dict)]
+            allowed = [str(m.get("key") or m.get("type") or "") for m in marks
+                       if str(m.get("key") or m.get("type") or "")]
+            if not allowed:
+                return
+            parsed = await self._llm_v2_call(
+                "relationship_narrative",
+                interpretation.relationship_narrative_prompt(rel),
+                lambda raw: interpretation.parse_relationship_narrative(
+                    raw, allowed_refs=allowed), event)
+            if not parsed:
+                return
+            items = self.self_model.get("relationship_narratives")
+            if not isinstance(items, list):
+                items = []
+            items.append({"ts": time.time(), "text": parsed["narrative"],
+                          "evidence_refs": parsed["evidence_refs"]})
+            self.self_model["relationship_narratives"] = items[-5:]
+            self._save_self_model()
+            self._llm_v2_mark("relationship_narrative")
+        except Exception as exc:
+            logger.warning("[biocore] relationship narrative failed: %s", exc)
+
+
     def _vision_provider_for(self, event=None):
         """Resolve the vision provider for image caption (never a text LLM)."""
         _cfg = self._function_cfg("image_caption")
@@ -1928,7 +2259,8 @@ class BioCorePlugin(Star):
             self.schema_texts = []
             try:
                 PROFILE_PATH.write_text(json.dumps(
-                    {"persona": "", "profile": self.profile, "schema": []},
+                    {"persona": "", "profile": self.profile, "schema": [],
+                     "style": dict(getattr(self, "persona_style", {}) or {})},
                     ensure_ascii=False, indent=1), encoding="utf-8")
             except Exception:
                 pass
@@ -1957,7 +2289,11 @@ class BioCorePlugin(Star):
             _compiled = interpretation.parse_persona_compile(raw, DEFAULT_PROFILE)
             self.profile = _compiled.get("profile") or dict(DEFAULT_PROFILE)
             self.schema_texts = list(_compiled.get("schema") or [])
-            logger.info("[biocore] persona schema slots=%s", len(self.schema_texts))
+            _style = _compiled.get("style") if isinstance(_compiled.get("style"), dict) else {}
+            self.persona_style = {"intimacy_style": str(_style.get("intimacy_style") or "neutral"),
+                                  "address_terms": list(_style.get("address_terms") or [])[:3]}
+            logger.info("[biocore] persona schema slots=%s style=%s", len(self.schema_texts),
+                        self.persona_style.get("intimacy_style"))
         except Exception as exc:
             logger.warning("[biocore] persona compile failed: %s", exc)
             self.profile = dict(DEFAULT_PROFILE)
@@ -1966,6 +2302,7 @@ class BioCorePlugin(Star):
             PROFILE_PATH.write_text(json.dumps(
                 {"persona": self.persona_text, "profile": self.profile,
                  "schema": list(getattr(self, "schema_texts", []) or []),
+                 "style": dict(getattr(self, "persona_style", {}) or {}),
                  "persona_hash": _sha256(self.persona_text or text)},
                 ensure_ascii=False, indent=1), encoding="utf-8")
             self._persona_compiled_hash = _sha256(self.persona_text or text)
@@ -2013,7 +2350,8 @@ class BioCorePlugin(Star):
                 # the key (otherwise they silently overrode plugin config).
                 for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                             "kb_enabled", "hybrid_retrieval", "safety_enabled",
-                            "llm_memory_candidates", "llm_only_reply_summary"):
+                            "llm_memory_candidates", "llm_only_reply_summary",
+                            "we_memory_enabled"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
                 if "safety_enabled" in d and "safety_enabled" not in self.config:
@@ -2036,7 +2374,8 @@ class BioCorePlugin(Star):
                 "safety_enabled": bool(getattr(self, "safety_enabled", False)),
                 "llm_memory_candidates": bool(
                     getattr(self, "llm_memory_candidates", True)),
-                "llm_only_reply_summary": bool(
+                "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
+            "llm_only_reply_summary": bool(
                     getattr(self, "llm_only_reply_summary", True)),
                 "persona_id": str(getattr(self, "persona_id", "") or ""),
                 "inject_intent": bool(self.inject_intent),
@@ -2399,6 +2738,31 @@ class BioCorePlugin(Star):
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in (sid or "unknown"))[:60]
         return USER_DIR / (safe + ".json")
 
+    def _we_memory_candidates(self, entries) -> list:
+        """Deterministic, evidence-gated we-memory proposals (default off)."""
+        out = []
+        patterns = (
+            ("nickname", ("叫你", "喊你", "外号", "昵称")),
+            ("ritual", ("每天", "每次", "习惯", "约好", "固定")),
+            ("anniversary", ("纪念日", "周年", "第一次")),
+            ("inside_joke", ("梗", "暗号", "约定")),
+            ("shared_object", ("我们的", "一起买", "一起做", "送给")),
+        )
+        for entry in (entries if isinstance(entries, list) else [])[-100:]:
+            if not isinstance(entry, dict):
+                continue
+            text = str(entry.get("text") or "").strip()
+            if not text:
+                continue
+            for mtype, words in patterns:
+                if not any(w in text for w in words):
+                    continue
+                snippet = text[:40]
+                out.append({"type": mtype, "text": snippet, "confidence": 0.6,
+                            "evidence_refs": [str(entry.get("id") or entry.get("ts") or "m")[:80]]})
+                break
+        return relationship_meta.merge_we_memory([], out)
+
     def _touch_user(self, event, core=None) -> dict:
         try:
             sid, name = self._speaker(event)
@@ -2449,6 +2813,12 @@ class BioCorePlugin(Star):
                     _social_world = relationship_meta.build_social_world(_entries)
                 except Exception:
                     _social_world = []
+                _we_memory = []
+                try:
+                    if getattr(self, "we_memory_enabled", False):
+                        _we_memory = self._we_memory_candidates(_entries)
+                except Exception:
+                    _we_memory = []
                 _milestones = []
                 try:
                     for _ev in self._event_archive(20):
@@ -2468,6 +2838,12 @@ class BioCorePlugin(Star):
                     absence=d.get("absence"),
                     social_world=_social_world,
                     milestones=_milestones,
+                    we_memory=_we_memory,
+                    interactions=d.get("interactions", 0),
+                    repair_success=int((_prev_rel.get("repair_state") or {}).get("repair_attempts", 0) or 0),
+                    promises_kept=len([x for x in _milestones if x.get("type") == "promise_kept"]),
+                    annotations=(_prev_rel.get("annotations")
+                                 if isinstance(_prev_rel.get("annotations"), list) else None),
                 )
             except Exception:
                 pass
@@ -4219,6 +4595,7 @@ class BioCorePlugin(Star):
             "safety_enabled": bool(getattr(self, "safety_enabled", False)),
             "llm_memory_candidates": bool(
                 getattr(self, "llm_memory_candidates", True)),
+            "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
             "llm_only_reply_summary": bool(
                 getattr(self, "llm_only_reply_summary", True)),
             "insight_auto_enabled": bool(getattr(self, "insight_auto_enabled", False)),
@@ -4236,6 +4613,10 @@ class BioCorePlugin(Star):
             "memory_index": _memory_index_rows(MEMORY_DIR),
             "relationships": _relationship_rows(USER_DIR),
             "last_memory_meta": dict(getattr(self, "_last_memory_meta", {}) or {}),
+            # L-T02/L-T03..L-T12 read-only runtime surface (bounded, no prompt text)
+            "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
+                                 if isinstance(x, dict)],
+            "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],
             "kb_config": {"enabled": bool(getattr(self, "kb_enabled", False)),
                           "names": list(getattr(self, "kb_names", []))},
             "kb_available": await self._kb_available(),
@@ -4663,15 +5044,19 @@ class BioCorePlugin(Star):
             return False
 
 
-    def _memory_score(self, core, entry: dict, cosine: float, *,
-                      query_text: str = "", hybrid: bool = False,
-                      sensitive_protect: bool = False) -> float:
+    def _memory_score_parts(self, core, entry: dict, cosine: float, *,
+                            query_text: str = "", hybrid: bool = False,
+                            sensitive_protect: bool = False) -> dict:
+        """Return the deterministic score plus its bounded component factors.
+
+        L-T02/C-T01: storing the factors here lets the runtime expose an
+        auditable retrieval-contribution trace without the LLM ever generating
+        one and without changing the ranking math.
+        """
         importance = float(entry.get("importance", 0.5) or 0.5)
         age = max(0.0, time.time() - float(entry.get("ts", 0) or 0))
-        # ACT-R-style power-law recency rather than pure exponential.
         age_days = age / 86400.0
         recency = 1.0 / math.pow(1.0 + max(0.0, age_days) * 0.35, 0.55)
-        # biological emphasis: salient/trusted memories survive longer
         try:
             recall_count = int(entry.get("recall_count", 0) or 0)
         except Exception:
@@ -4684,22 +5069,17 @@ class BioCorePlugin(Star):
             due = 1.15 if 0 < float(entry.get("next_review_ts", 0) or 0) <= time.time() else 1.0
         except Exception:
             due = 1.0
-        # MemoryBank retention probability R = exp(-t/S)
         try:
             stability = max(0.2, float(entry.get("stability_days", 1.0) or 1.0))
         except Exception:
             stability = 1.0
         retention = math.exp(-age_days / stability)
-        # ACT-R base-level activation for a single trace: B = ln(t^-d).
         try:
             _d = ACT_R_DECAY
             _b = math.log(max(1e-9, (age_days + 0.05) ** (-_d)))
             base = 1.0 / (1.0 + math.exp(-(_b + 1.0)))
         except Exception:
             base = 0.5
-        # Minimal runtime versions of three mechanisms: schema-congruent
-        # (self-defining) memory, retrieval-induced forgetting, and regulation
-        # x memory. All deterministic; none rewrites memory content.
         try:
             schema = max(0.0, min(1.0, float(entry.get("schema_congruence", 0.0) or 0.0)))
         except Exception:
@@ -4707,8 +5087,6 @@ class BioCorePlugin(Star):
         inhibition = memory_meta.retrieval_inhibition(entry)
         regulation = str(getattr(core, "regulation", "none") or "none") if core is not None else "none"
         regulation_mod = memory_meta.regulation_memory_modifier(entry, regulation)
-        # Hybrid lexical half (no LLM): exact tokens surface even when the
-        # embedding provider is weak; MMR diversification happens in select_top.
         lexical_mod = 1.0
         if hybrid and query_text:
             try:
@@ -4722,20 +5100,44 @@ class BioCorePlugin(Star):
         sensitive_mod = 1.0
         if sensitive_protect:
             sensitive_mod = memory_meta.sensitivity_weight(entry)
-        # Causal chain: cosine relevance * biological salience/recency *
-        # source/confidence/tier weight -> recall threshold and ranking.
-        return (cosine * (0.40 + 0.60 * importance) * recency
-                * (0.65 + 0.35 * retention)
-                * (0.85 + 0.15 * base)
-                * (1.0 + 0.10 * math.log1p(max(0, recall_count)))
-                * due
-                * (1.0 + 0.05 * math.log1p(max(0, assoc)))
-                * memory_meta.retrieval_weight(entry)
-                * (1.0 + 0.10 * schema)
-                * (1.0 - 0.15 * inhibition)
-                * regulation_mod
-                * lexical_mod
-                * sensitive_mod)
+        source_weight = memory_meta.retrieval_weight(entry)
+        score = (cosine * (0.40 + 0.60 * importance) * recency
+                 * (0.65 + 0.35 * retention)
+                 * (0.85 + 0.15 * base)
+                 * (1.0 + 0.10 * math.log1p(max(0, recall_count)))
+                 * due
+                 * (1.0 + 0.05 * math.log1p(max(0, assoc)))
+                 * source_weight
+                 * (1.0 + 0.10 * schema)
+                 * (1.0 - 0.15 * inhibition)
+                 * regulation_mod
+                 * lexical_mod
+                 * sensitive_mod)
+        return {
+            "score": float(score),
+            "cosine": round(float(cosine), 6),
+            "importance": round(importance, 4),
+            "recency": round(recency, 4),
+            "retention": round(0.65 + 0.35 * retention, 4),
+            "base": round(0.85 + 0.15 * base, 4),
+            "recall_boost": round(1.0 + 0.10 * math.log1p(max(0, recall_count)), 4),
+            "assoc_boost": round(1.0 + 0.05 * math.log1p(max(0, assoc)), 4),
+            "due": round(due, 4),
+            "source_weight": round(float(source_weight), 4),
+            "schema": round(schema, 4),
+            "inhibition": round(float(inhibition), 4),
+            "regulation": round(float(regulation_mod), 4),
+            "lexical": round(float(lexical_mod), 4),
+            "sensitive": round(float(sensitive_mod), 4),
+        }
+
+    def _memory_score(self, core, entry: dict, cosine: float, *,
+                      query_text: str = "", hybrid: bool = False,
+                      sensitive_protect: bool = False) -> float:
+        parts = self._memory_score_parts(
+            core, entry, cosine, query_text=query_text,
+            hybrid=hybrid, sensitive_protect=sensitive_protect)
+        return float(parts.get("score", 0.0))
 
     def _memory_top_k(self, core) -> int:
         k = 4
@@ -5443,6 +5845,42 @@ class BioCorePlugin(Star):
         top = memory_meta.select_top(
             scored, self._memory_top_k(core),
             lambda_=(0.72 if getattr(self, "hybrid_retrieval", True) else 1.0))
+        # L-T02 / C-T01: auditable retrieval-contribution trace (deterministic,
+        # bounded to 8 rows, no text beyond the entry id). This is a trace of
+        # ranking factors, not a claim of psychological causation, and it is
+        # never produced by the LLM.
+        try:
+            _cos_by_id = {id(_e): _cos for _e, _cos in retrieval_pairs}
+            _trace = []
+            for _rank, (_score, _entry) in enumerate(top[:8], start=1):
+                _eid = str(_entry.get("id") or "").strip()[:20]
+                if not _eid:
+                    continue
+                _parts = self._memory_score_parts(
+                    core, _entry, _cos_by_id.get(id(_entry), 0.0),
+                    query_text=text,
+                    hybrid=bool(getattr(self, "hybrid_retrieval", True)),
+                    sensitive_protect=bool(getattr(self, "sensitive_memory_protection", False)))
+                _trace.append({
+                    "entry_id": _eid,
+                    "rank": _rank,
+                    "score": round(float(_score), 4),
+                    "cosine": _parts["cosine"],
+                    "importance": _parts["importance"],
+                    "source": str(_entry.get("memory_source") or "direct")[:12],
+                    "tier": str(_entry.get("memory_tier") or "warm")[:8],
+                    "conflict": bool(_entry.get("conflict")),
+                    "components": {k: _parts[k] for k in
+                                   ("recency", "retention", "schema", "inhibition",
+                                    "regulation", "lexical", "sensitive", "source_weight")},
+                })
+            self._last_cause_trace = _trace
+            self._last_memory_entries = [str(e.get("id") or "")
+                                         for _s, e in top if str(e.get("id") or "")][:8]
+            doc["last_recall_trace"] = _trace
+            self._save_memory(event, doc)
+        except Exception as _trace_exc:
+            logger.warning("[biocore] recall trace failed: %s", _trace_exc)
         # Nader reconsolidation + Ebbinghaus review: recalling an item makes
         # it labile, strengthens it slightly, and schedules the next review.
         _intervals = [1, 2, 4, 7, 15, 30, 60]
@@ -5723,6 +6161,21 @@ class BioCorePlugin(Star):
         except Exception:
             pass
         _events = self._event_context(event)
+        # L-T02..L-T12: one bounded strategy/cause/receipt token, plus optional
+        # proposal-only LLM refinements (each function default OFF).
+        _events_raw = self._event_archive(9)
+        _strategy_hint = ""
+        try:
+            _strategy_hint = await self._maybe_llm_hints(
+                event, core, _user_data, _events_raw,
+                getattr(self, "_last_memory_meta", {}) or {}, text)
+        except Exception as exc:
+            logger.warning("[biocore] strategy hint failed: %s", exc)
+        try:
+            await self._maybe_tom_probe(event, core, text, _user_data,
+                                        getattr(self, "_last_memory_meta", {}) or {})
+        except Exception as exc:
+            logger.warning("[biocore] tom probe call failed: %s", exc)
         _kb = ""
         if getattr(self, "kb_enabled", False) and getattr(self, "kb_names", None) and self._usable_memory_text(text):
             try:
@@ -5753,6 +6206,7 @@ class BioCorePlugin(Star):
                 and str(_loop.get("status") or "open") == "open"
                 and str(_loop.get("due_hint") or "") in ("soon", "tomorrow")),
             answer_confidence=(getattr(self, "_last_memory_meta", {}) or {}).get("answer_confidence"),
+            strategy_hint=_strategy_hint,
         ).strip()
         if _compact:
             # Keep the system prompt stable (prefix-cache friendly) and attach
@@ -5797,5 +6251,13 @@ class BioCorePlugin(Star):
             safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)[:80]
             (STATE_DIR / (safe + ".json")).write_text(
                 json.dumps(core.snapshot(), ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+        # L-T01/L-T08/L-T12: background proposal-only tasks. They self-check
+        # the per-function switch + cooldown, so default OFF means zero calls.
+        try:
+            asyncio.create_task(self._maybe_relationship_impression(event, core))
+            asyncio.create_task(self._maybe_diary(event, core))
+            asyncio.create_task(self._maybe_relationship_narrative(event, core))
         except Exception:
             pass

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261025-1313" />
+<link rel="stylesheet" href="./styles.css?v=20261025-1329" />
 </head>
 <body>
 <div class="shell">
@@ -440,6 +440,14 @@
         <div class="setting-row"><div><b>自动长期洞察</b><small>默认关闭。打开后才会在记忆压缩/事件归档时按「新增重要事件 ≥3 + 60 分钟冷却 + 24 小时兜底」自动生成；LLM 开关关闭时不会在后台写入任何记录。</small></div><label class="switch"><input type="checkbox" id="swInsightAuto"><span></span></label></div>
         <div class="setting-row"><div><b>记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。关闭时改用 embedding 分组+去重的抽取式摘要，不调用 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
         <div class="setting-row"><div><b>图片描述</b><small>调用视觉 provider 描述图片；默认关闭，且只走视觉 API，不混用文本 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_image_caption_enabled"><span></span></label><select id="fn_image_caption_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>关系印象抽取</b><small>从近期事件提议关系印象/特质；默认关闭，证据 refs 必填，只写有界 annotation，不改 trust/goals。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_relationship_impression_enabled"><span></span></label><select id="fn_relationship_impression_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>修复策略提示</b><small>冲突后由模型在固定枚举里选一种修复策略；默认关闭，只给策略不给完整句子。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_repair_hint_enabled"><span></span></label><select id="fn_repair_hint_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>共情/资本化提示</b><small>好消息/坏消息的回应策略枚举；默认关闭，不写完整安慰句。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_empathy_hint_enabled"><span></span></label><select id="fn_empathy_hint_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>语用/澄清提示</b><small>记忆不确定或指代不清时的 clarify/confirm/hedge 提示；默认关闭。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_pragmatics_hint_enabled"><span></span></label><select id="fn_pragmatics_hint_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>用户信念推断</b><small>bounded 信念/愿望/意图推断，证据 refs 必填；默认关闭，不写核心状态。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_tom_probe_enabled"><span></span></label><select id="fn_tom_probe_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>日记渲染</b><small>每天最多一次，用确定性 daily digest + 事件证据生成一条日记；默认关闭。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_diary_enabled"><span></span></label><select id="fn_diary_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>关系叙述</b><small>用关系状态+里程碑生成简短叙述；默认关闭，证据 refs 必填。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_relationship_narrative_enabled"><span></span></label><select id="fn_relationship_narrative_provider" class="event-session"></select></div></div>
+        <div class="setting-row"><div><b>幽默时机提示</b><small>仅关系稳定时给 light/none 提示；默认关闭，不生成玩笑句。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_humor_hint_enabled"><span></span></label><select id="fn_humor_hint_provider" class="event-session"></select></div></div>
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
@@ -493,5 +501,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261025-1313"></script><script src="./orb.js?v=20261025-1313"></script>
+<script src="./app.js?v=20261025-1329"></script><script src="./orb.js?v=20261025-1329"></script>
 </body></html>
