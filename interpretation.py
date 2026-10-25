@@ -211,7 +211,7 @@ def insight_prompt(events) -> str:
 def render_compact(core, memory="", events="", self_model=None, user=None,
                    image="", kb="", speaker="", voice="", memory_meta=None,
                    open_loops=None, open_loops_due=0, answer_confidence=None,
-                   strategy_hint="") -> str:
+                   strategy_hint="", continuity=None) -> str:
     """Render biological state into the single compact block the LLM sees.
 
     The interpretation layer owns this string; callers pass raw state/data and
@@ -297,6 +297,13 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
         # L-T02..L-T12: one bounded strategy/cause/receipt token (never a
         # second line; the interpretation layer owns the text).
         cp += " | hint=" + _hint(strategy_hint, 120)
+    if continuity:
+        # A4 continuity opener: at most one bounded "last talk" fragment on
+        # the same [BC] line. No line is added and no empty placeholder is
+        # emitted when there is no history data.
+        _cont = continuity if isinstance(continuity, str) else continuity_block(continuity)
+        if _cont:
+            cp += " | cont=" + _hint(_cont, CONTINUITY_LIMIT)
     # Minimal fallback instruction only; full format lives in the
     # biocore-interpretation skill (loaded on demand) to save per-turn tokens.
     cp += ("\n[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；"
@@ -758,6 +765,64 @@ def combine_strategy_hint(*parts) -> str:
     if not values:
         return ""
     return _hint(" ".join(values), HINT_LIMIT)
+
+
+# A4 continuity opener ("上次聊到"): deterministic, no LLM, at most one short
+# fragment appended to the existing [BC] line. The caller must already have
+# decided that history exists (returning after a break); this builder still
+# returns "" for empty input so no placeholder can ever be injected.
+CONTINUITY_LIMIT = 140
+CONTINUITY_SUMMARY_LIMIT = 70
+CONTINUITY_LOOP_LIMIT = 30
+
+
+def continuity_block(continuity, limit=CONTINUITY_LIMIT) -> str:
+    """Build the bounded A4 "last talk" fragment.
+
+    Fields (all optional, caller passes raw bio data):
+      summary:      last-session summary/title text (<=70 chars used)
+      loops:        unfinished open-loop dicts (or strings), max 2 used
+      relationship: {"closeness","conflict","repair","phase","absence"}
+    Returns "" when every field is empty, so no-history turns stay untouched.
+    """
+    data = _dict(continuity)
+    if not data:
+        return ""
+    parts = []
+    summary = _hint(data.get("summary"), CONTINUITY_SUMMARY_LIMIT)
+    if summary:
+        parts.append("上次：" + summary)
+    loops = []
+    raw_loops = data.get("loops")
+    if isinstance(raw_loops, (list, tuple)):
+        for item in raw_loops[:2]:
+            text = _hint(item.get("text") if isinstance(item, dict) else item,
+                         CONTINUITY_LOOP_LIMIT)
+            if text and text not in loops:
+                loops.append(text)
+    if loops:
+        parts.append("未完成：" + "、".join(loops))
+    rel = _dict(data.get("relationship"))
+    if rel:
+        try:
+            closeness = max(0.0, min(1.0, float(rel.get("closeness", 0.5) or 0.5)))
+            conflict = max(0.0, min(1.0, float(rel.get("conflict", 0.5) or 0.5)))
+            repair = max(0.0, min(1.0, float(rel.get("repair", 0.0) or 0.0)))
+        except Exception:
+            closeness, conflict, repair = 0.5, 0.5, 0.0
+        rel_parts = ["关系 近%.2f/冲突%.2f" % (closeness, conflict)]
+        if repair > 0.05:
+            rel_parts.append("修复%.2f" % repair)
+        phase = str(rel.get("phase") or "stable")
+        if phase and phase != "stable":
+            rel_parts.append("修复阶段=" + phase[:12])
+        absence = str(rel.get("absence") or "")
+        if absence and absence != "same_day":
+            rel_parts.append("回归=" + absence[:12])
+        parts.append("；".join(rel_parts))
+    if not parts:
+        return ""
+    return _hint("；".join(parts), limit)
 
 
 # ---------------------------------------------------------------------------

@@ -178,6 +178,11 @@ ACT_R_DECAY = 0.5
 RETRIEVAL_THRESHOLD = 0.25
 PARTIAL_MATCH_THRESHOLD = 0.35
 
+# A4 continuity opener: inject "last talk" only when the user returns after a
+# break, so the same-session turns and first-ever turns stay untouched.
+A4_CONTINUITY_GAP_SECONDS = 600.0
+A4_CONTINUITY_MAX_LOOPS = 2
+
 # Zacks et al. (2007) event segmentation: a boundary is predicted by elapsed
 # time and by the content change since the previous event in the same session.
 EVENT_BOUNDARY_WINDOW_SECONDS = 1800.0
@@ -1674,7 +1679,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.59")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.60")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -6125,11 +6130,137 @@ class BioCorePlugin(Star):
         self._schedule_consolidation(event, core)
 
     @filter.on_llm_request()
+
+    # ------------------------------------------------------------------
+    # A4 continuity opener ("上次聊到").
+    #
+    # Deterministic only: no LLM call, no new line, no reply generation. The
+    # three data sources are already persisted bio data:
+    #   1) the latest consolidated memory summary / last archived session event
+    #      (fallback: self_timeline past / autobiography title);
+    #   2) unfinished open loops captured *before* the current turn;
+    #   3) relationship state (closeness/conflict/repair/phase/absence).
+    # It is injected only when the user returns after A4_CONTINUITY_GAP_SECONDS
+    # and at least one of the three sources is non-empty.
+    # ------------------------------------------------------------------
+    def _continuity_summary(self, event, core):
+        """Return a bounded last-session summary text, or "" when none exists."""
+        try:
+            doc = self._load_memory(event)
+            entries = doc.get("entries") if isinstance(doc, dict) else []
+            summaries = [e for e in (entries or [])
+                         if isinstance(e, dict)
+                         and str(e.get("role") or "") == "summary"
+                         and str(e.get("text") or "").strip()]
+            if summaries:
+                summaries.sort(key=lambda e: float(e.get("ts", 0) or 0), reverse=True)
+                text = str(summaries[0].get("text") or "")
+                text = text.split("\n[再巩固]")[0]
+                text = re.sub(r"\s+", " ", text).strip()
+                if text:
+                    return text[:80]
+        except Exception:
+            pass
+        try:
+            last = self._last_session_event(
+                str(getattr(event, "unified_msg_origin", "") or ""))
+            if isinstance(last, dict):
+                title = str(last.get("title") or "").strip()
+                detail = str(last.get("meaning_to_her")
+                             or last.get("reflection")
+                             or last.get("event") or "").strip()
+                text = (title + ("：" + detail if detail else "")).strip()
+                text = re.sub(r"\s+", " ", text)
+                if text:
+                    return text[:80]
+        except Exception:
+            pass
+        try:
+            timeline = getattr(core, "self_timeline", {}) if core is not None else {}
+            past = timeline.get("past") if isinstance(timeline, dict) else None
+            for item in reversed(past or []):
+                text = re.sub(r"\s+", " ", str(item or "")).strip()
+                if text:
+                    return text[:80]
+        except Exception:
+            pass
+        try:
+            for item in reversed(list(getattr(core, "autobiography", []) or [])):
+                if isinstance(item, dict):
+                    text = str(item.get("title") or item.get("meaning") or "").strip()
+                    if text:
+                        return re.sub(r"\s+", " ", text)[:80]
+        except Exception:
+            pass
+        return ""
+
+    def _continuity_context(self, event, core, user_data, prior_loops=None):
+        """Build raw A4 continuity data; returns {} when there is no history."""
+        data = user_data if isinstance(user_data, dict) else {}
+        absence = data.get("absence") if isinstance(data.get("absence"), dict) else {}
+        try:
+            gap_days = float(absence.get("gap_days", 0.0) or 0.0)
+        except Exception:
+            gap_days = 0.0
+        if gap_days * 86400.0 < A4_CONTINUITY_GAP_SECONDS:
+            return {}
+        summary = self._continuity_summary(event, core)
+        loops = []
+        try:
+            source = prior_loops if isinstance(prior_loops, list) else (
+                getattr(core, "open_loops", []) if core is not None else [])
+            open_loops = []
+            for item in (source or []):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("status") or "open") != "open":
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                due = str(item.get("due_hint") or "")
+                try:
+                    seen = float(item.get("last_mentioned_ts")
+                                 or item.get("created_ts") or 0.0)
+                except Exception:
+                    seen = 0.0
+                open_loops.append((0 if due in ("soon", "tomorrow") else 1,
+                                   -seen, text[:60], due))
+            open_loops.sort(key=lambda row: (row[0], row[1]))
+            for _rank, _neg_ts, text, due in open_loops[:A4_CONTINUITY_MAX_LOOPS]:
+                loops.append({"text": text, "due_hint": due})
+        except Exception:
+            loops = []
+        relationship = data.get("relationship") if isinstance(data.get("relationship"), dict) else {}
+        state = relationship.get("state") if isinstance(relationship.get("state"), dict) else {}
+        rel = {}
+        if state:
+            for key in ("closeness", "conflict", "repair"):
+                try:
+                    rel[key] = round(max(0.0, min(1.0, float(state.get(key, 0.0) or 0.0))), 3)
+                except Exception:
+                    pass
+            repair_state = relationship.get("repair_state")
+            if isinstance(repair_state, dict):
+                phase = str(repair_state.get("phase") or "stable")
+                if phase and phase != "stable":
+                    rel["phase"] = phase
+            bucket = str(absence.get("bucket") or "")
+            if bucket and bucket != "same_day":
+                rel["absence"] = bucket
+        if not summary and not loops and not rel:
+            return {}
+        return {"summary": summary, "loops": loops, "relationship": rel}
+
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         if not self.enabled or not self.inject_intent:
             return
         await self._ensure_profile(event)
         core = self._core(event)
+        # A4: capture open loops from *before* this turn so the continuity
+        # opener cannot echo a loop created by the current message.
+        _prior_open_loops = [dict(x) for x in (getattr(core, "open_loops", []) or [])
+                             if isinstance(x, dict)]
         text = str(getattr(event, "message_str", "") or "").strip()
         if not text:
             text = str(getattr(req, "prompt", "") or "")
@@ -6151,6 +6282,13 @@ class BioCorePlugin(Star):
         if text:
             core.observe(text, embedding=_query_vec)
         _user_data = self._touch_user(event, core)
+        _continuity = {}
+        try:
+            _continuity = self._continuity_context(event, core, _user_data,
+                                                   prior_loops=_prior_open_loops)
+        except Exception as exc:
+            logger.warning("[biocore] continuity context failed: %s", exc)
+            _continuity = {}
         _img = await self._image_context(event)
         _voice = await self._voice_context(event)
         _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice)
@@ -6207,6 +6345,7 @@ class BioCorePlugin(Star):
                 and str(_loop.get("due_hint") or "") in ("soon", "tomorrow")),
             answer_confidence=(getattr(self, "_last_memory_meta", {}) or {}).get("answer_confidence"),
             strategy_hint=_strategy_hint,
+            continuity=_continuity,
         ).strip()
         if _compact:
             # Keep the system prompt stable (prefix-cache friendly) and attach
