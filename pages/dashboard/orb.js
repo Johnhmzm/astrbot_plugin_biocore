@@ -369,6 +369,8 @@
   const _mouse = { x: -1, y: -1, inside: false };
   // task-48: per-ball smooth focus dim state + last frame timestamp.
   const _ballDims = new Map();
+  // task-70: smoothed visual-only gravity offsets per memory ball
+  const _ballGravityOffsets = new Map();
   let _lastDrawTs = 0;
   // convert the emotion rgb to a saturated, slightly deep hsl so balls keep hue
   // separation instead of turning into desaturated dark blobs
@@ -1049,6 +1051,91 @@
                  x: q.x, y: q.y + (cy - CY), z: q.z,
                  front: q.z >= 0, size: 0 };
       });
+      // task-70: memory-ball gravity (visual only). mass=.3+.7*importance,
+      // range=R*(.25+.55*importance); pairs closer than range attract with
+      // F=G*mass_i*mass_j/(dist^2+soft); offsets are lerped .12/frame, capped
+      // at 10px, kept out of the centre ball and separated to avoid overlap.
+      // The offset is applied to the Kepler (x,y) before z-sort/hit/tooltip/
+      // rings/camera; event data is never touched.
+      const _gravityOn = !(state.visual && state.visual.memoryBallGravity === false);
+      if (_gravityOn && _balls.length > 1) {
+        const _G = 2.4, _soft = 64, _capPx = 10;
+        _balls.forEach((b, idx) => {
+          const mass = .3 + .7 * b.imp;
+          const range = R * (.25 + .55 * b.imp);
+          b.gravityMass = mass;
+          b.gravityRange = range;
+          let fx = 0, fy = 0;
+          _balls.forEach((o, j) => {
+            if (j === idx) return;
+            const dx = o.x - b.x, dy = o.y - b.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist <= 1e-6 || dist >= range) return;
+            const force = _G * mass * (.3 + .7 * o.imp) / (dist * dist + _soft);
+            fx += dx / dist * force;
+            fy += dy / dist * force;
+          });
+          const mag = Math.hypot(fx, fy);
+          let tx = 0, ty = 0;
+          if (mag > 1e-9) {
+            const scaled = Math.min(_capPx, 1.8 * mag);
+            tx = fx / mag * scaled;
+            ty = fy / mag * scaled;
+          }
+          const prev = _ballGravityOffsets.get(b.key) || { x: 0, y: 0 };
+          const nx = prev.x + (tx - prev.x) * 0.12;
+          const ny = prev.y + (ty - prev.y) * 0.12;
+          _ballGravityOffsets.set(b.key, { x: nx, y: ny });
+          b.gravityMass = mass;
+          b.gravityRange = range;
+          b.gravityOffset = { x: nx, y: ny };
+          b.gravityForce = { x: fx, y: fy };
+        });
+        _balls.forEach((b) => {
+          b.x += (b.gravityOffset || { x: 0, y: 0 }).x;
+          b.y += (b.gravityOffset || { x: 0, y: 0 }).y;
+        });
+        _balls.forEach((b) => {
+          const dx = b.x - CX, dy = b.y - cy;
+          const dist = Math.hypot(dx, dy) || 1;
+          const minR = R * 0.75;
+          if (dist < minR) {
+            b.x = CX + dx / dist * minR;
+            b.y = cy + dy / dist * minR;
+          }
+        });
+        for (let i = 0; i < _balls.length; i++) {
+          for (let j = i + 1; j < _balls.length; j++) {
+            const a = _balls[i], c = _balls[j];
+            const dx = c.x - a.x, dy = c.y - a.y;
+            const dist = Math.hypot(dx, dy) || 0.001;
+            const minD = 16;
+            if (dist < minD) {
+              const push = (minD - dist) / 2;
+              const ux = dx / dist, uy = dy / dist;
+              a.x -= ux * push; a.y -= uy * push;
+              c.x += ux * push; c.y += uy * push;
+            }
+          }
+        }
+      } else {
+        _balls.forEach((b) => {
+          b.gravityMass = .3 + .7 * b.imp;
+          b.gravityRange = R * (.25 + .55 * b.imp);
+          b.gravityOffset = { x: 0, y: 0 };
+          b.gravityForce = { x: 0, y: 0 };
+        });
+      }
+      window.__biocoreGravity = { enabled: _gravityOn,
+        balls: _balls.map((b) => ({
+          id: b.key,
+          mass: Number((b.gravityMass || .3 + .7 * b.imp).toFixed(4)),
+          range: Number((b.gravityRange || R * (.25 + .55 * b.imp)).toFixed(2)),
+          offset: Number(Math.hypot(
+            (b.gravityOffset || {}).x || 0, (b.gravityOffset || {}).y || 0).toFixed(3)),
+          force: Number(Math.hypot(
+            (b.gravityForce || {}).x || 0, (b.gravityForce || {}).y || 0).toFixed(3))
+        })) };
       _balls.sort((p, q) => p.z - q.z);   // back to front
       _balls.forEach((b) => {
         const ev = b.ev;
@@ -1197,8 +1284,13 @@
         ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," + primaryRingHsl.s.toFixed(0) + "%," + primaryRingHsl.l.toFixed(0) + "%,.42)";
         ctx.lineWidth = .7; ctx.stroke();
         // body: centrality controls solidity; forgotten becomes a hollow ring
-        const bodyAlpha = Math.min(1, (.58 + .40 * b.imp) *
-          (.86 + .14 * (1 - b.ageNorm)) * depthK);
+        // task-70: the body must stay more opaque than its rings. Base body
+        // alpha floor .85 / cap .96; depth/dim are kept as a shared scene
+        // factor so bodyAlpha >= ringAlpha holds in every state.
+        const _sceneAlphaK = (0.94 + 0.06 * depthK) * dimK;
+        const _bodyAlphaBase = _bound(.85 + .11 * b.imp, .85, .96);
+        const bodyAlpha = _bound(_bodyAlphaBase * _sceneAlphaK,
+          .85 * _sceneAlphaK, .96);
         if (forgotten) {
           ctx.globalAlpha = Math.max(.18, bodyAlpha * .50 * dimK);
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
@@ -1300,7 +1392,9 @@
         _rings.forEach((ringItem, ringIdx) => {
           const weight = ringItem.p == null ? b.imp : ringItem.p;
           const ringBaseR = size + 4.2 + ringIdx * 2.4;
-          const ringAlphaR = _bound(.55 + .30 * weight, .55, .85);
+          // task-70: shared scene factor, ring alpha capped at .80
+          const ringAlphaR = _bound((.55 + .30 * weight) * _sceneAlphaK,
+            .55 * _sceneAlphaK, .80);
           const ringWidthR = _ringWidths[ringIdx];
           let ringColorR;
           if (ringItem.inferred) {
@@ -1397,6 +1491,13 @@
           });
           if (ringIdx === 0) {
             window.__biocoreRing.alpha = Number(ringAlphaR.toFixed(3));
+            window.__biocoreBallVisual = {
+              forgotten: !!forgotten,
+              bodyBase: Number(_bodyAlphaBase.toFixed(3)),
+              bodyAlpha: Number(bodyAlpha.toFixed(3)),
+              ringMax: Number(ringAlphaR.toFixed(3)),
+              sceneK: Number(_sceneAlphaK.toFixed(3))
+            };
             window.__biocoreRing.width = Number(ringWidthR.toFixed(2));
             window.__biocoreRing.highlightAlpha = 0;
             window.__biocoreRing.spin = _ringStyle === "orbit" ? Number(phase.toFixed(4)) : 0;
@@ -1431,6 +1532,9 @@
       const _liveBallKeys = new Set(_balls.map((b) => b.key));
       _ballDims.forEach((value, key) => {
         if (!_liveBallKeys.has(key)) _ballDims.delete(key);
+      });
+      _ballGravityOffsets.forEach((value, key) => {
+        if (!_liveBallKeys.has(key)) _ballGravityOffsets.delete(key);
       });
     }
     // selected ball vanished (visibility toggle / filter / archive change): fall
