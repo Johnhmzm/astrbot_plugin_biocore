@@ -468,6 +468,19 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .memory-card-head b{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .memory-level-tag{font-size:8px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent2);border:1px solid var(--line);padding:1px 5px;white-space:nowrap}
 .memory-event-text{display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden;margin:4px 0 8px;font-size:11px;line-height:1.6;color:var(--ink);word-break:break-word}
+/* task-53: session event card: small summary + labelled/status big summary */
+.memory-event-small{display:flex;gap:6px;align-items:baseline;margin:4px 0 6px;font-size:10px;line-height:1.5;color:var(--muted);word-break:break-word}
+.memory-event-small>small{flex:none;font-size:9px;letter-spacing:.1em;color:var(--accent2)}
+.memory-event-big{margin:2px 0 8px}
+.memory-event-big-head{display:flex;gap:8px;align-items:baseline;margin-bottom:2px}
+.memory-event-big-head>small{font-size:9px;letter-spacing:.1em;color:var(--faint)}
+.memory-event-big .memory-event-text{margin:0}
+.memory-status-badge{font-size:9px;line-height:1.5;padding:0 5px;border:1px solid var(--line);border-radius:3px;color:var(--muted);white-space:nowrap}
+.memory-status-badge.is-llm{color:var(--accent2);border-color:var(--accent2)}
+.memory-status-badge.is-fallback{color:var(--muted)}
+.memory-status-badge.is-legacy{color:var(--danger)}
+.memory-status-badge.is-edited{color:var(--accent2);border-color:var(--accent2)}
+.memory-event-nowin{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line2);font-size:10px;color:var(--faint)}
 .memory-scores{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
 .memory-scores small{font-size:9px;color:var(--faint)}
 .memory-important{border-left:2px solid var(--accent);padding:4px 0 4px 9px;margin-bottom:8px;display:flex;flex-direction:column;gap:3px}
@@ -605,7 +618,8 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .hero-mem-edit{display:flex;flex-direction:column;gap:6px}
 .hero-mem-field{display:flex;flex-direction:column;gap:2px}
 .hero-mem-field small{font-size:9px;letter-spacing:.12em;color:var(--faint)}
-.hero-mem-edit textarea{width:100%;box-sizing:border-box;min-height:26px;padding:5px 6px;font:11px/1.5 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:4px;resize:vertical}
+.hero-mem-edit textarea,.hero-mem-edit input[type="text"]{width:100%;box-sizing:border-box;min-height:26px;padding:5px 6px;font:11px/1.5 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:4px;resize:vertical}
+.hero-mem-edit input[type="text"]{resize:none}
 .hero-mem-msg{margin:0;font-size:10px;line-height:1.4;color:var(--accent2)}
 .hero-mem-msg.is-error{color:var(--danger)}
 .hero-mem-updated{margin:0;font-size:9px;color:var(--faint)}
@@ -628,7 +642,7 @@ input[type=range]{width:180px;accent-color:var(--accent)}
   .hero-mem-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .hero-mem-summary p{font-size:12px}
   .hero-mem-badge{font-size:9px}
-  .hero-mem-edit textarea{font-size:13px}
+  .hero-mem-edit textarea,.hero-mem-edit input[type="text"]{font-size:13px}
   .hero-mem-actions .btn{min-height:30px;font-size:11px}
   .hero-mem-history-item p{font-size:11px}
 }

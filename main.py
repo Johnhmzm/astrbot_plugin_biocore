@@ -1882,7 +1882,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.86")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.87")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3041,6 +3041,51 @@ class BioCorePlugin(Star):
             pass
         return ""
 
+    def _event_secondary_for_record(self, record) -> str:
+        """Secondary emotion for an archived event, from its session core.
+
+        Only used to fill a MISSING emotion_secondary on regenerate: the
+        highest spectrum probability is excluded (the primary emotion) and the
+        next one wins. No core / no spectrum data -> "" (never fabricated).
+        """
+        try:
+            rec = record if isinstance(record, dict) else {}
+            session = str(rec.get("session") or "").strip()
+            if not session:
+                return ""
+            core = None
+            cores = getattr(self, "cores", None)
+            if isinstance(cores, dict):
+                core = cores.get(session)
+            if core is None:
+                try:
+                    core = self._core(types.SimpleNamespace(unified_msg_origin=session))
+                except Exception:
+                    core = None
+            if core is None:
+                return ""
+            primary = str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")
+            probs = core._spectrum_probs() if callable(getattr(core, "_spectrum_probs", None)) else []
+            ordered = []
+            for item in (probs or []):
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key") or "").strip()[:32]
+                if not key:
+                    continue
+                try:
+                    weight = float(item.get("p", 0) or 0)
+                except Exception:
+                    weight = 0.0
+                ordered.append((weight, key))
+            ordered.sort(key=lambda pair: pair[0], reverse=True)
+            for _weight, key in ordered:
+                if key != primary:
+                    return key
+        except Exception as exc:
+            logger.warning("[biocore] event secondary lookup failed: %s", exc)
+        return ""
+
     def _mask_if_safety(self, text) -> str:
         value = str(text or "")
         try:
@@ -3286,6 +3331,16 @@ class BioCorePlugin(Star):
         return big_text[:limit], small_text, ""
 
     @staticmethod
+    def _validate_edited_event_title(title):
+        """Validate a manual event title -> (title, error); 1-80 chars."""
+        text = re.sub(r"\s+", " ", str(title or "")).strip()
+        if not text:
+            return "", "标题不能为空"
+        if len(text) > 80:
+            return "", "标题不能超过 80 字"
+        return text[:80], ""
+
+    @staticmethod
     def _apply_event_summary_fields(record, event_id: str, updates: dict) -> bool:
         """Mutation for _rewrite_jsonl_atomic: touch only the target row."""
         if not isinstance(record, dict) or not isinstance(updates, dict):
@@ -3315,6 +3370,7 @@ class BioCorePlugin(Star):
             ts = time.time()
         status = str(rec.get("summary_status") or "legacy").strip().lower() or "legacy"
         return {"ts": ts,
+                "title": str(rec.get("title") or "")[:80],
                 "summary_status": status,
                 "big_summary": str(rec.get("big_summary") or "")[:EVENT_SUMMARY_HARD_MAX],
                 "small_summary": str(rec.get("small_summary") or "")[:EVENT_SUMMARY_SMALL_MAX],
@@ -3388,6 +3444,7 @@ class BioCorePlugin(Star):
         source_text = "\n".join(texts) if texts else str(record.get("event") or "")
         now = time.time()
         big = small = ""
+        new_title = ""
         status = "fallback"
         llm_ok = False
         try:
@@ -3401,6 +3458,8 @@ class BioCorePlugin(Star):
                         raw, getattr(self, "summary_max_chars", 0))
                     llm_big = str(data.get("big_summary") or "").strip()
                     llm_small = str(data.get("small_summary") or "").strip()
+                    llm_title = interpretation.clean_event_title(
+                        data.get("title"), 80)
                     if llm_big or llm_small:
                         try:
                             cap = int(getattr(self, "summary_max_chars", 0) or 0)
@@ -3412,6 +3471,8 @@ class BioCorePlugin(Star):
                         big = self._mask_if_safety(str(llm_big or llm_small))[:limit]
                         small = self._mask_if_safety(
                             str(llm_small or llm_big))[:EVENT_SUMMARY_SMALL_MAX]
+                        if llm_title:
+                            new_title = llm_title[:80]
                         llm_ok = True
         except Exception as exc:
             logger.warning("[biocore] event summary regenerate via LLM failed: %s", exc)
@@ -3421,7 +3482,14 @@ class BioCorePlugin(Star):
             status = "fallback"
         else:
             status = "llm"
-        return {"big_summary": str(big or "")[:EVENT_SUMMARY_HARD_MAX],
+        if not new_title:
+            # deterministic title: cleaned first sentence -> meaning -> old title
+            new_title = (interpretation.clean_event_title(source_text)
+                         or interpretation.clean_event_title(record.get("meaning_to_her"))
+                         or interpretation.clean_event_title(title)
+                         or "对话事件")
+        return {"title": str(new_title or "对话事件")[:80],
+                "big_summary": str(big or "")[:EVENT_SUMMARY_HARD_MAX],
                 "small_summary": str(small or "")[:EVENT_SUMMARY_SMALL_MAX],
                 "summary_status": status,
                 "summary_edited": False,
@@ -3452,9 +3520,22 @@ class BioCorePlugin(Star):
                 updates = {"big_summary": big, "small_summary": small,
                            "summary_status": "edited", "summary_edited": True,
                            "summary_updated_ts": time.time()}
+                if body.get("title") is not None:
+                    checked_title, title_error = self._validate_edited_event_title(
+                        body.get("title"))
+                    if title_error:
+                        return {"status": "error", "message": title_error}
+                    updates["title"] = checked_title
         except Exception as exc:
             logger.warning("[biocore] event summary %s failed: %s", action, exc)
             return {"status": "error", "message": "处理失败"}
+        # task-51: a regenerate fills a missing secondary emotion from the live
+        # core spectrum (primary excluded). update never rewrites it; no core
+        # data keeps the field empty instead of fabricating one.
+        if action == "regenerate" and not str(record.get("emotion_secondary") or "").strip():
+            _secondary = self._event_secondary_for_record(record)
+            if _secondary:
+                updates["emotion_secondary"] = _secondary
         try:
             changed = self._rewrite_jsonl_atomic(
                 EVENT_ARCHIVE_PATH,
@@ -3467,6 +3548,8 @@ class BioCorePlugin(Star):
         saved = self._find_event_summary_record(event_id) or {}
         history = saved.get("summary_history")
         payload = dict({"event_id": event_id, "action": action}, **updates)
+        if "emotion_secondary" not in payload and str(saved.get("emotion_secondary") or "").strip():
+            payload["emotion_secondary"] = str(saved.get("emotion_secondary") or "").strip()
         payload["summary_history"] = history if isinstance(history, list) else []
         return {"status": "ok", "data": payload}
 
@@ -4242,7 +4325,7 @@ class BioCorePlugin(Star):
             candidates.sort(key=lambda x: x[0], reverse=True)
             _digest_event_ids = []
             for score, body, seg_entries, vec, schema, imp in candidates[:2]:
-                title = body.replace("\n", " ").strip()[:28] or "对话事件"
+                title = interpretation.clean_event_title(body) or "对话事件"
                 _ekey = self._normalize_event_key(title, title)
                 prov = self._event_provenance(event, entries, ts=now)
                 check = self._source_check(body, [str(t) for t in seg_entries],
