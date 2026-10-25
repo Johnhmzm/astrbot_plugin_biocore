@@ -125,6 +125,28 @@
       cameraTarget: _camTarget,
       cameraStep: _camStep,
       isTap: _tap,
+      DEPTH_FAR: .72, DEPTH_NEAR: 1,
+      DIM_FOCUSED: 1.25, DIM_DIMMED: .32, DIM_IDLE: 1, DIM_TAU: .2,
+      depthFactor: (z) => {
+        const t = Math.max(0, Math.min(1, (Number(z) + 1) / 2));
+        return .72 + .28 * t;
+      },
+      dimTarget: (focused, anyFocus) => (anyFocus ? (focused ? 1.25 : .32) : 1),
+      RING_FAR: .68, RING_NEAR: 1,
+      ringDepth: (z) => Math.max(0, Math.min(1, (Number(z) + 1) / 2)),
+      ringShade: (z) => {
+        const d = Math.max(0, Math.min(1, (Number(z) + 1) / 2));
+        return .68 + .32 * d;
+      },
+      smoothToward: (cur, tgt, dt, tau) => {
+        const c = Number.isFinite(Number(cur)) ? Number(cur) : (Number(tgt) || 0);
+        const t = Number.isFinite(Number(tgt)) ? Number(tgt) : c;
+        const d = Number(dt);
+        if (!Number.isFinite(d) || d <= 0) return c;
+        const tv = (Number.isFinite(Number(tau)) && Number(tau) > 0) ? Number(tau) : .2;
+        const a = 1 - Math.exp(-d / tv);
+        return c + (t - c) * Math.max(0, Math.min(1, a));
+      },
       orbitVolatility(prev, cur, dt, prevEma) {
         if (prev == null || !Number.isFinite(Number(prev)) || !Number.isFinite(Number(cur))) return 0.5;
         const secs = Number(dt);
@@ -283,6 +305,9 @@
   let _hoverOrb = false;
   const _memHit = [];
   const _mouse = { x: -1, y: -1, inside: false };
+  // task-48: per-ball smooth focus dim state + last frame timestamp.
+  const _ballDims = new Map();
+  let _lastDrawTs = 0;
   // convert the emotion rgb to a saturated, slightly deep hsl so balls keep hue
   // separation instead of turning into desaturated dark blobs
   const _vividHsl = (rgb, imp) => {
@@ -565,23 +590,36 @@
     const dy = (typeof centerY === "number" ? centerY : CY) - CY;
     const pts = _OM.orbitRingPoints(orbit, mv, orbit.angle, ry, rx, R, 160)
       .map((q) => ({ x: CX + q.x, y: CY + q.y + dy, z: q.z }));
-    ctx.beginPath();
-    for (let i = 0; i < pts.length - 1; i++) {
-      const a = pts[i], b = pts[i + 1];
-      if ((a.z >= 0) !== front) continue;
-      ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
-    }
     let _c = orbit.color;
     if (isDark()) {
       if (/36,36,36|96,96,96/.test(_c)) _c = "228,224,214";
       else if (/142,132,120|196,148,82/.test(_c)) _c = "188,168,138";
     }
-    // front = visible half; back half is dimmed for depth but keeps the ring
-    // hue. Opacity and line width track the channel metric (task-42).
-    ctx.strokeStyle = "rgba(" + _c + "," +
-      ((front ? 1 : .68) * (0.22 + 0.62 * mv)).toFixed(3) + ")";
-    ctx.lineWidth = (front ? 1 : .85) * (0.45 + 1.2 * mv);
-    ctx.stroke();
+    // task-48 addendum: no binary front alpha/width multiplier. front only
+    // selects the DRAW-ORDER pass (back half behind the core, front half in
+    // front); alpha and line width are smooth functions of segment depth:
+    //   alpha = base * (0.68 + 0.32 * depth), width = baseW * same shade.
+    // 20 contiguous chunks keep the closed ellipse while depth transitions.
+    const baseAlpha = 0.22 + 0.62 * mv;
+    const baseWidth = 0.45 + 1.2 * mv;
+    const segStep = Math.max(1, Math.floor((pts.length - 1) / 20));
+    const _prevCap = ctx.lineCap, _prevJoin = ctx.lineJoin;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (let start = 0; start < pts.length - 1; start += segStep) {
+      const end = Math.min(pts.length - 1, start + segStep);
+      const zMid = (pts[start].z + pts[end].z) / 2;
+      if ((zMid >= 0) !== front) continue;   // draw-order pass only
+      const shade = _OM.ringShade(zMid);
+      ctx.beginPath();
+      ctx.moveTo(pts[start].x, pts[start].y);
+      for (let i = start + 1; i <= end; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.strokeStyle = "rgba(" + _c + "," + (baseAlpha * shade).toFixed(3) + ")";
+      ctx.lineWidth = baseWidth * shade;
+      ctx.stroke();
+    }
+    ctx.lineCap = _prevCap;
+    ctx.lineJoin = _prevJoin;
   }
 
   function latitude(r, offset, alpha, color) {
@@ -635,6 +673,10 @@
     if (document.hidden) return;
     if (ts - lastFrame < 33) return;
     lastFrame = ts; frameCount++;
+    // task-48: frame delta drives the smooth focus dim (no instant switch).
+    const _frameDt = Math.max(.001, Math.min(.1,
+      (ts - (_lastDrawTs || (ts - 33))) / 1000));
+    _lastDrawTs = ts;
     if (window.__biocoreState) state = window.__biocoreState;
     const p = palette(), s = state.snapshot || {};
     const energy = clamp(s.energy), stress = p.stress, arousal = clamp(s.a);
@@ -928,7 +970,14 @@
         const ev = b.ev;
         // task-43: selected ball highlighted, every other ball dimmed.
         const focused = !!_focusState.key && b.key === _focusState.key;
-        const dimK = _focusState.key ? (focused ? 1.25 : .32) : 1;
+        // task-48: continuous depth factor replaces the binary front multiplier
+        // (front is now only used for draw order; balls stay z-sorted). dimK is
+        // smoothed every frame toward its focus target (~200ms, no snap).
+        const depthK = _OM.depthFactor(b.z);
+        const dimTgt = _OM.dimTarget(focused, !!_focusState.key);
+        const dimPrev = _ballDims.has(b.key) ? _ballDims.get(b.key) : dimTgt;
+        const dimK = _OM.smoothToward(dimPrev, dimTgt, _frameDt, _OM.DIM_TAU);
+        _ballDims.set(b.key, dimK);
         if (focused) {
           _focusFoundNow = true;
           _focusState.prev = { x: b.x, y: b.y };   // camera follow target next frame
@@ -945,7 +994,6 @@
           : primaryRingHsl;   // old data/no secondary: primary lightened one step
         const bodyFill = "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
         const ringFill = "hsl(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%)";
-        const front = b.front ? 1 : .72;
         const ageAlpha = .16 + .70 * (1 - b.ageNorm);
         const forgotten = ev.peripheral_forgotten === true;
         const status = String((ev.source_check && ev.source_check.status) || "ok").toLowerCase();
@@ -954,9 +1002,10 @@
         const recallFresh = Math.exp(-sinceRecall / 86400);
         const haloPulse = .85 + .15 * Math.sin(phase * (.55 + .45 * recallN) + b.ageDays);
         // Ball size is dominated by memory/event importance (not recall count).
-        const size = (1.6 + 8.0 * Math.pow(b.imp, 0.75) + 0.6 * Math.min(1, b.recall / 5)) * front;
+        const size = (1.6 + 8.0 * Math.pow(b.imp, 0.75) +
+          0.6 * Math.min(1, b.recall / 5)) * depthK;
         b.size = size;
-        const fillAlpha = (.14 + .52 * b.imp) * ageAlpha * (.55 + .45 * b.cent) * front;
+        const fillAlpha = (.14 + .52 * b.imp) * ageAlpha * (.55 + .45 * b.cent) * depthK;
         const haloAlpha = (.06 + .12 * recallN + .05 * recallFresh) * ageAlpha *
           haloPulse * (forgotten ? .35 : 1);
         const suspect = status === "suspect";
@@ -968,7 +1017,8 @@
         ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," + primaryRingHsl.s.toFixed(0) + "%," + primaryRingHsl.l.toFixed(0) + "%,.42)";
         ctx.lineWidth = .7; ctx.stroke();
         // body: centrality controls solidity; forgotten becomes a hollow ring
-        const bodyAlpha = Math.min(1, (.58 + .40 * b.imp) * (.86 + .14 * (1 - b.ageNorm)) * front);
+        const bodyAlpha = Math.min(1, (.58 + .40 * b.imp) *
+          (.86 + .14 * (1 - b.ageNorm)) * depthK);
         if (forgotten) {
           ctx.globalAlpha = Math.max(.18, bodyAlpha * .50 * dimK);
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
@@ -985,7 +1035,7 @@
         // lightened ring. The central mood ball is drawn separately, so the
         // centre never spins here.
         const ringBase = size + 4.2;
-        const ringAlpha = clamp(Math.max(0, (.28 + .40 * b.imp)) * front * dimK);
+        const ringAlpha = clamp(Math.max(0, (.28 + .40 * b.imp)) * depthK * dimK);
         const ringWidth = 1.2 + 1.4 * b.imp;
         const arcLen = Math.PI * 2 * (0.35 + 0.65 * b.imp);
         ctx.save();
@@ -1035,6 +1085,11 @@
         ctx.restore();
         _memHit.push({ x: b.x, y: b.y, r: ringBase + (suspect ? 5 : 2), ev, imp: b.imp,
                        key: b.key, tsS: b.tsS, ageDays: b.ageDays, front: b.front });
+      });
+      // keep the smooth dim cache bounded to the balls currently displayed.
+      const _liveBallKeys = new Set(_balls.map((b) => b.key));
+      _ballDims.forEach((value, key) => {
+        if (!_liveBallKeys.has(key)) _ballDims.delete(key);
       });
     }
     // selected ball vanished (visibility toggle / filter / archive change): fall

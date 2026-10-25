@@ -171,6 +171,48 @@
     };
   };
 
+  // ---- task-48: smooth depth and focus dimming (no binary z=0 jump) ----
+  // depthFactor maps z in [-1, 1] continuously: back .72 -> front 1.0.
+  // The old code multiplied size/alpha by a binary "front" factor (1 / .72),
+  // which made a memory ball pop when it crossed z=0.
+  const DEPTH_FAR = 0.72;
+  const DEPTH_NEAR = 1.0;
+  const depthFactor = (z) => {
+    const t = clamp01((Number(z) + 1) / 2);
+    return DEPTH_FAR + (DEPTH_NEAR - DEPTH_FAR) * t;
+  };
+
+  // Focus dimming target: selected 1.25, other balls .32, no focus 1.
+  const DIM_FOCUSED = 1.25;
+  const DIM_DIMMED = 0.32;
+  const DIM_IDLE = 1;
+  const DIM_TAU = 0.2;         // ~200ms exponential settle (180-250ms band)
+
+  // task-48 addendum: orbit rings use the same continuous depth idea. The old
+  // ring() multiplied alpha/lineWidth by a binary front factor (1/.68, 1/.85),
+  // which made a ring brighten/thicken as it crossed z=0. shade(z) is smooth.
+  const RING_FAR = 0.68;
+  const RING_NEAR = 1.0;
+  const ringDepth = (z) => clamp01((Number(z) + 1) / 2);
+  const ringShade = (z) => RING_FAR + (RING_NEAR - RING_FAR) * ringDepth(z);
+  const dimTarget = (focused, anyFocus) => {
+    if (!anyFocus) return DIM_IDLE;
+    return focused ? DIM_FOCUSED : DIM_DIMMED;
+  };
+
+  // Frame-rate independent exponential smoothing; continuous, no snap.
+  const smoothToward = (current, target, dtSec, tauSec) => {
+    const cur = Number.isFinite(Number(current))
+      ? Number(current) : (Number(target) || 0);
+    const tgt = Number.isFinite(Number(target)) ? Number(target) : cur;
+    const dt = Number(dtSec);
+    const tau = Number(tauSec);
+    if (!Number.isFinite(dt) || dt <= 0) return cur;
+    const t = (Number.isFinite(tau) && tau > 0) ? tau : DIM_TAU;
+    const a = 1 - Math.exp(-dt / t);
+    return cur + (tgt - cur) * Math.max(0, Math.min(1, a));
+  };
+
   const ORBIT_SAMPLES = 160;   // 161 inclusive points => closed ring
 
   // Sample one channel ring: 3D circle in its tilted plane, rotated by the
@@ -203,5 +245,8 @@
            orbitVolatility, orbitSpeed,
            projectPoint, orbitRingPoints,
            FOCUS_ZOOM, TAP_MAX_MOVE, TAP_MAX_MS, CAM_LERP, ZOOM_LERP,
+           DEPTH_FAR, DEPTH_NEAR, DIM_FOCUSED, DIM_DIMMED, DIM_IDLE, DIM_TAU,
+           RING_FAR, RING_NEAR, ringDepth, ringShade,
+           depthFactor, dimTarget, smoothToward,
            zoomTarget, lerp, isTap, cameraPoint, cameraTarget, cameraStep };
 });
