@@ -168,15 +168,19 @@
   // written by older versions have no field and are treated as legacy.
   function _summaryStatusOf(ev) {
     const s = String((ev && ev.summary_status) || "legacy").trim().toLowerCase();
-    return (s === "llm" || s === "fallback") ? s : "legacy";
+    if (s === "llm" || s === "fallback" || s === "edited") return s;
+    return "legacy";
   }
   function _focusEventDetail(ev) {
     const e = ev || {};
     const check = (e.source_check && typeof e.source_check === "object") ? e.source_check : {};
     return {
       key: String(_focusState.key || ""),
+      event_id: String(e.id || e.event_key || ""),
       title: _tipClean(String(e.title || e.event_key || "记忆球"), 80),
       summary_status: _summaryStatusOf(e),
+      summary_edited: e.summary_edited === true,
+      summary_updated_ts: Number(e.summary_updated_ts || 0),
       emotion: String(e.emotion || ""),
       emotion_secondary: String(e.emotion_secondary || ""),
       importance: Number(e.importance == null ? .5 : e.importance),

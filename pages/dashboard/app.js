@@ -1508,7 +1508,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.82";
+  const BIO_VERSION = "v1.2.83";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1597,7 +1597,7 @@
   // restoring it exactly when focus ends.
   let _heroFocusSaved = null;
   const _FOCUS_SOURCE_LABELS = { ok: "正常", weak: "弱来源", suspect: "待核", unknown: "未知" };
-  const _FOCUS_STATUS_LABELS = { llm: "AI 总结", fallback: "摘录总结", legacy: "旧事件" };
+  const _FOCUS_STATUS_LABELS = { llm: "AI 总结", fallback: "摘录总结", legacy: "旧事件", edited: "已编辑" };
   function _focusClip(value, limit){
     const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     const n = Math.max(1, Number(limit) || 80);
@@ -1605,7 +1605,8 @@
   }
   function _focusStatusOf(detail){
     const s = String((detail && detail.summary_status) || "legacy").trim().toLowerCase();
-    return (s === "llm" || s === "fallback") ? s : "legacy";
+    if (s === "llm" || s === "fallback" || s === "edited") return s;
+    return "legacy";
   }
   function _heroCopyEl(){
     return document.querySelector("#view-overview .hero-copy") || document.querySelector(".hero-copy");
@@ -1626,25 +1627,131 @@
     const k = String(status || "ok").trim().toLowerCase();
     return _FOCUS_SOURCE_LABELS[k] || k || "—";
   }
-  function showHeroMemoryPanel(detail){
-    const copy = _heroCopyEl();
-    if (!copy) return;
+  let _heroFocusDetail = null;
+  function _heroPanelEl(){
+    return (_heroFocusSaved && _heroFocusSaved.panel) || null;
+  }
+  function _focusEventId(detail){
     const d = detail || {};
-    if (!_heroFocusSaved){
-      _heroFocusSaved = {
-        copy: copy,
-        children: Array.prototype.slice.call(copy.children).map(
-          (el) => ({ el: el, display: el.style.display || "" })),
-        panel: null
-      };
-      _heroFocusSaved.children.forEach((x) => { x.el.style.display = "none"; });
-      const panel = document.createElement("div");
-      panel.id = "heroMemoryPanel";
-      panel.className = "hero-memory";
-      copy.appendChild(panel);
-      _heroFocusSaved.panel = panel;
+    return String(d.event_id || d.key || "").trim();
+  }
+  function _focusShowMsg(text, isError){
+    const panel = _heroPanelEl();
+    const msg = panel && panel.querySelector("#heroMemMsg");
+    if (!msg) return;
+    msg.textContent = String(text || "");
+    msg.hidden = !text;
+    if (msg.classList && msg.classList.toggle) msg.classList.toggle("is-error", !!isError);
+  }
+  function _focusSetBusy(busy, label){
+    const panel = _heroPanelEl();
+    if (!panel) return;
+    if (panel.querySelectorAll) {
+      panel.querySelectorAll("button").forEach((b) => { b.disabled = !!busy; });
     }
-    const panel = _heroFocusSaved.panel;
+    if (busy) _focusShowMsg(label || "处理中…", false);
+  }
+  async function _focusApi(payload){
+    if (!bridge || typeof bridge.apiPost !== "function") {
+      throw new Error("预览模式无法保存，请从 AstrBot 插件视图打开");
+    }
+    const raw = await bridge.apiPost("page/event_summary", payload);
+    const body = raw && raw.data ? raw.data : raw;
+    if (!body || body.status === "error" || body.status === "fail") {
+      throw new Error((body && body.message) || "保存失败");
+    }
+    return body;
+  }
+  function _focusApplyApiResult(data){
+    const body = data || {};
+    const d = _heroFocusDetail || {};
+    _heroFocusDetail = Object.assign({}, d, {
+      big_summary: body.big_summary == null ? String(d.big_summary || "") : String(body.big_summary),
+      small_summary: body.small_summary == null ? String(d.small_summary || "") : String(body.small_summary),
+      summary_status: String(body.summary_status || d.summary_status || "edited"),
+      summary_edited: body.summary_edited === true,
+      summary_updated_ts: Number(body.summary_updated_ts || 0)
+    });
+  }
+  async function _focusReloadData(){
+    if (!bridge || typeof load !== "function") return;
+    try { await load(); } catch (e) { /* the panel already shows the saved text */ }
+  }
+  async function _focusRegenerate(){
+    const d = _heroFocusDetail || {};
+    const eventId = _focusEventId(d);
+    if (!eventId) { _focusShowMsg("这条记忆没有可重总结的事件 id", true); return; }
+    _focusSetBusy(true, "重新总结中…");
+    try {
+      const data = await _focusApi({ event_id: eventId, action: "regenerate" });
+      _focusApplyApiResult(data);
+      _renderHeroMemoryRead();
+      _focusShowMsg("已重新总结", false);
+      await _focusReloadData();
+    } catch (err) {
+      _focusSetBusy(false);
+      _focusShowMsg(String((err && err.message) || err), true);
+    }
+  }
+  async function _focusSaveEdit(){
+    const panel = _heroPanelEl();
+    const d = _heroFocusDetail || {};
+    const eventId = _focusEventId(d);
+    const smallEl = panel && panel.querySelector("#heroMemSmall");
+    const bigEl = panel && panel.querySelector("#heroMemBig");
+    const big = bigEl ? String(bigEl.value || "").trim() : "";
+    const small = smallEl ? String(smallEl.value || "").trim() : "";
+    if (!eventId) { _focusShowMsg("这条记忆没有可编辑的事件 id", true); return; }
+    if (!big) { _focusShowMsg("大总结不能为空", true); return; }
+    if (small.length > 80) { _focusShowMsg("小总结不能超过 80 字", true); return; }
+    _focusSetBusy(true, "保存中…");
+    try {
+      const data = await _focusApi({ event_id: eventId, action: "update",
+                                     big_summary: big, small_summary: small });
+      _focusApplyApiResult(data);
+      _renderHeroMemoryRead();
+      _focusShowMsg("已保存", false);
+      await _focusReloadData();
+    } catch (err) {
+      _focusSetBusy(false);
+      _focusShowMsg(String((err && err.message) || err), true);
+    }
+  }
+  function _renderHeroMemoryEdit(){
+    const panel = _heroPanelEl();
+    const d = _heroFocusDetail || {};
+    if (!panel) return;
+    const big = _focusSummarySource(d);
+    const smallSrc = String(d.small_summary || "").trim() ||
+      (d.event ? String(d.event) : "");
+    const small = _focusClip(smallSrc, 80);
+    panel.innerHTML =
+      '<div class="eyebrow">MEMORY FOCUS · 编辑总结</div>' +
+      '<div class="hero-mem-edit">' +
+        '<label class="hero-mem-field"><small>小总结（≤80 字）</small>' +
+        '<textarea id="heroMemSmall" maxlength="80" rows="2">' + esc(small) + '</textarea></label>' +
+        '<label class="hero-mem-field"><small>大总结</small>' +
+        '<textarea id="heroMemBig" rows="6">' + esc(big) + '</textarea></label>' +
+      '</div>' +
+      '<div class="hero-mem-actions">' +
+        '<button type="button" class="btn mini" id="heroMemSave">保存</button>' +
+        '<button type="button" class="btn mini" id="heroMemCancel">取消</button>' +
+      '</div>' +
+      '<p class="hero-mem-msg" id="heroMemMsg" hidden></p>';
+    const save = panel.querySelector("#heroMemSave");
+    const cancel = panel.querySelector("#heroMemCancel");
+    if (save) save.addEventListener("click", () => { _focusSaveEdit(); });
+    if (cancel) cancel.addEventListener("click", () => { _renderHeroMemoryRead(); });
+  }
+  function _focusSummarySource(d){
+    const status = _focusStatusOf(d);
+    const raw = String(d.big_summary || d.event || d.central_details || "").trim();
+    if (status === "legacy") return _focusClip(raw, 200);
+    return raw;
+  }
+  function _renderHeroMemoryRead(){
+    const panel = _heroPanelEl();
+    const d = _heroFocusDetail || {};
     if (!panel) return;
     const primary = _focusEmotionLabel(d.emotion);
     const secondary = d.emotion_secondary ? _focusEmotionLabel(d.emotion_secondary) : "同主色";
@@ -1653,14 +1760,16 @@
     const source = _focusSourceLabel(d.source);
     const recall = Math.max(0, Number(d.recall_count || 0));
     const status = _focusStatusOf(d);
-    const badge = _FOCUS_STATUS_LABELS[status] || "旧事件";
+    const edited = d.summary_edited === true || status === "edited";
+    const badge = edited ? "已编辑" : (_FOCUS_STATUS_LABELS[status] || "旧事件");
+    const badgeClass = edited ? "is-edited" : ("is-" + status);
     const title = _focusClip(d.title || "记忆球", 80);
+    const updated = Number(d.summary_updated_ts || 0) > 0 ? _focusWhen(d.summary_updated_ts) : "";
     let summaries = "";
-    if (status === "legacy") {
+    if (status === "legacy" && !edited) {
       // task-46: old records may store the raw event text in big_summary; never
       // render it as a summary. Show a fixed notice + a <=200 char excerpt only.
-      const raw = String(d.big_summary || d.event || d.central_details || "").trim();
-      const excerpt = _focusClip(raw, 200);
+      const excerpt = _focusClip(_focusSummarySource(d), 200);
       summaries =
         '<div class="hero-mem-legacy">旧事件：未生成总结</div>' +
         '<div class="hero-mem-summary"><small>原始摘录</small><p class="hero-mem-excerpt">' +
@@ -1679,7 +1788,7 @@
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
       '<div class="hero-mem-head"><h2 id="heroMemTitle">' + esc(title) + '</h2>' +
-      '<span class="hero-mem-badge is-' + status + '">' + esc(badge) + '</span></div>' +
+      '<span class="hero-mem-badge ' + badgeClass + '">' + esc(badge) + '</span></div>' +
       '<div class="hero-mem-grid">' +
         '<span>主情绪 <b>' + esc(primary) + '</b></span>' +
         '<span>次情绪 <b>' + esc(secondary) + '</b></span>' +
@@ -1688,7 +1797,37 @@
         '<span>来源 <b>' + esc(source) + '</b></span>' +
         '<span>召回 <b>' + esc(String(recall)) + ' 次</b></span>' +
       '</div>' + summaries +
+      '<div class="hero-mem-actions">' +
+        '<button type="button" class="btn mini" id="heroMemRegen">重新总结</button>' +
+        '<button type="button" class="btn mini" id="heroMemEdit">编辑总结</button>' +
+      '</div>' +
+      '<p class="hero-mem-msg" id="heroMemMsg" hidden></p>' +
+      (updated ? '<p class="hero-mem-updated">更新于 ' + esc(updated) + '</p>' : '') +
       '<p class="hero-mem-hint">再次点击记忆球 / 点空白 / Esc / “退出聚焦”恢复当前情绪</p>';
+    const regen = panel.querySelector("#heroMemRegen");
+    const edit = panel.querySelector("#heroMemEdit");
+    if (regen) regen.addEventListener("click", () => { _focusRegenerate(); });
+    if (edit) edit.addEventListener("click", () => { _renderHeroMemoryEdit(); });
+  }
+  function showHeroMemoryPanel(detail){
+    const copy = _heroCopyEl();
+    if (!copy) return;
+    if (!_heroFocusSaved){
+      _heroFocusSaved = {
+        copy: copy,
+        children: Array.prototype.slice.call(copy.children).map(
+          (el) => ({ el: el, display: el.style.display || "" })),
+        panel: null
+      };
+      _heroFocusSaved.children.forEach((x) => { x.el.style.display = "none"; });
+      const panel = document.createElement("div");
+      panel.id = "heroMemoryPanel";
+      panel.className = "hero-memory";
+      copy.appendChild(panel);
+      _heroFocusSaved.panel = panel;
+    }
+    _heroFocusDetail = Object.assign({}, detail || {});
+    _renderHeroMemoryRead();
   }
   function restoreHeroFocusPanel(){
     const saved = _heroFocusSaved;
@@ -1700,6 +1839,7 @@
       try { x.el.style.display = x.display; } catch (e) {}
     });
     _heroFocusSaved = null;
+    _heroFocusDetail = null;
   }
   document.addEventListener("biocore:focus", (e) => {
     showHeroMemoryPanel(e && e.detail);

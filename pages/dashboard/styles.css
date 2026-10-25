@@ -598,12 +598,25 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .hero-mem-big p{max-height:96px;overflow:auto;padding-right:2px}
 .hero-mem-legacy{margin-top:2px;font-size:11px;color:var(--danger)}
 .hero-mem-excerpt{color:var(--muted)}
+/* task-47: regenerate / edit summary controls */
+.hero-mem-actions{display:flex;gap:6px;flex-wrap:wrap;margin-top:2px}
+.hero-mem-actions .btn{font-size:10px;padding:2px 8px;min-height:24px}
+.hero-mem-edit{display:flex;flex-direction:column;gap:6px}
+.hero-mem-field{display:flex;flex-direction:column;gap:2px}
+.hero-mem-field small{font-size:9px;letter-spacing:.12em;color:var(--faint)}
+.hero-mem-edit textarea{width:100%;box-sizing:border-box;min-height:26px;padding:5px 6px;font:11px/1.5 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--panel2);border:1px solid var(--line);border-radius:4px;resize:vertical}
+.hero-mem-msg{margin:0;font-size:10px;line-height:1.4;color:var(--accent2)}
+.hero-mem-msg.is-error{color:var(--danger)}
+.hero-mem-updated{margin:0;font-size:9px;color:var(--faint)}
+.hero-mem-badge.is-edited{color:var(--accent2);border-color:var(--accent2)}
 @media(max-width:900px){
   .hero-memory{max-height:none;overflow:visible}
   .hero-mem-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
   .hero-mem-summary p{font-size:12px}
   .hero-mem-big p{max-height:72px}
   .hero-mem-badge{font-size:9px}
+  .hero-mem-edit textarea{font-size:13px}
+  .hero-mem-actions .btn{min-height:30px;font-size:11px}
 }
 .mem-tomb-text{color:var(--faint);font-size:10px;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
