@@ -46,9 +46,17 @@
     return (i / (n - 1) - 0.5) * 0.06;   // -0.03 .. +0.03
   };
 
+  // task-43 addendum: fixed lane offset so the 8 orbits never collapse into one
+  // big ellipse when their metrics are close. rBase = R * (0.9 + 0.7*metric +
+  // lane), lane = (index - 3.5) * 0.07. Lane is identity only; the metric still
+  // drives the distance change.
+  const laneOffset = (index) =>
+    (Math.max(0, Math.min(ORBIT_COUNT - 1, Number(index) || 0)) - 3.5) * 0.07;
+
   // Build the 8 runtime channels (orb.js uses exactly this table).
   const buildOrbits = () => ORBIT_CHANNELS.map((c, i) => ({
     key: c.key, tilt: c.tilt, speed: c.speed, color: c.color, angle: 0,
+    lane: laneOffset(i),
     ident: identityOffset(i, ORBIT_CHANNELS.length),
     tiltOff: identityOffset(i, ORBIT_CHANNELS.length) * 1.5
   }));
@@ -97,6 +105,72 @@
     return { x: x1 * Number(R) * p, y: y1 * Number(R) * p, z: z1 };
   };
 
+  // ---- task-43: click/tap focus camera (pure, node-testable) ----
+  const FOCUS_ZOOM = 1.8;      // focused memory-ball view scale
+  const TAP_MAX_MOVE = 8;      // canvas px; more movement => drag/rotate, not a tap
+  const TAP_MAX_MS = 700;      // long press is not a tap
+  const CAM_LERP = 0.18;       // per-frame camera position smoothing
+  const ZOOM_LERP = 0.12;      // per-frame zoom smoothing
+
+  const zoomTarget = (focused) => (focused ? FOCUS_ZOOM : 1);
+
+  const lerp = (current, target, alpha) => {
+    const a = Number.isFinite(Number(alpha))
+      ? Math.max(0, Math.min(1, Number(alpha))) : 0;
+    const c = Number.isFinite(Number(current)) ? Number(current) : (Number(target) || 0);
+    const t = Number.isFinite(Number(target)) ? Number(target) : c;
+    return c + (t - c) * a;
+  };
+
+  // A tap/click only: short press with tiny movement. Dragging/rotating the
+  // orb, scrolling on mobile or a long press must never change focus.
+  const isTap = (startX, startY, endX, endY, dtMs, maxMove, maxMs) => {
+    const mx = maxMove == null ? TAP_MAX_MOVE : Number(maxMove);
+    const mt = maxMs == null ? TAP_MAX_MS : Number(maxMs);
+    if (![startX, startY, endX, endY, dtMs]
+          .every((v) => Number.isFinite(Number(v)))) return false;
+    if (Number(dtMs) < 0 || Number(dtMs) > mt) return false;
+    return Math.hypot(Number(endX) - Number(startX),
+                      Number(endY) - Number(startY)) <= mx;
+  };
+
+  // Canvas point -> screen point under the focus camera. cam.x/cam.y is the
+  // canvas point that should sit at the canvas centre (cx, cy); cam.zoom is
+  // the scale. At cam={cx,cy,zoom:1} this is the identity.
+  const cameraPoint = (x, y, cam, cx, cy) => {
+    const z = (cam && Number.isFinite(Number(cam.zoom))) ? Number(cam.zoom) : 1;
+    const fx = (cam && Number.isFinite(Number(cam.x))) ? Number(cam.x) : Number(cx);
+    const fy = (cam && Number.isFinite(Number(cam.y))) ? Number(cam.y) : Number(cy);
+    return { x: Number(cx) + (Number(x) - fx) * z,
+             y: Number(cy) + (Number(y) - fy) * z };
+  };
+
+  // Focused => keep the selected ball centred at FOCUS_ZOOM; otherwise return
+  // to the global view (canvas centre, 1x).
+  const cameraTarget = (focusedBall, cx, cy, focused) => {
+    if (!focused) return { x: Number(cx), y: Number(cy), zoom: 1 };
+    return {
+      x: (focusedBall && Number.isFinite(Number(focusedBall.x)))
+        ? Number(focusedBall.x) : Number(cx),
+      y: (focusedBall && Number.isFinite(Number(focusedBall.y)))
+        ? Number(focusedBall.y) : Number(cy),
+      zoom: FOCUS_ZOOM
+    };
+  };
+
+  const cameraStep = (cam, target, camLerp, zoomLerp) => {
+    const cur = cam || {};
+    const tgt = target || {};
+    const cl = Number.isFinite(Number(camLerp)) ? Number(camLerp) : CAM_LERP;
+    const zl = Number.isFinite(Number(zoomLerp)) ? Number(zoomLerp) : ZOOM_LERP;
+    return {
+      x: lerp(cur.x, tgt.x, cl),
+      y: lerp(cur.y, tgt.y, cl),
+      zoom: lerp(cur.zoom == null ? 1 : cur.zoom,
+                 tgt.zoom == null ? 1 : tgt.zoom, zl)
+    };
+  };
+
   const ORBIT_SAMPLES = 160;   // 161 inclusive points => closed ring
 
   // Sample one channel ring: 3D circle in its tilted plane, rotated by the
@@ -104,7 +178,8 @@
   // canvas-relative projected points with z kept for front/back sorting.
   const orbitRingPoints = (orbit, metric, angle, ry, rx, R, samples) => {
     const n = Math.max(8, Math.floor(Number(samples) || ORBIT_SAMPLES));
-    const rBase = orbitRadius(metric);
+    // lane is part of the radius identity: 8 visibly different ellipses.
+    const rBase = orbitRadius(metric) + Number(orbit && orbit.lane || 0);
     const tilt = Number(orbit && orbit.tilt || 0) + Number(orbit && orbit.tiltOff || 0);
     const idShift = Number(orbit && orbit.ident || 0);   // world units, +-0.03
     const ay = Number(angle) || 0;
@@ -124,7 +199,9 @@
   };
 
   return { clamp01, ORBIT_COUNT, ORBIT_CHANNELS, ORBIT_SAMPLES,
-           orbitRadius, identityOffset, buildOrbits,
+           orbitRadius, laneOffset, identityOffset, buildOrbits,
            orbitVolatility, orbitSpeed,
-           projectPoint, orbitRingPoints };
+           projectPoint, orbitRingPoints,
+           FOCUS_ZOOM, TAP_MAX_MOVE, TAP_MAX_MS, CAM_LERP, ZOOM_LERP,
+           zoomTarget, lerp, isTap, cameraPoint, cameraTarget, cameraStep };
 });

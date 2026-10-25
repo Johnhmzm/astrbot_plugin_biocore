@@ -38,8 +38,10 @@
       const n = Math.max(2, Number(count) || _channels.length);
       return (Math.max(0, Math.min(n - 1, Number(index) || 0)) / (n - 1) - 0.5) * 0.06;
     };
+    const _lane = (i) => (Math.max(0, Math.min(_channels.length - 1, Number(i) || 0)) - 3.5) * 0.07;
     const _build = () => _channels.map((c, i) => ({
       key: c.key, tilt: c.tilt, speed: c.speed, color: c.color, angle: 0,
+      lane: _lane(i),
       ident: _ident(i, _channels.length), tiltOff: _ident(i, _channels.length) * 1.5
     }));
     const _radius = (metric) => 0.9 + 0.7 * _clamp01(metric);
@@ -56,7 +58,7 @@
     };
     const _ringPts = (orbit, metric, angle, ry, rx, R, samples) => {
       const n = Math.max(8, Math.floor(Number(samples) || 160));
-      const rBase = _radius(metric);
+      const rBase = _radius(metric) + Number(orbit && orbit.lane || 0);
       const tilt = Number(orbit && orbit.tilt || 0) + Number(orbit && orbit.tiltOff || 0);
       const idShift = Number(orbit && orbit.ident || 0);
       const ay = Number(angle) || 0;
@@ -73,14 +75,56 @@
       }
       return pts;
     };
+    const _lerp = (cur, target, alpha) => {
+      const a = Number.isFinite(Number(alpha)) ? Math.max(0, Math.min(1, Number(alpha))) : 0;
+      const c = Number.isFinite(Number(cur)) ? Number(cur) : (Number(target) || 0);
+      const t = Number.isFinite(Number(target)) ? Number(target) : c;
+      return c + (t - c) * a;
+    };
+    const _camPoint = (x, y, cam, cx, cy) => {
+      const z = (cam && Number.isFinite(Number(cam.zoom))) ? Number(cam.zoom) : 1;
+      const fx = (cam && Number.isFinite(Number(cam.x))) ? Number(cam.x) : Number(cx);
+      const fy = (cam && Number.isFinite(Number(cam.y))) ? Number(cam.y) : Number(cy);
+      return { x: Number(cx) + (Number(x) - fx) * z, y: Number(cy) + (Number(y) - fy) * z };
+    };
+    const _camTarget = (ball, cx, cy, focused) => {
+      if (!focused) return { x: Number(cx), y: Number(cy), zoom: 1 };
+      return { x: ball && Number.isFinite(Number(ball.x)) ? Number(ball.x) : Number(cx),
+               y: ball && Number.isFinite(Number(ball.y)) ? Number(ball.y) : Number(cy),
+               zoom: 1.8 };
+    };
+    const _camStep = (cam, target, camLerp, zoomLerp) => {
+      const cur = cam || {}, tgt = target || {};
+      const cl = Number.isFinite(Number(camLerp)) ? Number(camLerp) : 0.18;
+      const zl = Number.isFinite(Number(zoomLerp)) ? Number(zoomLerp) : 0.12;
+      return { x: _lerp(cur.x, tgt.x, cl), y: _lerp(cur.y, tgt.y, cl),
+               zoom: _lerp(cur.zoom == null ? 1 : cur.zoom, tgt.zoom == null ? 1 : tgt.zoom, zl) };
+    };
+    const _tap = (sx, sy, ex, ey, dt, maxMove, maxMs) => {
+      const mx = maxMove == null ? 8 : Number(maxMove);
+      const mt = maxMs == null ? 700 : Number(maxMs);
+      if (![sx, sy, ex, ey, dt].every((v) => Number.isFinite(Number(v)))) return false;
+      if (Number(dt) < 0 || Number(dt) > mt) return false;
+      return Math.hypot(Number(ex) - Number(sx), Number(ey) - Number(sy)) <= mx;
+    };
     return {
       ORBIT_COUNT: 8,
       ORBIT_CHANNELS: _channels,
       buildOrbits: _build,
       orbitRadius: _radius,
+      laneOffset: _lane,
       identityOffset: _ident,
       projectPoint: _project,
       orbitRingPoints: _ringPts,
+      FOCUS_ZOOM: 1.8,
+      CAM_LERP: 0.18,
+      ZOOM_LERP: 0.12,
+      zoomTarget: (focused) => (focused ? 1.8 : 1),
+      lerp: _lerp,
+      cameraPoint: _camPoint,
+      cameraTarget: _camTarget,
+      cameraStep: _camStep,
+      isTap: _tap,
       orbitVolatility(prev, cur, dt, prevEma) {
         if (prev == null || !Number.isFinite(Number(prev)) || !Number.isFinite(Number(cur))) return 0.5;
         const secs = Number(dt);
@@ -93,6 +137,83 @@
     };
   })();
   window.addEventListener("biocore:state", (e) => { if (e.detail) state = Object.assign({}, state, e.detail); });
+
+  // task-43: memory-ball click/tap focus. The pure camera/tap math lives in
+  // orb_math.js; this block owns state/DOM and reuses that math through _OM.
+  const _focusState = { key: "", ev: null, prev: null };
+  const _cam = { x: CX, y: CY, zoom: 1 };
+  const _pointerTap = { active: false, x: 0, y: 0, t: 0 };
+  const _focusHost = canvas.parentElement || null;
+  let _focusExitBtn = null, _focusCard = null;
+  function _ballKey(ev) {
+    return String((ev && (ev.id || ev.event_key || ev.title)) || 0);
+  }
+  function _ensureFocusUi() {
+    if (!_focusHost || _focusExitBtn) return;
+    _focusExitBtn = document.createElement("button");
+    _focusExitBtn.type = "button";
+    _focusExitBtn.id = "orbFocusExit";
+    _focusExitBtn.className = "orb-focus-exit";
+    _focusExitBtn.textContent = "退出聚焦";
+    _focusExitBtn.hidden = true;
+    _focusExitBtn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation(); exitBallFocus();
+    });
+    _focusHost.appendChild(_focusExitBtn);
+    _focusCard = document.createElement("div");
+    _focusCard.id = "orbFocusCard";
+    _focusCard.className = "orb-focus-card";
+    _focusCard.hidden = true;
+    _focusHost.appendChild(_focusCard);
+  }
+  function _renderFocusCard() {
+    if (!_focusCard) return;
+    const ev = _focusState.ev || {};
+    _focusCard.innerHTML = "";
+    const head = document.createElement("b");
+    head.textContent = _tipClean(ev.title || ev.event_key || "记忆球", 60);
+    _focusCard.appendChild(head);
+    // Optional detail card: big/small summary of the selected ball.
+    const small = String(ev.small_summary || "").trim();
+    const big = String(ev.big_summary || ev.event || ev.central_details || "").trim();
+    if (small) {
+      const p = document.createElement("p");
+      p.textContent = "小总结：" + _tipClean(small, 80);
+      _focusCard.appendChild(p);
+    }
+    if (big) {
+      const p = document.createElement("p");
+      p.textContent = "大总结：" + _tipClean(big, 220);
+      _focusCard.appendChild(p);
+    }
+    _focusCard.hidden = false;
+  }
+  function focusBall(hit) {
+    if (!hit) return;
+    _focusState.key = String(hit.key || _ballKey(hit.ev));
+    _focusState.ev = hit.ev || {};
+    _focusState.prev = { x: Number(hit.x) || CX, y: Number(hit.y) || CY };
+    window.__biocoreFocusKey = _focusState.key;   // task-43 observability
+    _ensureFocusUi();
+    if (_focusExitBtn) _focusExitBtn.hidden = false;
+    _renderFocusCard();
+    hideOrbTip();
+  }
+  function exitBallFocus() {
+    _focusState.key = "";
+    _focusState.ev = null;
+    _focusState.prev = null;
+    window.__biocoreFocusKey = "";               // task-43 observability
+    if (_focusExitBtn) _focusExitBtn.hidden = true;
+    if (_focusCard) { _focusCard.hidden = true; _focusCard.innerHTML = ""; }
+    hideOrbTip();
+  }
+  function toggleBallFocus(hit) {
+    if (!hit) return;
+    const key = String(hit.key || _ballKey(hit.ev));
+    if (_focusState.key && _focusState.key === key) exitBallFocus();
+    else focusBall(hit);
+  }
 
   // task-42/44: 8 centre channels share one world-unit distance law. Identity =
   // colour + fixed +/-0.03 world-unit offset (orb_math.js buildOrbits); the
@@ -184,6 +305,51 @@
   });
   canvas.addEventListener("pointerenter", () => { _hoverOrb = true; });
   canvas.addEventListener("pointerleave", () => { _hoverOrb = false; _mouse.inside = false; hideOrbTip(); });
+  // task-43: tap/click focus. pointerdown/up are paired; a drag/rotate (moving
+  // past TAP_MAX_MOVE) or a long press is NOT a tap, so it never changes focus.
+  // Blank click while focused, Escape, or the "退出聚焦" button restores view.
+  function _canvasPoint(e) {
+    const rect = canvas.getBoundingClientRect();
+    return { x: (e.clientX - rect.left) * (W / Math.max(1, rect.width)),
+             y: (e.clientY - rect.top) * (H / Math.max(1, rect.height)) };
+  }
+  function _pickMemHit(mx, my) {
+    let hit = null, best = Infinity;
+    for (let k = 0; k < _memHit.length; k++) {
+      const hb = _memHit[k];
+      const sp = _OM.cameraPoint(hb.x, hb.y, _cam, CX, CY);
+      const dist = Math.hypot(sp.x - mx, sp.y - my);
+      const reach = Math.max(18 * _cam.zoom, hb.r * _cam.zoom + 10);
+      if (dist <= reach && dist < best) { hit = hb; best = dist; }
+    }
+    return hit;
+  }
+  canvas.addEventListener("pointerdown", (e) => {
+    if (e.button != null && e.button !== 0) return;
+    try {
+      const pt = _canvasPoint(e);
+      _pointerTap.active = true;
+      _pointerTap.x = pt.x; _pointerTap.y = pt.y; _pointerTap.t = Date.now();
+      try { if (canvas.setPointerCapture) canvas.setPointerCapture(e.pointerId); } catch (err) {}
+      hideOrbTip();   // tooltip must not fight the tap target
+    } catch (err) { _pointerTap.active = false; }
+  });
+  canvas.addEventListener("pointerup", (e) => {
+    if (!_pointerTap.active) return;
+    _pointerTap.active = false;
+    try {
+      const pt = _canvasPoint(e);
+      const dt = Date.now() - _pointerTap.t;
+      if (!_OM.isTap(_pointerTap.x, _pointerTap.y, pt.x, pt.y, dt)) return;
+      const hit = _pickMemHit(pt.x, pt.y);
+      if (hit) toggleBallFocus(hit);
+      else if (_focusState.key) exitBallFocus();
+    } catch (err) {}
+  });
+  canvas.addEventListener("pointercancel", () => { _pointerTap.active = false; });
+  document.addEventListener("keydown", (e) => {
+    if (String(e.key || "") === "Escape" && _focusState.key) exitBallFocus();
+  });
   const _tipEsc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => (
     { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
   function hideOrbTip() {
@@ -457,8 +623,23 @@
     const breathe = 1 + Math.sin(phase * 1.5) * .018;
     const bob = Math.sin(phase * 1.15) * 5;
     const ry = phase * .42, rx = -.12 + Math.sin(phase * .3) * .08;
+    // task-43: smooth focus camera. It centres the selected ball and follows its
+    // live orbital position each frame (the ball itself is never frozen).
+    const _camTargetNow = _OM.cameraTarget(
+      _focusState.key ? _focusState.prev : null, CX, CY, !!_focusState.key);
+    const _camNext = _OM.cameraStep(_cam, _camTargetNow);
+    _cam.x = _camNext.x; _cam.y = _camNext.y; _cam.zoom = _camNext.zoom;
+    if (!_focusState.key && Math.abs(_cam.zoom - 1) < 0.002) {
+      _cam.x = CX; _cam.y = CY; _cam.zoom = 1;
+    }
+    window.__biocoreOrbCam = { x: _cam.x, y: _cam.y, zoom: _cam.zoom };  // task-43 observability
     ctx.clearRect(0, 0, W, H);
     _memHit.length = 0;
+    let _focusFoundNow = false;
+    ctx.save();
+    ctx.translate(CX, CY);
+    ctx.scale(_cam.zoom, _cam.zoom);
+    ctx.translate(-_cam.x, -_cam.y);
     const cy = CY + bob;
     const _pNoise = s.noise || {};
     const _ap = s.appraisal || {};
@@ -719,13 +900,20 @@
         const oy = oy0 * Math.cos(inc);
         const oz = oy0 * Math.sin(inc);
         const q = project(ox, oy, oz, ry, rx);
-        return { ev, imp, cent, recall, merge, tsS, ageDays, ageNorm, mass,
+        return { ev, key, imp, cent, recall, merge, tsS, ageDays, ageNorm, mass,
                  x: q.x, y: q.y + (cy - CY), z: q.z,
                  front: q.z >= 0, size: 0 };
       });
       _balls.sort((p, q) => p.z - q.z);   // back to front
       _balls.forEach((b) => {
         const ev = b.ev;
+        // task-43: selected ball highlighted, every other ball dimmed.
+        const focused = !!_focusState.key && b.key === _focusState.key;
+        const dimK = _focusState.key ? (focused ? 1.25 : .32) : 1;
+        if (focused) {
+          _focusFoundNow = true;
+          _focusState.prev = { x: b.x, y: b.y };   // camera follow target next frame
+        }
         let col = _ec[String(ev.emotion || "neutral")] || _ec.neutral;
         if (ev._kind === "memory" && !ev.emotion_known) col = "142,148,158";
         const bodyHsl = _vividHsl(col, b.imp);   // saturated, slightly deep
@@ -756,18 +944,18 @@
         // [BC] memory ball: size=importance, orbit=time; only one secondary ring.
         ctx.save();
         // halo: brightness + pulse rate follow recall_count / last_recall
-        ctx.globalAlpha = haloAlpha;
+        ctx.globalAlpha = clamp(haloAlpha * dimK);
         ctx.beginPath(); ctx.arc(b.x, b.y, size * (2.1 + .35 * recallN), 0, Math.PI * 2);
         ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," + primaryRingHsl.s.toFixed(0) + "%," + primaryRingHsl.l.toFixed(0) + "%,.42)";
         ctx.lineWidth = .7; ctx.stroke();
         // body: centrality controls solidity; forgotten becomes a hollow ring
         const bodyAlpha = Math.min(1, (.58 + .40 * b.imp) * (.86 + .14 * (1 - b.ageNorm)) * front);
         if (forgotten) {
-          ctx.globalAlpha = Math.max(.18, bodyAlpha * .50);
+          ctx.globalAlpha = Math.max(.18, bodyAlpha * .50 * dimK);
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.strokeStyle = bodyFill; ctx.lineWidth = 1; ctx.stroke();
         } else {
-          ctx.globalAlpha = bodyAlpha;
+          ctx.globalAlpha = clamp(bodyAlpha * dimK);
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
@@ -778,7 +966,7 @@
         // lightened ring. The central mood ball is drawn separately, so the
         // centre never spins here.
         const ringBase = size + 4.2;
-        const ringAlpha = Math.max(0, (.28 + .40 * b.imp)) * front;
+        const ringAlpha = clamp(Math.max(0, (.28 + .40 * b.imp)) * front * dimK);
         const ringWidth = 1.2 + 1.4 * b.imp;
         const arcLen = Math.PI * 2 * (0.35 + 0.65 * b.imp);
         ctx.save();
@@ -815,11 +1003,26 @@
           ctx.lineWidth = .8; ctx.stroke();
           ctx.setLineDash([]);
         }
+        // task-43: highlighted focus ring around the selected ball.
+        if (focused) {
+          ctx.globalAlpha = .55 + .20 * Math.sin(phase * 2.4);
+          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase + 6.5, 0, Math.PI * 2);
+          ctx.strokeStyle = isDark() ? "rgba(245,240,230,.9)" : "rgba(40,36,30,.75)";
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([1.5, 3.5]);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
         ctx.restore();
         _memHit.push({ x: b.x, y: b.y, r: ringBase + (suspect ? 5 : 2), ev, imp: b.imp,
-                       tsS: b.tsS, ageDays: b.ageDays, front: b.front });
+                       key: b.key, tsS: b.tsS, ageDays: b.ageDays, front: b.front });
       });
     }
+    // selected ball vanished (visibility toggle / filter / archive change): fall
+    // back to the global view instead of leaving a stale zoom.
+    if (_focusState.key && !_focusFoundNow) exitBallFocus();
+    // task-43 observability (used by scripts/eval_orb_focus.py runtime smoke).
+    window.__biocoreMemHits = _memHit.map((h) => ({ x: h.x, y: h.y, r: h.r, key: h.key }));
 
     // solid emotion-colored core: color-sphere mapping
     // hue = emotion family, saturation/distance from white = intensity,
@@ -878,6 +1081,7 @@
         ctx.beginPath(); ctx.arc(q.x, q.y, size, 0, Math.PI * 2); ctx.fill();
       });
     }
+    ctx.restore();   // end task-43 focus camera: preview label + tooltip are screen space
     // preview mode: app.js falls back to demo events when the page bridge is
     // absent. Label it explicitly so demo balls never masquerade as archive.
     let _previewMode = false;
@@ -896,13 +1100,9 @@
     // hover tooltip: title / time / importance / meaning, never on the ball
     if (orbTip && (!_mouse.inside || !_memHit.length)) hideOrbTip();
     if (!_previewMode && _mouse.inside && _memHit.length) {
-      let hit = null, best = Infinity;
-      for (let k = 0; k < _memHit.length; k++) {
-        const hb = _memHit[k];
-        const dist = Math.hypot(hb.x - _mouse.x, hb.y - _mouse.y);
-        const reach = Math.max(18, hb.r + 10);   // generous hover target, scales with ball/rings
-        if (dist <= reach && dist < best) { hit = hb; best = dist; }
-      }
+      // task-43: camera-aware picking; while a tap/drag is in progress the
+      // tooltip stays out of the way so it never fights the click.
+      const hit = _pointerTap.active ? null : _pickMemHit(_mouse.x, _mouse.y);
       canvas.style.cursor = hit ? "pointer" : "";
       if (orbTip) {
         if (hit) updateOrbTip(hit); else hideOrbTip();
