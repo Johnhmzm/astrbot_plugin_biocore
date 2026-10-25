@@ -1,6 +1,6 @@
 # BioCore 插件更新说明
 
-当前版本：**1.2.10**
+当前版本：以 `metadata.yaml` 为准（当前 **1.2.73**）
 
 ## 数据位置
 
@@ -16,9 +16,10 @@ AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
 
 ## 更新方式
 
-1. AstrBot 插件管理 → BioCore → 更新（Gitee 主源 / GitHub 镜像）；
-2. 更新后重载插件；
-3. 打开 BioCore 设置 → 版本，可检查 Gitee 上的最新版本。
+1. 优先从 AstrBot 插件市场安装/更新（market source 为 GitHub：`Johnhmzm/astrbot_plugin_biocore`）；
+2. 也可在 AstrBot 插件管理使用 GitHub 仓库地址安装/更新；Gitee 仅作为镜像备用；
+3. 更新后重载插件；
+4. 打开 BioCore 设置 → 版本，检查当前安装版本（版本号以 `metadata.yaml` 为准）。
 
 ## 本机图片识别服务
 
