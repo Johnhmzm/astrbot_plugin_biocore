@@ -330,6 +330,7 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "provenance": dict(provenance) if isinstance(provenance, dict) else None,
                 # Read-only extras for the orb memory-ball layer.
                 "encoding_emotion": str(entry.get("encoding_emotion") or ""),
+                "encoding_emotion_secondary": str(entry.get("encoding_emotion_secondary") or ""),
                 "last_used": round(float(entry.get("last_used", 0) or 0), 3),
                 "scope": str(entry.get("scope") or ""),
                 "poison_risk": bool(entry.get("poison_risk")),
@@ -1877,7 +1878,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.75")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.76")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2994,6 +2995,23 @@ class BioCorePlugin(Star):
             return cut[:pos + 1].strip()
         return cut.rstrip() + "…"
 
+    def _secondary_emotion(self, core) -> str:
+        """Second-highest spectrum emotion excluding the current primary label."""
+        if core is None:
+            return ""
+        try:
+            primary = str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")
+            probs = core._spectrum_probs() if callable(getattr(core, "_spectrum_probs", None)) else []
+            for item in (probs or []):
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("key") or "").strip()[:32]
+                if key and key != primary:
+                    return key
+        except Exception:
+            pass
+        return ""
+
     def _mask_if_safety(self, text) -> str:
         value = str(text or "")
         try:
@@ -4000,6 +4018,7 @@ class BioCorePlugin(Star):
                     "meaning_to_her": "",
                     "reflection": "",
                     "emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral") if core else "neutral",
+                    "emotion_secondary": self._secondary_emotion(core),
                     "importance": _imp,
                     "appraisal": dict(core.appraisal) if core is not None else {},
                     "confidence": round(max(0.2, min(1.0, 0.55 + 0.45 * float(check.get("overlap", 0)))), 3),
@@ -4091,6 +4110,7 @@ class BioCorePlugin(Star):
                 "meaning_to_her": meaning,
                 "reflection": reflection,
                 "emotion": str(core.labels.get("emotion") or "neutral"),
+                "emotion_secondary": self._secondary_emotion(core),
                 "importance": round(max(0.5, min(1.0, intensity)), 3),
                 "appraisal": dict(core.appraisal),
                 "confidence": _conf,
@@ -5678,6 +5698,7 @@ class BioCorePlugin(Star):
                                 "suppression_count": 0,
                                 "encoding_regulation": str(getattr(core, "regulation", "none") or "none"),
                                 "encoding_emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral"),
+                                "encoding_emotion_secondary": self._secondary_emotion(core),
                                 "sensitive": bool(_summary_sens.get("sensitive")),
                                 "pii_types": list(_summary_sens.get("types") or []),
                                 "sensitivity": float(_summary_sens.get("score") or 0.0)})
@@ -5810,6 +5831,7 @@ class BioCorePlugin(Star):
             try:
                 entry["encoding_regulation"] = str(getattr(core, "regulation", "none") or "none")
                 entry["encoding_emotion"] = str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral")
+                entry["encoding_emotion_secondary"] = self._secondary_emotion(core)
                 entry["encoding_valence"] = round(float(getattr(core, "v", 0.0) or 0.0), 3)
                 entry["encoding_arousal"] = round(float(getattr(core, "a", 0.5) or 0.5), 3)
             except Exception:

@@ -139,11 +139,17 @@
       " · 年龄 " + Math.round(hit.ageDays) + "d" +
       (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
       ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
+    const _secKey = String(ev.emotion_secondary || "").trim();
+    const _status = String((ev.source_check && ev.source_check.status) || "ok");
+    const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
+      (_secKey ? " / " + _emotionZh(_secKey) : " / 同主色") +
+      " · 来源 " + _status;
     // Keep the hover card small: old memories may store a whole chat turn in
     // meaning_to_her; never render the raw block into the orb tooltip.
     const meaning = _tipClean(ev.meaning_to_her || ev.central_details || "", 180);
     orbTip.innerHTML = "<b>" + _tipEsc(title) + "</b>" +
       (when ? '<div class="orb-tip-meta">' + _tipEsc(when) + "</div>" : "") +
+      '<div class="orb-tip-meta">' + _tipEsc(_emoLine) + "</div>" +
       '<div class="orb-tip-meta">' + _tipEsc(impLine) + "</div>" +
       (meaning ? '<div class="orb-tip-body">' + _tipEsc(meaning) + "</div>" : "");
     orbTip.hidden = false;
@@ -158,6 +164,27 @@
     y = Math.max(8, Math.min(r.height - th - 8, y));
     orbTip.style.left = x + "px";
     orbTip.style.top = y + "px";
+  }
+
+  const _EMO_ZH = {
+    admiration:"钦佩", adoration:"爱慕", aesthetic:"审美欣赏", amusement:"好笑", anger:"生气",
+    anxiety:"焦虑", awe:"敬畏", awkwardness:"尴尬", boredom:"无聊", calmness:"平静",
+    confusion:"困惑", contempt:"轻蔑", contentment:"满足", desire:"欲望", disappointment:"失望",
+    disgust:"厌恶", empathic_pain:"共情痛苦", entrancement:"入迷", envy:"嫉妒", excitement:"兴奋",
+    fear:"害怕", guilt:"内疚", horror:"恐惧", interest:"兴趣", joy:"快乐",
+    loneliness:"孤独", nostalgia:"怀念", pride:"自豪", neutral:"平静", trust:"信任"
+  };
+  const _SECONDARY_FAMILY = {
+    admiration:"joy", adoration:"joy", aesthetic:"joy", amusement:"joy", awe:"joy",
+    contentment:"joy", desire:"joy", excitement:"joy", interest:"joy", joy:"joy", pride:"joy",
+    nostalgia:"sadness", sadness:"sadness", disappointment:"sadness", empathic_pain:"sadness", guilt:"sadness",
+    anger:"anger", contempt:"anger", disgust:"anger", envy:"anger",
+    fear:"fear", anxiety:"fear", horror:"fear",
+    loneliness:"loneliness", boredom:"neutral", confusion:"neutral", calmness:"trust"
+  };
+  function _emotionZh(key){
+    const k=String(key||"");
+    return _EMO_ZH[k] || k || "未知";
   }
 
   function palette() {
@@ -632,7 +659,13 @@
         let col = _ec[String(ev.emotion || "neutral")] || _ec.neutral;
         if (ev._kind === "memory" && !ev.emotion_known) col = "142,148,158";
         const bodyHsl = _vividHsl(col, b.imp);   // saturated, slightly deep
-        const ringHsl = { h: bodyHsl.h, s: bodyHsl.s, l: Math.min(60, bodyHsl.l + 7) };
+        const primaryRingHsl = { h: bodyHsl.h, s: bodyHsl.s, l: Math.min(60, bodyHsl.l + 7) };
+        const _secKey = String(ev.emotion_secondary || "").trim();
+        const _secRgb = _secKey ? (_ec[_SECONDARY_FAMILY[_secKey] || _secKey] || "") : "";
+        const _secHsl = _secRgb ? _vividHsl(_secRgb, b.imp) : null;
+        const ringHsl = _secHsl
+          ? { h: _secHsl.h, s: _secHsl.s, l: Math.min(60, _secHsl.l + 7) }
+          : primaryRingHsl;   // old data/no secondary: primary lightened one step
         const bodyFill = "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
         const ringFill = "hsl(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%)";
         const front = b.front ? 1 : .72;
@@ -649,12 +682,13 @@
         const fillAlpha = (.14 + .52 * b.imp) * ageAlpha * (.55 + .45 * b.cent) * front;
         const haloAlpha = (.06 + .12 * recallN + .05 * recallFresh) * ageAlpha *
           haloPulse * (forgotten ? .35 : 1);
-        const ringDash = status === "ok" ? [] : [2.5, 3];
+        const suspect = status === "suspect";
+        // [BC] memory ball: size=importance, orbit=time; only one secondary ring.
         ctx.save();
         // halo: brightness + pulse rate follow recall_count / last_recall
         ctx.globalAlpha = haloAlpha;
         ctx.beginPath(); ctx.arc(b.x, b.y, size * (2.1 + .35 * recallN), 0, Math.PI * 2);
-        ctx.strokeStyle = "hsla(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%,.42)";
+        ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," + primaryRingHsl.s.toFixed(0) + "%," + primaryRingHsl.l.toFixed(0) + "%,.42)";
         ctx.lineWidth = .7; ctx.stroke();
         // body: centrality controls solidity; forgotten becomes a hollow ring
         const bodyAlpha = Math.min(1, (.58 + .40 * b.imp) * (.86 + .14 * (1 - b.ageNorm)) * front);
@@ -667,27 +701,26 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
-        // importance rings: 1..3 thin rings, more important = more rings
-        const impLevel = b.imp >= .75 ? 3 : (b.imp >= .45 ? 2 : 1);
+        // one importance ring only: secondary emotion colour; old data
+        // without emotion_secondary falls back to the primary colour lightened.
         const ringBase = size + 4.2;
-        for (let k = 0; k < impLevel; k++) {
-          ctx.globalAlpha = Math.max(0, (.22 + .36 * b.imp) * (1 - k * .22)) * front;
-          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase + k * 2.3, 0, Math.PI * 2);
-          ctx.strokeStyle = ringFill;
-          ctx.lineWidth = .55 + .35 * b.imp;
-          ctx.stroke();
+        ctx.globalAlpha = Math.max(0, (.28 + .40 * b.imp)) * front;
+        ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, 0, Math.PI * 2);
+        ctx.strokeStyle = ringFill;
+        ctx.lineWidth = .7 + .35 * b.imp;
+        ctx.stroke();
+        // Source state lives in the tooltip; only a suspect source gets the
+        // orange dashed ring (no normal source ring anymore).
+        if (suspect) {
+          ctx.globalAlpha = .9;
+          ctx.setLineDash([2.5, 3]);
+          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase + 3.6, 0, Math.PI * 2);
+          ctx.strokeStyle = "rgba(214,120,64,.9)";
+          ctx.lineWidth = .8; ctx.stroke();
+          ctx.setLineDash([]);
         }
-        // source-monitoring ring: ok solid, weak dashed, suspect warning colour
-        ctx.globalAlpha = .9;
-        ctx.setLineDash(ringDash);
-        ctx.beginPath(); ctx.arc(b.x, b.y, size + 2.2, 0, Math.PI * 2);
-        ctx.strokeStyle = status === "suspect"
-          ? "rgba(214,120,64,.9)"
-          : "hsla(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%,.60)";
-        ctx.lineWidth = .8; ctx.stroke();
-        ctx.setLineDash([]);
         ctx.restore();
-        _memHit.push({ x: b.x, y: b.y, r: ringBase + 2.3 * (impLevel - 1) + 3, ev, imp: b.imp,
+        _memHit.push({ x: b.x, y: b.y, r: ringBase + (suspect ? 5 : 2), ev, imp: b.imp,
                        tsS: b.tsS, ageDays: b.ageDays, front: b.front });
       });
     }
