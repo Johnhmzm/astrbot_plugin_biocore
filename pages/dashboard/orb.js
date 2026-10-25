@@ -18,6 +18,11 @@
     events: [], memories: [] };
   let phase = 0, lastFrame = 0, frameCount = 0;
   const clamp = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+  // Two-sided numeric clamp for percentage/alpha bounds (the 0..1 clamp is
+  // too narrow for sat/light/alpha floors). Module scope: memory-ball rings
+  // draw before the center mood ball.
+  const _bound = (v, lo, hi) => Math.max(lo, Math.min(hi,
+    Number.isFinite(Number(v)) ? Number(v) : lo));
   const isDark = () => document.documentElement.dataset.theme === "dark";
   // task-42/44: pure orbit math lives in orb_math.js so evals can run it in
   // node (world units, R applied once). The inline copy below is the same
@@ -1061,28 +1066,49 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
-        // one importance ring: secondary/inferred colour, a COMPLETE SOLID circle
-        // (task-54 addendum: no 3.2/4.8 dash blocks). Importance is the line
-        // width (1.2 + 1.4 * importance); slow rotation is a short 18-25%
-        // brighter highlight arc travelling on the same solid circle.
+        // one importance ring: secondary/inferred colour. task-60: orbit
+        // (default) draws a complete 3D tilted ellipse; solid draws a complete
+        // 360° static circle. Importance = line width (floored for visibility).
         const ringBase = size + 4.2;
-        const ringAlpha = clamp(Math.max(0, (.28 + .40 * b.imp)) * depthK * dimK);
-        const ringWidth = 1.2 + 1.4 * b.imp;
+        // task-59: the full 360 shape must be visible on its own, not only the
+        // rotating highlight. Base ring alpha floor .55 (cap .85), width >= 1.8
+        // so the 18-25% highlight cannot be the only visible arc.
+        const ringAlphaBase = _bound(Math.max(0.55, .28 + .40 * b.imp), 0.55, 0.85);
+        const ringAlpha = _bound(ringAlphaBase * (0.94 + 0.06 * depthK), 0.55, 0.85);
+        const ringWidth = _bound(1.2 + 1.4 * b.imp, 1.8, 2.8);
+        const ringHighlightAlpha = _bound(ringAlpha * 1.15,
+          ringAlpha, Math.min(0.85, ringAlpha * 1.2));
+        window.__biocoreRing = { style: null, alpha: Number(ringAlpha.toFixed(3)),
+          width: Number(ringWidth.toFixed(2)),
+          highlightAlpha: Number(ringHighlightAlpha.toFixed(3)),
+          highlightLen: Number((0.18 + 0.07 * b.imp).toFixed(3)),
+          orbitTilt: 0.42, hasAuxEllipse: false,
+          rotates: false, hasHighlight: false, spin: 0 };
         const fullTurn = Math.PI * 2;
-        const spin = phase * 1.15;                         // slow rotation
-        const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);  // 18-25% of ring
+        // task-59 contract: highlight length stays 18-25% (solid no longer
+        // draws a highlight arc; orbit rotates the whole ellipse instead).
+        const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);
         const ringColor = _secHsl
           ? ringFill
           : ("hsla(" + inferredRingHsl.h.toFixed(0) + "," +
              inferredRingHsl.s.toFixed(0) + "%," +
              inferredRingHsl.l.toFixed(0) + "%," +
-             (inferredRingHsl.alpha || .55).toFixed(2) + ")");
-        // task-54 addendum: two ring styles, configured from the dashboard.
-        // solid (default) = solid full circle + rotating bright highlight arc;
-        // orbit = 3D tilted ellipse orbit with perspective and slow rotation.
-        const _ringStyle = String((state.visual && state.visual.memoryRingStyle) || "solid")
-          .toLowerCase() === "orbit" ? "orbit" : "solid";
+             "0.95)");   // solid: globalAlpha carries the visibility
+        // task-60: two ring styles. orbit (default) = 3D tilted ellipse with
+        // perspective + slow rotation (same family as the big mood ball);
+        // solid = complete 360° static circle (no rotation, no highlight arc).
+        const _ringStyle = String((state.visual && state.visual.memoryRingStyle) || "orbit")
+          .toLowerCase() === "solid" ? "solid" : "orbit";
         window.__biocoreMemoryRingStyle = _ringStyle;
+        if (window.__biocoreRing) {
+          window.__biocoreRing.style = _ringStyle;
+          // orbit rotates slowly; solid is a static 360° circle with no
+          // highlight arc (task-60).
+          window.__biocoreRing.rotates = _ringStyle === "orbit";
+          window.__biocoreRing.hasHighlight = false;
+          window.__biocoreRing.spin = _ringStyle === "orbit"
+            ? Number(phase.toFixed(4)) : 0;
+        }
         ctx.save();
         ctx.globalAlpha = ringAlpha;
         ctx.setLineDash([]);                               // no dash blocks in either style
@@ -1105,18 +1131,33 @@
           ctx.strokeStyle = ringColor;
           ctx.lineWidth = ringWidth;
           ctx.stroke();
+          // task-60: very faint second ellipse in the same orbit family adds
+          // 3D depth without competing with the primary ring/highlight.
+          const orbitTilt2 = -0.30;
+          ctx.globalAlpha = _bound(ringAlpha * 0.28, 0.10, 0.30);
+          ctx.beginPath();
+          for (let i = 0; i <= steps; i++) {
+            const a2 = i / steps * fullTurn - orbitSpin * 0.8;
+            const ex2 = Math.cos(a2) * ringBase * 1.06;
+            const ey2 = Math.sin(a2) * ringBase * 1.06 * Math.sin(orbitTilt2);
+            const ez2 = Math.sin(a2) * ringBase * 1.06 * Math.cos(orbitTilt2);
+            const persp2 = 1 + (ez2 / Math.max(1, ringBase)) * 0.16;
+            const px2 = b.x + ex2 * persp2;
+            const py2 = b.y + ey2 * persp2 + (ez2 / Math.max(1, ringBase)) * 2.0;
+            if (i === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+          }
+          ctx.closePath();
+          ctx.strokeStyle = ringColor;
+          ctx.lineWidth = _bound(ringWidth * 0.5, 0.9, 1.4);
+          ctx.stroke();
+          if (window.__biocoreRing) window.__biocoreRing.hasAuxEllipse = true;
         } else {
+          // task-60: solid is a COMPLETE 360° circle but STATIC: no rotation
+          // and no highlight arc (the highlight made the ring look partial).
           ctx.beginPath();
           ctx.arc(b.x, b.y, ringBase, 0, fullTurn);
           ctx.strokeStyle = ringColor;
           ctx.lineWidth = ringWidth;
-          ctx.stroke();
-          // rotating highlight arc on the same solid ring (no dashes)
-          ctx.globalAlpha = clamp(ringAlpha * 1.55);
-          ctx.beginPath();
-          ctx.arc(b.x, b.y, ringBase, spin, spin + highlightLen);
-          ctx.strokeStyle = ringColor;
-          ctx.lineWidth = ringWidth + .2;
           ctx.stroke();
         }
         ctx.restore();
@@ -1173,10 +1214,6 @@
     // calm state must not wash out to white (sat >= 45, light <= 76, alpha >=
     // .45) and a strong state must not oversaturate (sat <= 92, light >= 48,
     // alpha <= .88). The white glass highlight is a separate bounded overlay.
-    // The generic clamp() is 0..1; percentage/alpha bounds need a two-sided
-    // numeric clamp so the explicit floors and ceilings are honoured.
-    const _bound = (v, lo, hi) => Math.max(lo, Math.min(hi,
-      Number.isFinite(Number(v)) ? Number(v) : lo));
     const _miRaw = clamp(0.55 * _ma + 0.35 * _mv + 0.10 * _ms);
     const _mi = _bound(Math.max(0.35, _miRaw), 0.35, 1);
     const _mSat = _bound(40 + 55 * _mi, 45, 92);

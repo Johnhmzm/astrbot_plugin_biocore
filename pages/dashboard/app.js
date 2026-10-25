@@ -227,7 +227,7 @@
       localStorage.setItem("bio_vis_defaults_v3","1");
     }
   } catch (e) {}
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","solid")==="orbit"?"orbit":"solid"};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit"};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -951,6 +951,56 @@
     }).join("");
     return '<svg class="rel-spark" viewBox="0 0 '+w+' '+h+'" preserveAspectRatio="none" aria-hidden="true">'+paths+'</svg>';
   }
+  // task-61: related archived events for the selected relationship user.
+  // Matching: event provenance sender_id/sender_name equals the user, or the
+  // event session matches one of the relationship sessions (canonical ":"/"_").
+  const REL_EVENT_LIMIT=5;
+  function _relCanonicalSessions(cur,rel){
+    const out=new Set();
+    const add=(raw)=>{ const c=canonicalSessionKey(raw); if(c) out.add(c); };
+    if(cur&&Array.isArray(cur.sessions)) cur.sessions.forEach(add);
+    if(rel&&Array.isArray(rel.sessions)) rel.sessions.forEach(add);
+    return out;
+  }
+  function relatedEventsForUser(cur,rel){
+    const evs=Array.isArray(data&&data.events)?data.events:[];
+    const user=(cur&&typeof cur==="object")?cur:{};
+    const sid=String(user.sender_id||"").trim();
+    const sname=String(user.sender_name||"").trim();
+    const sessions=_relCanonicalSessions(user,rel);
+    return evs.filter(ev=>{
+      if(!ev||typeof ev!=="object") return false;
+      const prov=(ev.provenance&&typeof ev.provenance==="object")?ev.provenance:{};
+      const psid=String(prov.sender_id||"").trim();
+      const pname=String(prov.sender_name||"").trim();
+      if(sid&&psid===sid) return true;
+      if(sname&&pname===sname) return true;
+      const canon=canonicalSessionKey(ev.session);
+      return !!(canon&&sessions.has(canon));
+    }).sort((a,b)=>Number(b.ts||0)-Number(a.ts||0)).slice(0,REL_EVENT_LIMIT);
+  }
+  function _relSmallSummary(ev){
+    const small=String((ev&&ev.small_summary)||"").trim();
+    if(small) return _clipText(small,80);
+    return _clipText(String((ev&&(ev.title||ev.event))||""),80);
+  }
+  function _relEventsHtml(cur){
+    const rel=(cur&&cur.relationship&&typeof cur.relationship==="object")?cur.relationship:{};
+    const evs=relatedEventsForUser(cur,rel);
+    const rows=evs.map(ev=>{
+      const when=memWhen(ev.ts);
+      const title=_clipText(String(ev.title||"重要事件"),60);
+      const imp=Number(ev.importance==null?0:ev.importance).toFixed(2);
+      return '<div class="rel-event-row" data-event-id="'+esc(String(ev.id||""))+'">'+
+        '<span class="rel-event-ts">'+esc(when)+'</span>'+
+        '<b class="rel-event-title">'+esc(title)+'</b>'+
+        '<span class="rel-event-imp">重要度 '+imp+'</span>'+
+        '<p class="rel-event-small">'+esc(_relSmallSummary(ev))+'</p></div>';
+    }).join("");
+    return '<div class="rel-events"><small>关联事件 / RELATED EVENTS</small>'+
+      (rows?'<div class="rel-events-list">'+rows+'</div>'
+           :'<div class="empty-mini">暂无关联事件</div>')+'</div>';
+  }
   function renderRelationships(){
     const sel=$("relUserFilter"), body=$("relBody"), empty=$("relEmpty"), hint=$("relStateHint");
     if(!sel||!body) return;
@@ -1027,6 +1077,7 @@
       '<div class="rel-maps"><div><small>共同记忆 / WE-MEMORY</small><div class="chips">'+weHtml+'</div></div><div><small>里程碑 / MILESTONES</small><div class="chips">'+markHtml+'</div></div></div>'+
       '<div class="rel-maps"><div><small>关系印象 / ANNOTATIONS</small><div class="chips">'+annHtml+'</div></div><div><small>用户信念 / BELIEF STATE（只读）</small><div class="chips">'+beliefHtml+'</div></div></div>'+
       '<div class="rel-maps"><div><small>承诺 '+(commit).toFixed(2)+' · 投资 '+(invest).toFixed(2)+' · 修复 '+esc(repPhase)+' · 回归 '+esc(String(absence.bucket||"same_day"))+'</small><div class="chips"><span class="chip">依恋 安全'+Number(attach.safe||0).toFixed(2)+'</span><span class="chip">焦虑'+Number(attach.anxious||0).toFixed(2)+'</span><span class="chip">回避'+Number(attach.avoidant||0).toFixed(2)+'</span></div></div></div>'+
+      _relEventsHtml(cur)+
     '</div>';
   }
   const _memSel=$("memSessionFilter");
@@ -1830,7 +1881,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.88";
+  const BIO_VERSION = "v1.2.89";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
