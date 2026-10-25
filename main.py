@@ -1510,7 +1510,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.54")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.55")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1603,6 +1603,11 @@ class BioCorePlugin(Star):
             self.image_service_port = max(1, int(self.config.get("image_service_port", 8091) or 8091))
         except Exception:
             self.image_service_port = 8091
+        # Lazy image-service process/lock state (initialized here so the
+        # first image request does not AttributeError).
+        self._image_proc = None
+        self._image_last_used = 0.0
+        self._image_service_lock = None
         _triggers = self.config.get("image_trigger_words", [])
         self.image_trigger_words = ([str(x).strip() for x in _triggers if str(x).strip()]
                                     if isinstance(_triggers, (list, tuple)) else [])
