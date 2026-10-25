@@ -55,7 +55,7 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 
 市场安装或 GitHub 仓库安装时，优先使用 AstrBot 的更新按钮；ZIP 上传安装的更新按钮可能不可用，需要先切换/绑定市场源或覆盖安装一次。
 
-更新不会删除持久化数据；请勿勾选“删除数据”。版本号以 `metadata.yaml` 为准，详细更新记录见 [UPDATE.md](UPDATE.md)。
+更新不会删除持久化数据；请勿勾选“删除数据”。版本号以 `metadata.yaml` 为准，详细更新记录见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)。
 
 ## 配置
 
@@ -136,7 +136,7 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 ## 更新日志
 
 - 当前版本：`1.2.95`（以 `metadata.yaml` 为准）
-- 详细历史见 [UPDATE.md](UPDATE.md)
+- 详细历史见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)
 - 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
 
 ## 许可证
