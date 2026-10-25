@@ -47,6 +47,10 @@ try:
     from . import relationship_meta
 except Exception:
     import relationship_meta
+try:
+    from . import homeostasis
+except Exception:
+    import homeostasis
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
@@ -1164,6 +1168,10 @@ class BioCore:
             pass
         self.ticks += 1
         self.infer_labels(force=True)
+        try:
+            homeostasis.step(self)
+        except Exception:
+            pass
 
     def _spectrum(self) -> list:
         v = (float(getattr(self, "v", 0.0)) + 1.0) / 2.0
@@ -1720,6 +1728,7 @@ class BioCore:
                 "boredom": round(float(getattr(self, "boredom", 0.0)), 3),
                 "circadian_alertness": round(float(getattr(self, "circadian_alertness", 0.5)), 3),
                 "allostatic_load": round(float(getattr(self, "allostatic_load", 0.0)), 3),
+                "homeostasis": dict(getattr(self, "homeostasis", {}) or {}),
                 "boundary_pressure": round(float(getattr(self, "boundary_pressure", 0.0)), 3),
                 "refusal_readiness": round(float(getattr(self, "refusal_readiness", 0.0)), 3),
                 "interpersonal": {k: round(float(v), 4) for k, v in (getattr(self, "interpersonal", {}) or {}).items()},
@@ -1746,7 +1755,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.64")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.65")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -6538,6 +6547,10 @@ class BioCorePlugin(Star):
         _reply = _clean
         try:
             core.record_reply(_reply, _meta)
+        except Exception:
+            pass
+        try:
+            homeostasis.metabolize_reply(core, _reply)
         except Exception:
             pass
         try:
