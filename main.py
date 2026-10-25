@@ -1740,7 +1740,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.61")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.62")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -4680,6 +4680,9 @@ class BioCorePlugin(Star):
             "relationships": _relationship_rows(USER_DIR),
             "last_memory_meta": dict(getattr(self, "_last_memory_meta", {}) or {}),
             "last_memory_trace": dict(getattr(self, "_last_memory_trace", {}) or {}),
+            # Paper mechanisms also at top level for dashboard/API consumers.
+            "circadian_alertness": round(float(getattr(cores[0], "circadian_alertness", 0.5)), 3) if cores else 0.5,
+            "allostatic_load": round(float(getattr(cores[0], "allostatic_load", 0.0)), 3) if cores else 0.0,
             # L-T02/L-T03..L-T12 read-only runtime surface (bounded, no prompt text)
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
