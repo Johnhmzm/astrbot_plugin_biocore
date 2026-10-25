@@ -579,10 +579,21 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .orb-focus-exit{position:absolute;right:6px;top:6px;z-index:9;display:block;padding:3px 8px;font:10px/1.4 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:.06em;color:var(--ink);background:var(--panel);border:1px solid var(--line);border-radius:4px;cursor:pointer;pointer-events:auto}
 .orb-focus-exit:hover,.orb-focus-exit:focus-visible{color:var(--accent2);border-color:var(--accent2);outline:none}
 .orb-focus-exit[hidden]{display:none}
-.orb-focus-card{position:absolute;left:6px;right:6px;bottom:6px;z-index:7;max-height:96px;overflow:hidden;padding:7px 9px;background:var(--panel);border:1px solid var(--line);border-radius:5px;pointer-events:none;font:11px/1.5 Bahnschrift,"Segoe UI","Microsoft YaHei",sans-serif;color:var(--muted);box-shadow:0 8px 20px rgba(0,0,0,.18)}
-.orb-focus-card[hidden]{display:none}
-.orb-focus-card b{display:block;margin-bottom:2px;color:var(--ink);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.orb-focus-card p{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}
+/* task-45: focused memory summary replaces the left CURRENT EMOTION block */
+.hero-memory{display:flex;flex-direction:column;gap:5px;max-height:320px;overflow:auto;padding-right:4px;word-break:break-word}
+.hero-memory .eyebrow{font-size:9px;letter-spacing:.14em;color:var(--accent2)}
+.hero-memory h2{margin:0;font-size:clamp(15px,2vw,21px);line-height:1.25;word-break:break-word}
+.hero-mem-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:3px 10px;font-size:10px;color:var(--muted)}
+.hero-mem-grid span{display:flex;gap:4px;min-width:0;align-items:baseline}
+.hero-mem-grid b{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hero-mem-summary small{display:block;font-size:9px;letter-spacing:.12em;color:var(--faint)}
+.hero-mem-summary p{margin:1px 0 0;font-size:11px;line-height:1.5;color:var(--muted);word-break:break-word;white-space:pre-wrap}
+.hero-mem-hint{margin:0;font-size:9px;line-height:1.4;color:var(--faint)}
+@media(max-width:900px){
+  .hero-memory{max-height:none;overflow:visible}
+  .hero-mem-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .hero-mem-summary p{font-size:12px}
+}
 .mem-tomb-text{color:var(--faint);font-size:10px;flex:1;min-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* relationship state / trajectory */

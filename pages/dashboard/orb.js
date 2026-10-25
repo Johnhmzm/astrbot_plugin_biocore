@@ -144,7 +144,7 @@
   const _cam = { x: CX, y: CY, zoom: 1 };
   const _pointerTap = { active: false, x: 0, y: 0, t: 0 };
   const _focusHost = canvas.parentElement || null;
-  let _focusExitBtn = null, _focusCard = null;
+  let _focusExitBtn = null;
   function _ballKey(ev) {
     return String((ev && (ev.id || ev.event_key || ev.title)) || 0);
   }
@@ -160,33 +160,40 @@
       e.preventDefault(); e.stopPropagation(); exitBallFocus();
     });
     _focusHost.appendChild(_focusExitBtn);
-    _focusCard = document.createElement("div");
-    _focusCard.id = "orbFocusCard";
-    _focusCard.className = "orb-focus-card";
-    _focusCard.hidden = true;
-    _focusHost.appendChild(_focusCard);
   }
-  function _renderFocusCard() {
-    if (!_focusCard) return;
-    const ev = _focusState.ev || {};
-    _focusCard.innerHTML = "";
-    const head = document.createElement("b");
-    head.textContent = _tipClean(ev.title || ev.event_key || "记忆球", 60);
-    _focusCard.appendChild(head);
-    // Optional detail card: big/small summary of the selected ball.
-    const small = String(ev.small_summary || "").trim();
-    const big = String(ev.big_summary || ev.event || ev.central_details || "").trim();
-    if (small) {
-      const p = document.createElement("p");
-      p.textContent = "小总结：" + _tipClean(small, 80);
-      _focusCard.appendChild(p);
-    }
-    if (big) {
-      const p = document.createElement("p");
-      p.textContent = "大总结：" + _tipClean(big, 220);
-      _focusCard.appendChild(p);
-    }
-    _focusCard.hidden = false;
+  // task-45: the left CURRENT EMOTION block is driven by app.js, so orb.js only
+  // dispatches focus/exit events with the selected memory's display data. The
+  // old bottom-right card is removed to avoid duplicating that panel.
+  function _focusEventDetail(ev) {
+    const e = ev || {};
+    const check = (e.source_check && typeof e.source_check === "object") ? e.source_check : {};
+    return {
+      key: String(_focusState.key || ""),
+      title: String(e.title || e.event_key || "记忆球"),
+      emotion: String(e.emotion || ""),
+      emotion_secondary: String(e.emotion_secondary || ""),
+      importance: Number(e.importance == null ? .5 : e.importance),
+      ts: Number(e.ts || 0),
+      source: String(check.status || "ok"),
+      confidence: (e.confidence == null || e.confidence === "") ? null : Number(e.confidence),
+      recall_count: Number(e.recall_count || 0),
+      small_summary: String(e.small_summary || ""),
+      big_summary: String(e.big_summary || ""),
+      event: String(e.event || ""),
+      central_details: String(e.central_details || "")
+    };
+  }
+  function _dispatchFocusEvent(name, ev) {
+    try {
+      const detail = _focusEventDetail(ev);
+      if (typeof CustomEvent === "function") {
+        document.dispatchEvent(new CustomEvent(name, { detail: detail }));
+      } else if (document && document.createEvent) {
+        const evt = document.createEvent("CustomEvent");
+        evt.initCustomEvent(name, false, false, detail);
+        document.dispatchEvent(evt);
+      }
+    } catch (err) { /* never let panel glue break the orb */ }
   }
   function focusBall(hit) {
     if (!hit) return;
@@ -196,16 +203,17 @@
     window.__biocoreFocusKey = _focusState.key;   // task-43 observability
     _ensureFocusUi();
     if (_focusExitBtn) _focusExitBtn.hidden = false;
-    _renderFocusCard();
+    _dispatchFocusEvent("biocore:focus", _focusState.ev);   // task-45 panel data
     hideOrbTip();
   }
   function exitBallFocus() {
+    const wasFocused = !!_focusState.key;
     _focusState.key = "";
     _focusState.ev = null;
     _focusState.prev = null;
     window.__biocoreFocusKey = "";               // task-43 observability
     if (_focusExitBtn) _focusExitBtn.hidden = true;
-    if (_focusCard) { _focusCard.hidden = true; _focusCard.innerHTML = ""; }
+    if (wasFocused) _dispatchFocusEvent("biocore:focus-exit", null);
     hideOrbTip();
   }
   function toggleBallFocus(hit) {

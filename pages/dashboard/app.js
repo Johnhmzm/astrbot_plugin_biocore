@@ -1507,7 +1507,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.80";
+  const BIO_VERSION = "v1.2.81";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1590,5 +1590,93 @@
   setupIntentTabs();
   setupFolds();
   arrangeFoldGrid();
+  // task-45: memory-ball focus panel for the left CURRENT EMOTION area.
+  // orb.js dispatches biocore:focus / biocore:focus-exit; we cache the original
+  // hero content (children + display) and swap it for the selected memory,
+  // restoring it exactly when focus ends.
+  let _heroFocusSaved = null;
+  const _FOCUS_SOURCE_LABELS = { ok: "正常", weak: "弱来源", suspect: "待核", unknown: "未知" };
+  function _heroCopyEl(){
+    return document.querySelector("#view-overview .hero-copy") || document.querySelector(".hero-copy");
+  }
+  function _focusEmotionLabel(key){
+    const k = String(key == null ? "" : key).trim();
+    return k ? (L(k) || k) : "—";
+  }
+  function _focusWhen(ts){
+    const n = Number(ts || 0);
+    if (!(n > 0)) return "—";
+    try {
+      return new Date(n * 1000).toLocaleString("zh-CN",
+        { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    } catch (e) { return "—"; }
+  }
+  function _focusSourceLabel(status){
+    const k = String(status || "ok").trim().toLowerCase();
+    return _FOCUS_SOURCE_LABELS[k] || k || "—";
+  }
+  function showHeroMemoryPanel(detail){
+    const copy = _heroCopyEl();
+    if (!copy) return;
+    const d = detail || {};
+    if (!_heroFocusSaved){
+      _heroFocusSaved = {
+        copy: copy,
+        children: Array.prototype.slice.call(copy.children).map(
+          (el) => ({ el: el, display: el.style.display || "" })),
+        panel: null
+      };
+      _heroFocusSaved.children.forEach((x) => { x.el.style.display = "none"; });
+      const panel = document.createElement("div");
+      panel.id = "heroMemoryPanel";
+      panel.className = "hero-memory";
+      copy.appendChild(panel);
+      _heroFocusSaved.panel = panel;
+    }
+    const panel = _heroFocusSaved.panel;
+    if (!panel) return;
+    const primary = _focusEmotionLabel(d.emotion);
+    const secondary = d.emotion_secondary ? _focusEmotionLabel(d.emotion_secondary) : "同主色";
+    const importance = Number(d.importance == null ? .5 : d.importance).toFixed(2);
+    const when = _focusWhen(d.ts);
+    const source = _focusSourceLabel(d.source);
+    const recall = Math.max(0, Number(d.recall_count || 0));
+    // No-big fallback: big_summary -> event -> central_details.
+    const big = String(d.big_summary || d.event || d.central_details || "").trim();
+    const small = String(d.small_summary || "").trim() ||
+      (d.event ? String(d.event).slice(0, 80) : "");
+    panel.innerHTML =
+      '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
+      '<h2 id="heroMemTitle">' + esc(String(d.title || "记忆球")) + '</h2>' +
+      '<div class="hero-mem-grid">' +
+        '<span>主情绪 <b>' + esc(primary) + '</b></span>' +
+        '<span>次情绪 <b>' + esc(secondary) + '</b></span>' +
+        '<span>重要度 <b>' + esc(importance) + '</b></span>' +
+        '<span>时间 <b>' + esc(when) + '</b></span>' +
+        '<span>来源 <b>' + esc(source) + '</b></span>' +
+        '<span>召回 <b>' + esc(String(recall)) + ' 次</b></span>' +
+      '</div>' +
+      '<div class="hero-mem-summary"><small>小总结</small><p>' + esc(small || "—") + '</p></div>' +
+      '<div class="hero-mem-summary"><small>大总结</small><p>' + esc(big || "—") + '</p></div>' +
+      '<p class="hero-mem-hint">再次点击记忆球 / 点空白 / Esc / “退出聚焦”恢复当前情绪</p>';
+  }
+  function restoreHeroFocusPanel(){
+    const saved = _heroFocusSaved;
+    if (!saved) return;
+    try {
+      if (saved.panel && saved.panel.parentNode) saved.panel.parentNode.removeChild(saved.panel);
+    } catch (e) {}
+    (saved.children || []).forEach((x) => {
+      try { x.el.style.display = x.display; } catch (e) {}
+    });
+    _heroFocusSaved = null;
+  }
+  document.addEventListener("biocore:focus", (e) => {
+    showHeroMemoryPanel(e && e.detail);
+  });
+  document.addEventListener("biocore:focus-exit", () => {
+    restoreHeroFocusPanel();
+  });
+
   if (document.readyState === 'complete') load(); else window.addEventListener('load', () => load());
 })();
