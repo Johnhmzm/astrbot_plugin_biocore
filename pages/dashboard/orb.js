@@ -419,7 +419,7 @@
     const _secKey = String(ev.emotion_secondary || "").trim();
     const _status = String((ev.source_check && ev.source_check.status) || "ok");
     const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
-      (_secKey ? " / " + _emotionZh(_secKey) : " / 同主色") +
+      (_secKey ? " / 次情绪：" + _emotionZh(_secKey) : " / 次情绪：未知") +
       " · 来源 " + _status;
     // Keep the hover card small: prefer the <=80-char small_summary (task-41);
     // old events without it fall back to the archived event / central details,
@@ -989,9 +989,16 @@
         const _secKey = String(ev.emotion_secondary || "").trim();
         const _secRgb = _secKey ? (_ec[_SECONDARY_FAMILY[_secKey] || _secKey] || "") : "";
         const _secHsl = _secRgb ? _vividHsl(_secRgb, b.imp) : null;
+        // task-51: old records without emotion_secondary must not paint the ring
+        // in the primary ball colour (that made ring == ball). Use a neutral,
+        // low-saturation light tone; a regenerated event gets a real secondary
+        // from the core spectrum and the ring changes colour again.
+        const neutralRingHsl = isDark()
+          ? { h: 212, s: 9, l: 66 }
+          : { h: 212, s: 11, l: 58 };
         const ringHsl = _secHsl
           ? { h: _secHsl.h, s: _secHsl.s, l: Math.min(60, _secHsl.l + 7) }
-          : primaryRingHsl;   // old data/no secondary: primary lightened one step
+          : neutralRingHsl;   // old data/no secondary: neutral light fallback
         const bodyFill = "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
         const ringFill = "hsl(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%)";
         const ageAlpha = .16 + .70 * (1 - b.ageNorm);
@@ -1051,13 +1058,13 @@
           ctx.stroke();
           ctx.setLineDash([]);
         } else {
-          // old data/no-secondary fallback: primary colour lightened one step,
-          // same full-circle/width geometry, no rotation (no secondary channel).
+          // old data/no-secondary fallback: neutral light ring (not the primary
+          // ball colour), same full-circle/width geometry, no rotation.
           const start = -Math.PI / 2;
           ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, start, start + fullTurn);
-          ctx.strokeStyle = "hsla(" + primaryRingHsl.h.toFixed(0) + "," +
-            primaryRingHsl.s.toFixed(0) + "%," +
-            Math.min(72, primaryRingHsl.l + 12).toFixed(0) + "%,.55)";
+          ctx.strokeStyle = "hsla(" + neutralRingHsl.h.toFixed(0) + "," +
+            neutralRingHsl.s.toFixed(0) + "%," +
+            neutralRingHsl.l.toFixed(0) + "%,.55)";
           ctx.lineWidth = ringWidth;
           ctx.stroke();
         }

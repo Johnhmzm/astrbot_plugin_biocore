@@ -262,13 +262,24 @@
       const evConf=(ev.confidence==null||ev.confidence==="")?null:Number(ev.confidence);
       const warnFlags=(evConf!=null&&evConf<0.6?'<span class="mem-flag mem-flag-warn">低置信 '+evConf.toFixed(2)+'</span>':"")+
         (status!=="ok"?'<span class="mem-flag mem-flag-warn">来源待核 '+esc(status)+'</span>':"");
+      const smallSrc=String(ev.small_summary||"").trim()||String(ev.event||"").trim();
+      const small=_clipText(smallSrc,80);
+      const sumStatus=String(ev.summary_status||"legacy").toLowerCase();
+      const edited=ev.summary_edited===true||sumStatus==="edited";
+      const badge=edited?"已编辑":({"llm":"AI 总结","fallback":"摘录总结"}[sumStatus]||"旧事件");
+      const badgeCls=edited?"is-edited":("is-"+((sumStatus==="llm"||sumStatus==="fallback")?sumStatus:"legacy"));
+      const bigText=_clipText(ev.big_summary||ev.event||"",600);
+      const hasMsgs=msgs.length>0;
       return '<div class="memory-card">'+
         '<div class="memory-card-head"><span class="memory-level-tag">总结</span><b>'+esc(_clipText(ev.title||"重要事件",80))+'</b><span class="hint">'+esc(when)+'</span>'+warnFlags+'</div>'+
-        '<p class="memory-event-text">'+esc(_clipText(ev.big_summary||ev.event||"",280))+'</p>'+
+        '<p class="memory-event-small"><small>小总结</small><span>'+esc(small||"—")+'</span></p>'+
+        '<div class="memory-event-big"><div class="memory-event-big-head"><small>大总结</small><span class="memory-status-badge '+badgeCls+'">'+esc(badge)+'</span></div><p class="memory-event-text">'+esc(bigText)+'</p></div>'+
         '<div class="memory-scores"><small>重要度 '+imp+'</small><small>centrality '+cent+'</small><small>来源 '+esc(status)+'</small></div>'+
         '<div class="memory-important"><span class="memory-level-tag">重要事件</span><small>'+esc(_clipText(ev.central_details||"",260))+'</small><small>意义：'+esc(_clipText(ev.meaning_to_her||"",220))+'</small><small>事件感悟（单事件）：'+esc(_clipText(ev.reflection||"",220))+'</small></div>'+
-        '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'" data-count="'+msgs.length+'">收起消息 · '+msgs.length+' 条</button>'+
-        '<div class="memory-messages" data-idx="'+idx+'">'+(msgs.length?msgs.map(_msgRow).join(""):'<div class="empty-mini">该事件没有归档时间窗，无法列出逐条消息。</div>')+'</div>'+
+        (hasMsgs
+          ? '<button type="button" class="btn mini js-msg-toggle" data-idx="'+idx+'" data-count="'+msgs.length+'">收起消息 · '+msgs.length+' 条</button>'+
+            '<div class="memory-messages" data-idx="'+idx+'">'+msgs.map(_msgRow).join("")+'</div>'
+          : '<div class="memory-event-nowin">旧事件没有逐条消息窗口</div>')+
         '</div>';
     }).join("");
     if(!block.dataset.bound){
@@ -1508,7 +1519,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.86";
+  const BIO_VERSION = "v1.2.87";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1671,6 +1682,7 @@
     const body = data || {};
     const d = _heroFocusDetail || {};
     _heroFocusDetail = Object.assign({}, d, {
+      title: body.title == null ? String(d.title || "") : String(body.title),
       big_summary: body.big_summary == null ? String(d.big_summary || "") : String(body.big_summary),
       small_summary: body.small_summary == null ? String(d.small_summary || "") : String(body.small_summary),
       summary_status: String(body.summary_status || d.summary_status || "edited"),
@@ -1749,18 +1761,24 @@
     const panel = _heroPanelEl();
     const d = _heroFocusDetail || {};
     const eventId = _focusEventId(d);
+    const titleEl = panel && panel.querySelector("#heroMemTitleInput");
     const smallEl = panel && panel.querySelector("#heroMemSmall");
     const bigEl = panel && panel.querySelector("#heroMemBig");
+    const title = titleEl ? String(titleEl.value || "").trim() : "";
     const big = bigEl ? String(bigEl.value || "").trim() : "";
     const small = smallEl ? String(smallEl.value || "").trim() : "";
     if (!eventId) { _focusShowMsg("这条记忆没有可编辑的事件 id", true); return; }
+    if (titleEl && !title) { _focusShowMsg("标题不能为空", true); return; }
+    if (title.length > 80) { _focusShowMsg("标题不能超过 80 字", true); return; }
     if (!big) { _focusShowMsg("大总结不能为空", true); return; }
     if (small.length > 80) { _focusShowMsg("小总结不能超过 80 字", true); return; }
     _focusSetBusy(true, "保存中…");
     let result = null, failure = null;
     try {
-      result = await _focusApi({ event_id: eventId, action: "update",
-                                 big_summary: big, small_summary: small });
+      const _payload = { event_id: eventId, action: "update",
+                         big_summary: big, small_summary: small };
+      if (titleEl) _payload.title = title;
+      result = await _focusApi(_payload);
     } catch (err) {
       failure = err;
     } finally {
@@ -1796,6 +1814,9 @@
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 编辑总结</div>' +
       '<div class="hero-mem-edit">' +
+        '<label class="hero-mem-field"><small>标题（≤80 字）</small>' +
+        '<input id="heroMemTitleInput" type="text" maxlength="80" value="' +
+        esc(String(d.title || "记忆球").slice(0, 80)) + '"></label>' +
         '<label class="hero-mem-field"><small>小总结（≤80 字）</small>' +
         '<textarea id="heroMemSmall" maxlength="80" rows="2">' + esc(small) + '</textarea></label>' +
         '<label class="hero-mem-field"><small>大总结</small>' +
@@ -1822,7 +1843,9 @@
     const d = _heroFocusDetail || {};
     if (!panel) return;
     const primary = _focusEmotionLabel(d.emotion);
-    const secondary = d.emotion_secondary ? _focusEmotionLabel(d.emotion_secondary) : "同主色";
+    // task-51: an old event without a secondary emotion is honestly "未知",
+    // never "same as primary colour".
+    const secondary = d.emotion_secondary ? _focusEmotionLabel(d.emotion_secondary) : "未知";
     const importance = Number(d.importance == null ? .5 : d.importance).toFixed(2);
     const when = _focusWhen(d.ts);
     const source = _focusSourceLabel(d.source);

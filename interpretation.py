@@ -565,6 +565,41 @@ def _clean_text(value, limit: int = 400) -> str:
     return str(value or "").strip()[:max(1, int(limit))]
 
 
+def clean_event_title(value, limit: int = 32, fallback: str = "") -> str:
+    """Turn a raw event first sentence into a short, readable event title.
+
+    Deterministic fallback titles used to be the ugly raw first sentence. This
+    strips speaker prefixes, parenthetical actions, quotes and the stray "在。",
+    prefers the first sentence, and bounds the result (default <=32 chars).
+    Empty input returns fallback (caller usually passes 对话事件).
+    """
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if not text:
+        return str(fallback or "")
+    # speaker prefix: 老板说： / 她说， / 对方表示:
+    text = re.sub(
+        r"^(?:[\u4e00-\u9fa5A-Za-z0-9_]{1,12})"
+        r"(?:说|说道|讲|问|答|回复|表示|提到|补充)(?:[:：,，]|\s)+",
+        "", text)
+    # parenthetical actions: （在走廊里）/ (笑) / 【动作】
+    text = re.sub(r"[（(【\[][^）)】\]]{0,40}[）)】\]]", "", text)
+    # quote marks and stray "在。"
+    text = re.sub(r"[“”\"'‘’「」『』]", "", text)
+    text = text.replace("在。", "")
+    text = text.strip(" ，,。.;；:：!?！？、")
+    # first sentence only
+    match = re.search(r"[。！？!?；;]", text)
+    if match:
+        text = text[:match.start()]
+    text = text.strip(" ，,。.;；:!?！？、").strip()
+    if not text:
+        return str(fallback or "")
+    lim = max(1, int(limit or 32))
+    if len(text) > lim:
+        text = text[:max(1, lim - 1)].rstrip() + "…"
+    return text
+
+
 def _strip_code_fence(raw: str) -> str:
     text = str(raw or "").strip()
     if text.startswith("```"):
