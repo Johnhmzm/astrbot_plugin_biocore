@@ -1508,7 +1508,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.84";
+  const BIO_VERSION = "v1.2.85";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1647,7 +1647,9 @@
     const panel = _heroPanelEl();
     if (!panel) return;
     if (panel.querySelectorAll) {
-      panel.querySelectorAll("button").forEach((b) => { b.disabled = !!busy; });
+      // task-49: loading must freeze and then restore both buttons and the
+      // edit-mode textareas; a success path must never leave them disabled.
+      panel.querySelectorAll("button, textarea").forEach((el) => { el.disabled = !!busy; });
     }
     if (busy) _focusShowMsg(label || "处理中…", false);
   }
@@ -1663,6 +1665,9 @@
     return body;
   }
   function _focusApplyApiResult(data){
+    // If the user already left focus while the request was in flight, drop the
+    // stale result instead of resurrecting a closed panel.
+    if (!_heroFocusSaved || !_heroFocusDetail) return;
     const body = data || {};
     const d = _heroFocusDetail || {};
     _heroFocusDetail = Object.assign({}, d, {
@@ -1670,27 +1675,74 @@
       small_summary: body.small_summary == null ? String(d.small_summary || "") : String(body.small_summary),
       summary_status: String(body.summary_status || d.summary_status || "edited"),
       summary_edited: body.summary_edited === true,
-      summary_updated_ts: Number(body.summary_updated_ts || 0)
+      summary_updated_ts: Number(body.summary_updated_ts || 0),
+      summary_history: Array.isArray(body.summary_history)
+        ? body.summary_history
+        : (Array.isArray(d.summary_history) ? d.summary_history : [])
     });
   }
   async function _focusReloadData(){
     if (!bridge || typeof load !== "function") return;
     try { await load(); } catch (e) { /* the panel already shows the saved text */ }
   }
+  // task-49: after load() the archive may already expose the new summary.
+  // Prefer that fresh event row (title/summary/status/ts) for the open panel,
+  // so exit/re-focus and page refresh show the persisted values.
+  function _focusLatestDetail(eventId){
+    if (!eventId) return null;
+    try {
+      const evs = (data && Array.isArray(data.events)) ? data.events : [];
+      for (const ev of evs) {
+        if (!ev || typeof ev !== "object") continue;
+        if (String(ev.id || "") !== String(eventId)) continue;
+        return {
+          title: String(ev.title || ""),
+          big_summary: String(ev.big_summary || ""),
+          small_summary: String(ev.small_summary || ""),
+          summary_status: String(ev.summary_status || "legacy"),
+          summary_edited: ev.summary_edited === true,
+          summary_updated_ts: Number(ev.summary_updated_ts || 0),
+          summary_history: Array.isArray(ev.summary_history) ? ev.summary_history : [],
+          event: String(ev.event || ""),
+          central_details: String(ev.central_details || "")
+        };
+      }
+    } catch (e) { /* keep the API result as the fallback */ }
+    return null;
+  }
   async function _focusRegenerate(){
     const d = _heroFocusDetail || {};
     const eventId = _focusEventId(d);
     if (!eventId) { _focusShowMsg("这条记忆没有可重总结的事件 id", true); return; }
     _focusSetBusy(true, "重新总结中…");
+    let result = null, failure = null;
     try {
-      const data = await _focusApi({ event_id: eventId, action: "regenerate" });
-      _focusApplyApiResult(data);
+      result = await _focusApi({ event_id: eventId, action: "regenerate" });
+    } catch (err) {
+      failure = err;
+    } finally {
+      // task-49: success AND failure must clear the loading state. The panel may
+      // have been re-rendered meanwhile, so this always targets the live panel.
+      _focusSetBusy(false);
+    }
+    if (failure) {
+      _focusShowMsg(String((failure && failure.message) || failure), true);
+      return;
+    }
+    if (!result) return;
+    _focusApplyApiResult(result);
+    _renderHeroMemoryRead();
+    _focusShowMsg("已重新总结", false);
+    await _focusReloadData();
+    // load() may have reset/refreshed the focus detail: re-apply the API result,
+    // prefer the freshly loaded archive row, then re-render so status /
+    // updated_ts / edited stay visible and buttons stay enabled.
+    if (_heroFocusSaved && _heroFocusDetail) {
+      _focusApplyApiResult(result);
+      const latest = _focusLatestDetail(_focusEventId(_heroFocusDetail));
+      if (latest) _heroFocusDetail = Object.assign({}, _heroFocusDetail, latest);
       _renderHeroMemoryRead();
       _focusShowMsg("已重新总结", false);
-      await _focusReloadData();
-    } catch (err) {
-      _focusSetBusy(false);
-      _focusShowMsg(String((err && err.message) || err), true);
     }
   }
   async function _focusSaveEdit(){
@@ -1705,16 +1757,32 @@
     if (!big) { _focusShowMsg("大总结不能为空", true); return; }
     if (small.length > 80) { _focusShowMsg("小总结不能超过 80 字", true); return; }
     _focusSetBusy(true, "保存中…");
+    let result = null, failure = null;
     try {
-      const data = await _focusApi({ event_id: eventId, action: "update",
-                                     big_summary: big, small_summary: small });
-      _focusApplyApiResult(data);
+      result = await _focusApi({ event_id: eventId, action: "update",
+                                 big_summary: big, small_summary: small });
+    } catch (err) {
+      failure = err;
+    } finally {
+      // task-49: clear loading on both paths; failure keeps the edit form usable
+      // (textareas + 保存/取消 re-enabled).
+      _focusSetBusy(false);
+    }
+    if (failure) {
+      _focusShowMsg(String((failure && failure.message) || failure), true);
+      return;
+    }
+    if (!result) return;
+    _focusApplyApiResult(result);
+    _renderHeroMemoryRead();
+    _focusShowMsg("已保存", false);
+    await _focusReloadData();
+    if (_heroFocusSaved && _heroFocusDetail) {
+      _focusApplyApiResult(result);
+      const latest = _focusLatestDetail(_focusEventId(_heroFocusDetail));
+      if (latest) _heroFocusDetail = Object.assign({}, _heroFocusDetail, latest);
       _renderHeroMemoryRead();
       _focusShowMsg("已保存", false);
-      await _focusReloadData();
-    } catch (err) {
-      _focusSetBusy(false);
-      _focusShowMsg(String((err && err.message) || err), true);
     }
   }
   function _renderHeroMemoryEdit(){
@@ -1785,6 +1853,29 @@
         '<div class="hero-mem-summary hero-mem-big"><small>大总结</small><p>' +
         esc(big || "—") + '</p></div>';
     }
+    // task-49 addendum: keep previous summaries, collapsed by default.
+    const history = Array.isArray(d.summary_history) ? d.summary_history : [];
+    let historyHtml = "";
+    if (history.length) {
+      const items = history.slice(0, 20).map((entry) => {
+        const h = entry || {};
+        const hStatus = _focusStatusOf(h);
+        const hLabel = _FOCUS_STATUS_LABELS[hStatus] || String(h.summary_status || "");
+        const hWhen = _focusWhen(h.ts);
+        const hSmall = _focusClip(String(h.small_summary || ""), 80);
+        const hBig = _focusClip(String(h.big_summary || ""), hStatus === "legacy" ? 200 : 400);
+        return '<div class="hero-mem-history-item">' +
+          '<div class="hero-mem-history-meta"><b>' + esc(hWhen || "—") + '</b>' +
+          '<span>' + esc(hLabel || "历史") + '</span>' +
+          (h.source ? '<i>' + esc(String(h.source)) + '</i>' : '') + '</div>' +
+          (hSmall ? '<p class="hero-mem-history-small">' + esc(hSmall) + '</p>' : '') +
+          (hBig ? '<p class="hero-mem-history-big">' + esc(hBig) + '</p>' : '') +
+          '</div>';
+      }).join("");
+      historyHtml =
+        '<details class="hero-mem-history"><summary>历史总结（' + history.length +
+        '）</summary><div class="hero-mem-history-list">' + items + '</div></details>';
+    }
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
       '<div class="hero-mem-head"><h2 id="heroMemTitle">' + esc(title) + '</h2>' +
@@ -1796,7 +1887,7 @@
         '<span>时间 <b>' + esc(when) + '</b></span>' +
         '<span>来源 <b>' + esc(source) + '</b></span>' +
         '<span>召回 <b>' + esc(String(recall)) + ' 次</b></span>' +
-      '</div>' + summaries +
+      '</div>' + summaries + historyHtml +
       '<div class="hero-mem-actions">' +
         '<button type="button" class="btn mini" id="heroMemRegen">重新总结</button>' +
         '<button type="button" class="btn mini" id="heroMemEdit">编辑总结</button>' +
