@@ -141,7 +141,13 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 
 ## 许可证
 
-当前仓库未附 `LICENSE` 文件，因此没有声明的开源许可证。若需要明确授权（例如 MIT/AGPL），请由作者补充 LICENSE 后再分发；在补充前请勿默认按某个开源许可证使用。
+本项目采用 **GNU Affero General Public License v3.0（AGPL-3.0）**。
+
+Copyright (C) 2026 Johnhmzm
+
+你可以使用、修改、分发本项目，但分发或通过网络提供服务时必须按 AGPL-3.0 公开完整对应源码，衍生作品也必须继续使用 AGPL-3.0。完整条款见 [LICENSE](LICENSE) 或 <https://www.gnu.org/licenses/agpl-3.0.html>。
+
+本项目不提供任何担保；使用前请自行评估。
 
 ## 相关链接
 
