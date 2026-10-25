@@ -333,6 +333,20 @@ def semantic_brief(*args, **kwargs):
     return render_semantic(*args, **kwargs)
 
 
+def _return_contract(memory_meta) -> str:
+    """Shared [BC-Return]/[BC-Note] suffix for telemetry and semantic modes."""
+    mm = memory_meta if isinstance(memory_meta, dict) else {}
+    suffix = ("\n[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；"
+              "不解释、不输出任何数值 delta。")
+    try:
+        _count = int(mm.get("count", 0) or 0)
+    except Exception:
+        _count = 0
+    if _count > 0 and mm.get("abstain"):
+        suffix += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
+    return suffix
+
+
 def render_compact(core, memory="", events="", self_model=None, user=None,
                    image="", kb="", speaker="", voice="", memory_meta=None,
                    open_loops=None, open_loops_due=0, answer_confidence=None,
@@ -349,7 +363,7 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
                                     continuity=continuity, memory_meta=memory_meta,
                                     open_loops=open_loops)
             if 40 <= len(_sem) <= 300:
-                return _sem
+                return _sem + _return_contract(memory_meta)
         except Exception:
             pass
     it = core.intent()
@@ -485,10 +499,7 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
             cp += " | cont=" + _hint(_cont, CONTINUITY_LIMIT)
     # Minimal fallback instruction only; full format lives in the
     # biocore-interpretation skill (loaded on demand) to save per-turn tokens.
-    cp += ("\n[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；"
-           "不解释、不输出任何数值 delta。")
-    if _mm_count > 0 and mm.get("abstain"):
-        cp += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
+    cp += _return_contract(mm)
     return cp
 
 
