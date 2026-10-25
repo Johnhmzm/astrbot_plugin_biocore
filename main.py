@@ -1510,7 +1510,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.55")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.56")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -1525,9 +1525,11 @@ class BioCorePlugin(Star):
             self.event_summary_delay_hours = 6
         self.proactive_reply = bool(self.config.get("proactive_reply", False))
         self.memory_dedup_embedding = bool(self.config.get("memory_dedup_embedding", True))
-        # Private build: no cross-session or sensitive-memory restrictions.
-        self.cross_session_memory = True
-        self.sensitive_memory_protection = False
+        # Safety switch: default OFF for private use. When OFF, no masking,
+        # no cross-session isolation, no forced abstention, no poison filter.
+        self.safety_enabled = bool(self.config.get("safety_enabled", False))
+        self.cross_session_memory = not self.safety_enabled
+        self.sensitive_memory_protection = self.safety_enabled
         # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
         self.hybrid_retrieval = bool(self.config.get("hybrid_retrieval", True))
         self.llm_memory_candidates = bool(self.config.get("llm_memory_candidates", True))
@@ -1896,10 +1898,14 @@ class BioCorePlugin(Star):
                 # toggles in settings.json only apply when config does not define
                 # the key (otherwise they silently overrode plugin config).
                 for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
-                            "kb_enabled", "hybrid_retrieval",
+                            "kb_enabled", "hybrid_retrieval", "safety_enabled",
                             "llm_memory_candidates", "llm_only_reply_summary"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
+                if "safety_enabled" in d and "safety_enabled" not in self.config:
+                    self.safety_enabled = bool(d.get("safety_enabled"))
+                    self.cross_session_memory = not self.safety_enabled
+                    self.sensitive_memory_protection = self.safety_enabled
                 if "persona_id" in d and "persona_id" not in self.config:
                     self.persona_id = str(d.get("persona_id") or "").strip()
                 if isinstance(d.get("kb_names"), list) and "kb_names" not in self.config:
@@ -1913,6 +1919,7 @@ class BioCorePlugin(Star):
                 "proactive_reply": bool(self.proactive_reply),
                 "memory_dedup_embedding": bool(self.memory_dedup_embedding),
                 "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
+                "safety_enabled": bool(getattr(self, "safety_enabled", False)),
                 "llm_memory_candidates": bool(
                     getattr(self, "llm_memory_candidates", True)),
                 "llm_only_reply_summary": bool(
@@ -4047,6 +4054,7 @@ class BioCorePlugin(Star):
             "proactive_reply": self.proactive_reply,
             "memory_dedup_embedding": self.memory_dedup_embedding,
             "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
+            "safety_enabled": bool(getattr(self, "safety_enabled", False)),
             "llm_memory_candidates": bool(
                 getattr(self, "llm_memory_candidates", True)),
             "llm_only_reply_summary": bool(
@@ -4117,7 +4125,7 @@ class BioCorePlugin(Star):
             self._save_api_config()
             return {"status": "ok", "data": {"key": key, "value": _cur.get("enabled") if key in _fn_enabled else _cur.get("provider")}}
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
-                       "hybrid_retrieval", "llm_memory_candidates",
+                       "hybrid_retrieval", "safety_enabled", "llm_memory_candidates",
                        "llm_only_reply_summary", "persona_id",
                        "insight_auto_enabled"):
             return {"status": "error", "message": "unknown setting"}
@@ -4142,6 +4150,14 @@ class BioCorePlugin(Star):
             self._save_settings()
             await self._persist_plugin_config({key: bool(self.llm_only_reply_summary)})
             return {"status": "ok", "data": {"key": key, "value": self.llm_only_reply_summary}}
+        if key == "safety_enabled":
+            self.safety_enabled = bool(data.get("value"))
+            self.cross_session_memory = not self.safety_enabled
+            self.sensitive_memory_protection = self.safety_enabled
+            self._save_settings()
+            await self._persist_plugin_config({key: self.safety_enabled})
+            logger.info("[biocore] safety_enabled=%s", self.safety_enabled)
+            return {"status": "ok", "data": {"key": key, "value": self.safety_enabled}}
         setattr(self, key, bool(data.get("value")))
         self._save_settings()
         await self._persist_plugin_config({key: bool(getattr(self, key))})
@@ -5102,6 +5118,8 @@ class BioCorePlugin(Star):
         for e in entries:
             if e.get("summarized") or e.get("deleted"):
                 continue
+            if getattr(self, "safety_enabled", False) and e.get("poison_risk"):
+                continue
             if self._restabilize_if_expired(e, now):
                 _just_restabilized.add(id(e))
             cosine = self._cosine(vec, e.get("vector") or [])
@@ -5325,9 +5343,13 @@ class BioCorePlugin(Star):
                         continue
                     if _nb.get("deleted") or _nb.get("summarized"):
                         continue
+                    if getattr(self, "safety_enabled", False) and _nb.get("poison_risk"):
+                        continue
                     _nb_text = str(_nb.get("text") or "").strip().replace("\n", " ")
                     if not _nb_text:
                         continue
+                    if getattr(self, "safety_enabled", False) and _nb.get("sensitive"):
+                        _nb_text = memory_meta.mask_sensitive(_nb_text)
                     _link_lines.append("- 关联记忆：%s" % _nb_text[:200])
             self._save_memory(event, doc)
         except Exception:
@@ -5358,6 +5380,13 @@ class BioCorePlugin(Star):
                     _etext = str(_entry.get("text") or "").strip()
                     if not _etext or _etext in _known_texts:
                         continue
+                    if getattr(self, "safety_enabled", False):
+                        if _entry.get("sensitive"):
+                            continue
+                        if str(_entry.get("role") or "") in ("assistant", "summary"):
+                            continue
+                        if str(_entry.get("scope") or "user") == "session":
+                            continue
                     _evec = _entry.get("vector") or []
                     _ecos = self._cosine(vec, _evec) if _evec else 0.0
                     if _ecos < PARTIAL_MATCH_THRESHOLD:
@@ -5405,11 +5434,17 @@ class BioCorePlugin(Star):
                 if who:
                     role = who
             snippet = str(e.get("text", "")).strip().replace("\n", " ")
+            if getattr(self, "safety_enabled", False) and snippet and e.get("sensitive"):
+                snippet = memory_meta.mask_sensitive(snippet)
             if snippet:
                 lines.append("- %s：%s" % (role, snippet[:240]))
         lines.extend(_link_lines)
         lines.extend(_foreign_lines)
         memory_text = "\n".join(lines)
+        if getattr(self, "safety_enabled", False) and _gate == "force":
+            self._last_memory_meta["withheld"] = True
+            self._last_memory_meta["abstain"] = True
+            return ""
         return memory_text
 
     async def _remember(self, event, text: str, role: str = "user", core=None):
