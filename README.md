@@ -1,76 +1,94 @@
-# BioCore 生物情绪核心
+# BioCore · 生物情绪核心
 
-面向 AstrBot 的独立生物情绪层：首次读取当前人设并编译为数值档案，之后每轮只注入简短的表达意图，不直接把原始状态塞给 LLM。
+`BioCore` 是面向 AstrBot 的**本地生物情绪层**：读取当前人设并维护数值档案，在对话过程中维护情感、压力、能量、信任、记忆事件和关系轨迹，再由解释层转成简短的表达意图注入 LLM 请求。
+
+它不生成回复、不替换人设、不改写聊天历史，也不代表临床诊断、真实意识或现实因果；它只是一个可观察、可调整的本地状态与表达提示层。
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
-- 版本：以 `metadata.yaml` 为准（当前 `1.2.73`）
+- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.95`）
 - 作者：`Johnhmzm`
-- 仓库 / 市场源（GitHub）：https://github.com/Johnhmzm/astrbot_plugin_biocore
-- 镜像（Gitee）：https://gitee.com/johnhim/astrbot_plugin_biocore
+- GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
+- Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
 - Logo：`logo.png`（256×256）
 
-## 插件市场
-
-本 GitHub 仓库是 AstrBot 插件市场记录的源码仓库；市场 JSON 本身存放在 AstrBot 的注册表（`AstrBotDevs/AstrBot_Plugins_Collection`）中，**不在本插件仓库内**，请不要在这里添加市场 JSON 文件。
-
-已按 [AstrBot 插件市场规范](https://docs.astrbot.app/dev/plugin-market/) 和 [发布指南](https://docs.astrbot.app/dev/star/plugin-publish.html) 检查：
-
-- `plugin_id` = `metadata.author` + `/` + `metadata.name` = `Johnhmzm/astrbot_plugin_biocore`
-- `metadata.yaml` 必填字段齐全：`name`、`author`、`version`、`repo`、`desc`
-- `repo` 是公开的 HTTPS GitHub 地址，默认分支 `main`，仓库远低于 16 MB 发布上限
-- `display_name`、`short_desc`、`astrbot_version`、`support_platforms`、`tags`、`social_link` 可选字段已填写
-- `logo.png` 为 256×256（1:1）；AstrBot 会从插件目录读取该 Logo
-- 持久化数据在 `data/plugin_data/` 下，不进入本仓库（见下方「数据」）
-
-如果市场里暂时搜不到本插件，请通过 AstrBot Cloud 发布页提交：
-https://cloud.astrbot.app/publish （需要 AstrBot Cloud 账号）。仅向本仓库添加文件不会自动创建或更新市场记录。
-
-## 安装
-
-推荐从 AstrBot 插件市场安装；也可以在 AstrBot 插件管理里填写 GitHub 仓库地址安装，或直接复制插件目录到：
-
-```text
-AstrBot/data/plugins/astrbot_plugin_biocore/
-```
-
-插件没有第三方 Python 依赖；`requirements.txt` 故意不写包，只使用 AstrBot 提供模块和 Python 标准库。
-
-## 更新
-
-AstrBot 的更新按钮是否可用，取决于插件当初的安装方式：
-
-| 安装方式 | 是否可直接从市场 / 插件页更新 |
-|---|---|
-| 市场安装 | 是 |
-| 仓库安装（GitHub URL，市场源） | 是，从 GitHub 拉取 |
-| 仓库安装（Gitee 镜像） | 是，但 Gitee 不是市场源；市场更新需绑定 GitHub 市场记录 |
-| 上传 / ZIP 安装（`install_method=upload`） | 否；AstrBot 对上传安装的插件禁用更新 |
-
-### 如果是 ZIP 安装
-
-做一次来源迁移即可，之后正常更新：
-
-1. 保留 `AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/`，不要删除。
-2. 在 AstrBot WebUI → 插件 → 已安装，使用 **更换插件来源 / 绑定市场源**，选择市场记录 `Johnhmzm/astrbot_plugin_biocore`。
-3. 如果没有该操作，从市场或仓库地址 `https://github.com/Johnhmzm/astrbot_plugin_biocore` 覆盖安装一次。
-4. 重载插件。之后安装来源变为市场/仓库，更新按钮即可用。
-
-不需要卸载；如果确实卸载，请取消勾选 **删除数据**。
-
+![BioCore Dashboard](preview.png)
 
 ## 功能
 
-- 首次运行时读取当前 AstrBot 人设，编译成数值档案并保存。
-- 每次 LLM 请求时，把紧凑的 `[BioCore] ...` 表达意图附加到当前用户轮次（系统提示保持稳定）。
-- LLM 回复后，把回复反馈给状态、记忆、目标和事件档案。
-- Dashboard 页面：情绪概览、表达意图、人格/自我、活动会话、设置。
+- **一次性人设编译（可选）**：开启 `persona_compile` 且配置 Provider 时，首次运行读取 AstrBot 当前人设并编译为数值档案缓存，之后不再每轮解析人设文本；该 LLM 功能默认关闭，关闭时保留已有/默认档案。
+- **本地生物状态**：维护 valence / arousal / dominance / social / trust / stress / energy 等连续状态，并带衰减、稳态和基础动力学。状态更新是确定性的，LLM 不直接写状态。
+- **解释层**：唯一负责把数值状态转成 LLM 可读的紧凑表达意图（`[BC]`）；回复中的模型输出由解释层校验后再交给生物层。
+- **记忆与事件**：本地记忆索引、记忆巩固、重要事件归档、事件总结和事件时间线；支持旧数据兼容与回退。
+- **关系与用户模型**：按会话/用户维护信任、亲近、冲突、修复等关系轨迹，以及自我模型摘要。
+- **Dashboard**：在 AstrBot WebUI 内查看情绪概览、表达意图、人格自我、活动会话/记忆、设置和备份。
+- **可选 LLM 总结**：事件总结、记忆总结等 LLM 辅助功能可以关闭；关系洞察、日记、幽默提示等提案型功能默认关闭。关闭 LLM 总结后，插件仍可依靠本地确定性逻辑运行。
 
-生物层不直接写 prompt 文本；只有解释层负责渲染 LLM 输入和解析输出。
+## 安装
 
-## 数据
+### 从 AstrBot 插件市场安装
 
-持久化数据放在 AstrBot 的插件数据目录，不放在插件代码目录：
+上架后，在 AstrBot WebUI → 插件市场搜索 **BioCore 生物情绪核心** 并安装。
+
+### 从 GitHub 安装
+
+在 AstrBot WebUI → 插件管理使用仓库地址：
+
+```text
+https://github.com/Johnhmzm/astrbot_plugin_biocore
+```
+
+也可以手动克隆到 AstrBot 插件目录，安装后重载 AstrBot：
+
+```text
+AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
+```
+
+### 依赖与要求
+
+- AstrBot：`>=4.16,<5`
+- 平台：`aiocqhttp`
+- Python 依赖：无第三方包；使用 AstrBot 提供的模块和 Python 标准库
+- 可选：本地图片识别需要自行配置 `llama-server` 和 VLM 模型路径（见下方配置），留空则不启用
+
+## 更新
+
+市场安装或 GitHub 仓库安装时，优先使用 AstrBot 的更新按钮；ZIP 上传安装的更新按钮可能不可用，需要先切换/绑定市场源或覆盖安装一次。
+
+更新不会删除持久化数据；请勿勾选“删除数据”。版本号以 `metadata.yaml` 为准，详细更新记录见 [UPDATE.md](UPDATE.md)。
+
+## 配置
+
+在 **AstrBot WebUI → 插件 → BioCore → 配置** 中调整。常用项：
+
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `safety_enabled` | `false` | 私人使用默认关闭；公开/多用户部署前建议设为 `true`，启用敏感信息掩码、跨会话限制、低置信记忆拒答等保护 |
+| `we_memory_enabled` | `false` | 共同记忆/多用户共享记忆默认关闭；仅在明确需要时开启 |
+| `llm_only_reply_summary` | `true` | 严格模式：LLM 仅用于回复与总结，其他提案型功能保持关闭 |
+| `event_summary` / `memory_summary` | 开启 | 事件/记忆总结；可在 LLM 功能开关中关闭 |
+| 其他 LLM 功能 | 默认关闭 | `relationship_impression`、`insight`、`diary`、`humor_hint` 等默认不启用 |
+| `bc_prompt_mode` | `telemetry` | 默认注入紧凑状态 telemetry；切换到 `semantic` 可查看自然语言 brief |
+| `summary_max_chars` | `0` | 默认不设硬上限；异常/安全场景可设置上限 |
+| `image_llama_server` / `image_llama_model` / `image_llama_mmproj` | 空 | 可选本机 VLM 路径；留空不启用 |
+| `image_service_port` | `8091` | 本机图片服务端口 |
+
+Dashboard 设置页还提供 BioCore 专用 API 覆盖、记忆压缩、可视化图层、版本检查和备份。
+
+## 使用
+
+插件没有需要记忆的聊天命令；它通过 AstrBot 的 LLM 请求/响应钩子自动工作：
+
+1. 安装并重载插件；
+2. 正常与机器人对话；
+3. 插件在请求中附加紧凑的生物状态表达意图，在回复后解析模型返回的标签并更新本地状态；
+4. 打开 **AstrBot WebUI → 插件 → BioCore → Dashboard** 查看状态、记忆和关系。
+
+它不会接管消息、不会自行回复、不会替换人设，也不会接管其他插件的记忆。
+
+## 数据与隐私
+
+持久化数据保存在 AstrBot 的插件数据目录，不在插件代码目录，也不会提交到仓库：
 
 ```text
 AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
@@ -83,30 +101,50 @@ AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
   self_model.json
 ```
 
-不要把这些数据复制进插件包或提交到仓库。
+- 默认不包含任何外部遥测、统计上报或下载行为。
+- 只有在启用对应 LLM 功能且配置了 Provider 时，相关摘要/洞察请求才会发送给该 Provider；发送内容限于该功能所需的事件/记忆摘要，不包含完整聊天上下文。
+- `safety_enabled: false` 是私人使用默认值；公开部署前建议开启，并按需配置敏感信息掩码和跨会话记忆限制。
+- 更新/卸载前请备份上述数据目录。
 
-## 配置
+## 平台与兼容性
 
-行为参数在 **AstrBot 插件管理 → BioCore 配置** 中设置。Dashboard 设置页只保留 BioCore 专用 API 覆盖、记忆压缩、可视化、版本检查和备份。
+- AstrBot `>=4.16,<5`
+- 平台适配器：`aiocqhttp`
+- 使用 AstrBot 的 `on_llm_request` / `on_llm_response` 钩子；不接管消息事件、不生成回复、不替换人设、不接管其他插件记忆
+- 不依赖数据库迁移脚本；旧数据按字段缺失回退
 
-## 安全默认值（公开部署前必读）
+## FAQ
 
-本仓库当前按私人使用默认发布：
+**Q：为什么机器人回复看起来没有变化？**  
+A：BioCore 是隐藏状态/表达意图层，不会强制生成或改写回复；它的影响取决于当前 LLM、提示和上下文，属于渐进式表达倾向，不是直接命令。
 
-- `safety_enabled: false`：不掩码敏感信息、不限制跨会话记忆、不强制拒答低置信记忆、不跳过投毒标记；
-- `we_memory_enabled: false`：共同记忆默认不启用；
-- 8 个提案型 LLM 函数默认关闭。
+**Q：必须配置 LLM 吗？**  
+A：核心状态、记忆和 Dashboard 可以在本地运行；事件/记忆总结等 LLM 辅助功能可以关闭。
 
-公开/多用户部署前，请在 AstrBot 插件配置中设置 `safety_enabled: true`，并按需开启 `we_memory_enabled` 与各 LLM 函数。私人单用户使用可以保持默认关闭。
+**Q：会读取或上传我的聊天记录吗？**  
+A：默认不上传。只有在启用具体 LLM 功能并配置 Provider 时，相关摘要请求才会发给该 Provider；本地数据保存在 `plugin_data`。
 
-## WebUI
+**Q：这是临床情绪诊断或真实意识吗？**  
+A：不是。它是一套面向角色表达的可调数值状态模型，不提供医疗/心理诊断，也不声称真实意识或现实因果。
 
-![BioCore dashboard](preview.png)
+**Q：支持哪些平台？**  
+A：当前 metadata 声明 `aiocqhttp`；AstrBot 版本要求 `>=4.16,<5`。
 
-安装后：AstrBot WebUI → 插件 → BioCore → Dashboard。
+**Q：更新会丢数据吗？**  
+A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级前仍建议备份。
 
-## 兼容性
+## 更新日志
 
-- AstrBot：`>=4.16,<5`（`metadata.yaml` 中的 `astrbot_version`）
-- 平台适配器：`aiocqhttp`（`metadata.yaml` 中的 `support_platforms`）
-- 只使用 AstrBot 的 `filter.on_llm_request` / `filter.on_llm_response` 钩子；不接管消息事件、不生成回复、不替换人设、不接管其他插件记忆。
+- 当前版本：`1.2.95`（以 `metadata.yaml` 为准）
+- 详细历史见 [UPDATE.md](UPDATE.md)
+- 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
+
+## 许可证
+
+当前仓库未附 `LICENSE` 文件，因此没有声明的开源许可证。若需要明确授权（例如 MIT/AGPL），请由作者补充 LICENSE 后再分发；在补充前请勿默认按某个开源许可证使用。
+
+## 相关链接
+
+- GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
+- Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
+- 问题反馈：<https://github.com/Johnhmzm/astrbot_plugin_biocore/issues>
