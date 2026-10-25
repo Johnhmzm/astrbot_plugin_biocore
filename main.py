@@ -1878,7 +1878,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.81")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.82")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2995,19 +2995,29 @@ class BioCorePlugin(Star):
             return cut[:pos + 1].strip()
         return cut.rstrip() + "…"
 
-    def _dual_event_summary_fallback(self, text, title: str = ""):
-        """Deterministic big/small summary fallback for event records (no LLM).
+    @staticmethod
+    def _first_sentence(text) -> str:
+        """First sentence of a raw event excerpt (used for <=80 summaries)."""
+        value = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not value:
+            return ""
+        match = re.search(r"[。！？；!?;]", value)
+        return value[:match.end()] if match else value
 
-        big_summary keeps the event excerpt (not a fixed hard cap); small_summary
-        is bounded to 80 chars for the memory-ball tooltip. Old data/titles are
-        accepted so a record always carries both fields when written.
+    def _dual_event_summary_fallback(self, text, title: str = ""):
+        """Deterministic bounded big/small summary fallback for event records.
+
+        No LLM is used here: big_summary is a bounded excerpt (<=220 chars) and
+        small_summary is the first sentence (or the title) bounded to 80 chars.
+        These records are marked summary_status="fallback" by the writers.
         """
-        big = self._mask_if_safety(self._event_excerpt(text, 600))
-        small = self._mask_if_safety(self._event_excerpt(text, 80))[:80]
-        if not small:
-            small = self._mask_if_safety(str(title or "").strip())[:80]
+        big = self._mask_if_safety(self._event_excerpt(text, 220))[:220]
+        small = self._mask_if_safety(
+            self._first_sentence(text) or str(title or "").strip())[:80]
         if not big:
             big = small
+        if not small:
+            small = big[:80]
         return big, small
 
     def _secondary_emotion(self, core) -> str:
@@ -3150,6 +3160,10 @@ class BioCorePlugin(Star):
                             forgotten.append(dict(d))
                     except Exception:
                         pass
+                # task-46: old records never carried summary_status. Mark them
+                # legacy on read only (no rewrite of the stored full text).
+                if not str(d.get("summary_status") or "").strip():
+                    d["summary_status"] = "legacy"
                 out.append(d)
             if forgotten and not read_only:
                 self._persist_peripheral_forgetting(forgotten)
@@ -4029,6 +4043,7 @@ class BioCorePlugin(Star):
                     "event": _safe_body[:600],
                     "big_summary": _safe_big,
                     "small_summary": _safe_small,
+                    "summary_status": "fallback",
                     "event_key": _ekey,
                     "centrality": round(max(0.0, min(1.0, schema)), 3),
                     "central_details": _safe_body[:180],
@@ -4107,13 +4122,16 @@ class BioCorePlugin(Star):
             resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             data = interpretation.parse_event_summary(raw, getattr(self, "summary_max_chars", 0))
+            _llm_big = str(data.get("big_summary") or "").strip()
+            _llm_small = str(data.get("small_summary") or "").strip()
             title = str(data.get("title") or summary or "重要事件").strip()[:80]
             title = self._mask_if_safety(title)
             ev = self._mask_if_safety(self._summary_cap(str(data.get("event") or summary or "").strip()))
             big_summary = self._mask_if_safety(self._summary_cap(
-                str(data.get("big_summary") or ev or summary or "").strip()))
+                str(_llm_big or ev or summary or "").strip()))
             small_summary = self._mask_if_safety(
-                str(data.get("small_summary") or big_summary or ev).strip())[:80]
+                str(_llm_small or big_summary or ev).strip())[:80]
+            summary_status = "llm" if (_llm_big or _llm_small) else "fallback"
             meaning = self._mask_if_safety(self._summary_cap(str(data.get("meaning_to_her") or "").strip()))
             reflection = self._mask_if_safety(self._summary_cap(str(data.get("reflection") or "").strip()))
             if not ev:
@@ -4130,6 +4148,7 @@ class BioCorePlugin(Star):
                 "event": ev,
                 "big_summary": big_summary,
                 "small_summary": small_summary,
+                "summary_status": summary_status,
                 "event_key": _ekey,
                 "meaning_to_her": meaning,
                 "reflection": reflection,

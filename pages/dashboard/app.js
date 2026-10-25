@@ -377,6 +377,7 @@
         title:String(e.title||text.slice(0,28)), event:text.slice(0,160),
         big_summary:String(e.big_summary||e.event||text),
         small_summary:String(e.small_summary||""),
+        summary_status:String(e.summary_status||"legacy"),
         meaning_to_her:String(e.meaning_to_her||""),
         central_details:String(e.central_details||""),
         ts:Number(e.ts||0), importance:Number(e.importance==null?0.5:e.importance),
@@ -1507,7 +1508,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.81";
+  const BIO_VERSION = "v1.2.82";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -1596,6 +1597,16 @@
   // restoring it exactly when focus ends.
   let _heroFocusSaved = null;
   const _FOCUS_SOURCE_LABELS = { ok: "正常", weak: "弱来源", suspect: "待核", unknown: "未知" };
+  const _FOCUS_STATUS_LABELS = { llm: "AI 总结", fallback: "摘录总结", legacy: "旧事件" };
+  function _focusClip(value, limit){
+    const text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
+    const n = Math.max(1, Number(limit) || 80);
+    return text.length > n ? text.slice(0, n - 1).trimEnd() + "…" : text;
+  }
+  function _focusStatusOf(detail){
+    const s = String((detail && detail.summary_status) || "legacy").trim().toLowerCase();
+    return (s === "llm" || s === "fallback") ? s : "legacy";
+  }
   function _heroCopyEl(){
     return document.querySelector("#view-overview .hero-copy") || document.querySelector(".hero-copy");
   }
@@ -1641,13 +1652,34 @@
     const when = _focusWhen(d.ts);
     const source = _focusSourceLabel(d.source);
     const recall = Math.max(0, Number(d.recall_count || 0));
-    // No-big fallback: big_summary -> event -> central_details.
-    const big = String(d.big_summary || d.event || d.central_details || "").trim();
-    const small = String(d.small_summary || "").trim() ||
-      (d.event ? String(d.event).slice(0, 80) : "");
+    const status = _focusStatusOf(d);
+    const badge = _FOCUS_STATUS_LABELS[status] || "旧事件";
+    const title = _focusClip(d.title || "记忆球", 80);
+    let summaries = "";
+    if (status === "legacy") {
+      // task-46: old records may store the raw event text in big_summary; never
+      // render it as a summary. Show a fixed notice + a <=200 char excerpt only.
+      const raw = String(d.big_summary || d.event || d.central_details || "").trim();
+      const excerpt = _focusClip(raw, 200);
+      summaries =
+        '<div class="hero-mem-legacy">旧事件：未生成总结</div>' +
+        '<div class="hero-mem-summary"><small>原始摘录</small><p class="hero-mem-excerpt">' +
+        esc(excerpt || "—") + '</p></div>';
+    } else {
+      const smallSrc = String(d.small_summary || "").trim() ||
+        (d.event ? String(d.event) : "");
+      const small = _focusClip(smallSrc, 80);
+      const big = String(d.big_summary || d.event || d.central_details || "").trim();
+      summaries =
+        '<div class="hero-mem-summary"><small>小总结</small><p>' +
+        esc(small || "—") + '</p></div>' +
+        '<div class="hero-mem-summary hero-mem-big"><small>大总结</small><p>' +
+        esc(big || "—") + '</p></div>';
+    }
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
-      '<h2 id="heroMemTitle">' + esc(String(d.title || "记忆球")) + '</h2>' +
+      '<div class="hero-mem-head"><h2 id="heroMemTitle">' + esc(title) + '</h2>' +
+      '<span class="hero-mem-badge is-' + status + '">' + esc(badge) + '</span></div>' +
       '<div class="hero-mem-grid">' +
         '<span>主情绪 <b>' + esc(primary) + '</b></span>' +
         '<span>次情绪 <b>' + esc(secondary) + '</b></span>' +
@@ -1655,9 +1687,7 @@
         '<span>时间 <b>' + esc(when) + '</b></span>' +
         '<span>来源 <b>' + esc(source) + '</b></span>' +
         '<span>召回 <b>' + esc(String(recall)) + ' 次</b></span>' +
-      '</div>' +
-      '<div class="hero-mem-summary"><small>小总结</small><p>' + esc(small || "—") + '</p></div>' +
-      '<div class="hero-mem-summary"><small>大总结</small><p>' + esc(big || "—") + '</p></div>' +
+      '</div>' + summaries +
       '<p class="hero-mem-hint">再次点击记忆球 / 点空白 / Esc / “退出聚焦”恢复当前情绪</p>';
   }
   function restoreHeroFocusPanel(){
