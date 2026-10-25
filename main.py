@@ -1935,7 +1935,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.95")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.96")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -2043,9 +2043,10 @@ class BioCorePlugin(Star):
         self.image_llama_model = _configured_path("image_llama_model")
         self.image_llama_mmproj = _configured_path("image_llama_mmproj")
         try:
-            self.image_service_port = max(1, int(self.config.get("image_service_port", 8091) or 8091))
+            _raw_port = int(self.config.get("image_service_port", 0) or 0)
+            self.image_service_port = _raw_port if _raw_port > 0 else 0
         except Exception:
-            self.image_service_port = 8091
+            self.image_service_port = 0
         # Lazy image-service process/lock state (initialized here so the
         # first image request does not AttributeError).
         self._image_proc = None
@@ -2865,6 +2866,8 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] image cache save failed: %s", exc)
 
     async def _image_health_ok(self) -> bool:
+        if int(self.image_service_port or 0) <= 0:
+            return False
         def _check() -> bool:
             try:
                 req = urllib.request.Request(
@@ -2917,6 +2920,8 @@ class BioCorePlugin(Star):
         logger.info("[biocore] image service stopped after idle")
 
     async def _ensure_image_service(self) -> bool:
+        if int(self.image_service_port or 0) <= 0:
+            return False
         self._image_last_used = time.time()
         if await self._image_health_ok():
             return True
@@ -5099,8 +5104,13 @@ class BioCorePlugin(Star):
             return ""
         if not self._llm_allowed("image_caption"):
             return ""
-        if not await self._ensure_image_service():
-            return ""
+        # Local llama-server is optional. A general AstrBot vision provider
+        # must work without image_llama_* / image_service_port.
+        _local_vlm = bool(self.image_llama_server and self.image_llama_model
+                          and int(self.image_service_port or 0) > 0)
+        if _local_vlm:
+            if not await self._ensure_image_service():
+                logger.warning("[biocore] local VLM unavailable; falling back to configured vision provider")
         self._image_last_used = time.time()
         cache = self._load_image_cache()
         missing = [r for r in refs if _sha256(r) not in cache]
