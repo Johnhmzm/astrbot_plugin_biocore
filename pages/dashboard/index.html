@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261026-0141" />
+<link rel="stylesheet" href="./styles.css?v=20261026-0213" />
 </head>
 <body>
 <div class="shell">
@@ -464,6 +464,7 @@
       <div class="section-title mt" data-settings-title="settingsVisual"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
       <div class="panel settings settings-panel" id="settingsVisual">
         <div class="setting-row"><div><b>记忆球次情绪环样式</b><small>3D 椭圆轨道（默认）=像大球一样的倾斜椭圆轨道（透视/慢转）；360° 实线圆=完整实线圆（静止，不旋转/不高光）。只影响本地显示，刷新后保留。</small></div><select id="selMemoryRingStyle"><option value="orbit">3D 椭圆轨道（默认）</option><option value="solid">360° 实线圆（静止）</option></select></div>
+        <div class="setting-row"><div><b>记忆球颜色模式</b><small>混合色（默认）=球体按 top3 情绪层 p 加权 OKLCH 混合（主情绪权重≥60%，不灰不白），环包含主情绪+非主层；主情绪单色=球体只用主情绪颜色，环只画非主情绪层。只影响本地显示。</small></div><select id="selMemoryBallColorMode"><option value="mixed">混合色（默认）</option><option value="primary">主情绪单色</option></select></div>
         <div class="setting-row"><div><b>评价粒子</b><small>三圈环形粒子，随 arousal/stress 扩张或收敛，颜色跟随情绪色。</small></div><label class="switch"><input type="checkbox" id="swShowNoise" checked><span></span></label></div>
         <div class="setting-row"><div><b>粒子连线</b><small>连接同环相邻粒子，仅 attention 高或悬停球体时淡入。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪节点</b><small>与情绪环表达重叠，默认关闭；需要调试时再开启。</small></div><label class="switch"><input type="checkbox" id="swShowNodes" checked><span></span></label></div>
@@ -502,5 +503,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261026-0141"></script><script src="./app.js?v=20261026-0141"></script><script src="./orb.js?v=20261026-0141"></script>
+<script src="./orb_math.js?v=20261026-0213"></script><script src="./app.js?v=20261026-0213"></script><script src="./orb.js?v=20261026-0213"></script>
 </body></html>

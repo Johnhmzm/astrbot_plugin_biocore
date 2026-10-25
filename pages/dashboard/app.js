@@ -241,7 +241,7 @@
       localStorage.setItem("bio_vis_defaults_v3","1");
     }
   } catch (e) {}
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit"};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed"};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -1378,7 +1378,7 @@
     $("crumbView").textContent=names[name]||name;
   }
   document.querySelectorAll(".nav-item").forEach(a=>a.addEventListener("click",()=>switchView(a.dataset.view)));
-  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
+  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
   $("swShowNoise").checked=visual.noise; $("swShowEcho").checked=visual.echo; $("swShowRipple").checked=visual.ripple;
   if($("swShowDominance"))$("swShowDominance").checked=visual.dominance;
   if($("swShowSocial"))$("swShowSocial").checked=visual.social;
@@ -1390,6 +1390,7 @@
   if($("swShowEmotionRings"))$("swShowEmotionRings").checked=visual.emotionRings;
   $("orbIntensity").value=visual.intensity;
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").value=visual.memoryRingStyle;
+  if($("selMemoryBallColorMode"))$("selMemoryBallColorMode").value=visual.memoryBallColorMode;
   $("swShowNoise").addEventListener("change",e=>{visual.noise=e.target.checked;visualSave();});
   $("swShowEcho").addEventListener("change",e=>{visual.echo=e.target.checked;visualSave();});
   $("swShowRipple").addEventListener("change",e=>{visual.ripple=e.target.checked;visualSave();});
@@ -1403,6 +1404,7 @@
   if($("swShowEmotionRings"))$("swShowEmotionRings").addEventListener("change",e=>{visual.emotionRings=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").addEventListener("change",e=>{visual.memoryRingStyle=e.target.value==="orbit"?"orbit":"solid";visualSave();});
+  if($("selMemoryBallColorMode"))$("selMemoryBallColorMode").addEventListener("change",e=>{visual.memoryBallColorMode=e.target.value==="primary"?"primary":"mixed";visualSave();});
   function bindBehaviorToggle(id,key){
     const el=$(id);
     if(!el) return;
@@ -1902,7 +1904,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.92";
+  const BIO_VERSION = "v1.2.94";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

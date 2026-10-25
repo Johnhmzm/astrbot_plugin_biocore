@@ -23,6 +23,57 @@
   // draw before the center mood ball.
   const _bound = (v, lo, hi) => Math.max(lo, Math.min(hi,
     Number.isFinite(Number(v)) ? Number(v) : lo));
+  // task-69: OKLab/OKLCH helpers for the mixed memory-ball colour.
+  // Colours in the dashboard palette are "r,g,b" strings.
+  const _srgbToLinear = (c) => {
+    const x = Math.max(0, Math.min(1, c / 255));
+    return x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  };
+  const _linearToSrgb = (c) => {
+    const x = Math.max(0, Math.min(1, c));
+    const v = x <= 0.0031308 ? 12.92 * x : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+    return Math.round(Math.max(0, Math.min(1, v)) * 255);
+  };
+  const _rgbToOklab = (rgb) => {
+    const parts = String(rgb || "116,146,168").split(",").map((x) => Number(x) || 0);
+    const r = _srgbToLinear(parts[0]), g = _srgbToLinear(parts[1]), b = _srgbToLinear(parts[2]);
+    const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b);
+    const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b);
+    const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b);
+    return { L: 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+             a: 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+             b: 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s };
+  };
+  const _oklabToRgb = (L, a, b) => {
+    const l = Math.pow(L + 0.3963377774 * a + 0.2158037573 * b, 3);
+    const m = Math.pow(L - 0.1055613458 * a - 0.0638541728 * b, 3);
+    const s = Math.pow(L - 0.0894841775 * a - 1.2914855480 * b, 3);
+    return [_linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+            _linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+            _linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s)];
+  };
+  const _mixOklch = (entries, primaryFloor) => {
+    let L = 0, A = 0, B = 0, total = 0;
+    (entries || []).forEach((entry) => {
+      const w = Math.max(0, Number(entry && entry.weight) || 0);
+      if (w <= 0) return;
+      const lab = _rgbToOklab(entry.rgb);
+      L += lab.L * w; A += lab.a * w; B += lab.b * w; total += w;
+    });
+    if (total <= 0) return null;
+    L /= total; A /= total; B /= total;
+    let C = Math.sqrt(A * A + B * B);
+    const h = Math.atan2(B, A);
+    // Clamp to a visible, non-gray/non-white band: floor chroma, cap chroma,
+    // keep lightness in a readable mid range.
+    C = Math.max(0.055, Math.min(0.24, C));
+    L = Math.max(0.40, Math.min(0.74, L));
+    const aa = Math.cos(h) * C, bb = Math.sin(h) * C;
+    const rgb = _oklabToRgb(L, aa, bb);
+    return { l: Number(L.toFixed(3)), c: Number(C.toFixed(3)),
+             h: Number((h * 180 / Math.PI).toFixed(1)), rgb: rgb,
+             css: "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")" };
+  };
   const isDark = () => document.documentElement.dataset.theme === "dark";
   // task-42/44: pure orbit math lives in orb_math.js so evals can run it in
   // node (world units, R applied once). The inline copy below is the same
@@ -925,7 +976,8 @@
         anger:"anger", contempt:"anger", disgust:"anger", envy:"anger",
         fear:"fear", anxiety:"fear", horror:"fear",
         loneliness:"loneliness", trust:"trust", calmness:"trust",
-        neutral:"neutral", boredom:"neutral", confusion:"neutral" };
+        neutral:"neutral", boredom:"neutral", confusion:"neutral",
+        awkwardness:"neutral", relief:"trust" };
       const _memN0 = .55;                 // mean motion at a = 1 orb unit
       if (_memExtra > 0) {
         // events beyond the display cap collapse into an outer archive belt
@@ -1017,6 +1069,94 @@
         const _emoRaw = String(ev.emotion || "neutral").trim().toLowerCase();
         let col = _ec[_emotionFamily[_emoRaw] || _emoRaw] || _ec.neutral;
         if (ev._kind === "memory" && !ev.emotion_known) col = "142,148,158";
+        // task-69: mixed ball colour (default) blends the top-3 emotion layers
+        // by p in OKLCH with a 60% primary-emotion floor; primary mode keeps
+        // the old single primary colour.
+        const _ballColorMode = String((state.visual && state.visual.memoryBallColorMode) || "mixed")
+          .toLowerCase() === "primary" ? "primary" : "mixed";
+        window.__biocoreBallColorMode = _ballColorMode;
+        let _ballPrimaryWeight = 1;
+        let _mixedBall = null;
+        let _ballWeights = [];
+        const _ballEmotionRgb = (emotion) => _ec[_emotionFamily[emotion] || emotion] || _ec.neutral;
+        // task-68/69 final: emotion layers carry four independent signals.
+        // Ring score = .45*intensity + .35*share + .20*centrality with
+        // share = intensity/sum(all intensities). A layer becomes a ring only
+        // when intensity >= .15 AND confidence >= .50 AND (share >= .10 OR
+        // centrality >= .70); rings are taken by score until cumulative share
+        // reaches .85 (dynamic 0-N). ONLY ring layers tint the ball; the ball
+        // weights are intensity-normalized across the selected rings.
+        const _layerItems = (Array.isArray(ev.emotion_layers) ? ev.emotion_layers : [])
+          .map((item) => {
+            const intensity = (item && item.intensity != null)
+              ? item.intensity : (item && item.p);
+            const confidence = (item && item.confidence != null)
+              ? item.confidence : 0.5;
+            const centrality = (item && item.centrality != null)
+              ? item.centrality : 0.5;
+            return { emotion: String((item && item.emotion) || "").trim().toLowerCase(),
+                     intensity: _bound(Number(intensity) || 0, 0, 1),
+                     confidence: _bound(Number(confidence) || 0, 0, 1),
+                     centrality: _bound(Number(centrality) || 0, 0, 1) };
+          })
+          .filter((item) => item.emotion && item.intensity > 0)
+          .sort((a, b2) => b2.intensity - a.intensity);
+        const _layerSum = _layerItems.reduce((acc, x) => acc + x.intensity, 0);
+        const _ringSelected = [];
+        if (_layerItems.length && _layerSum > 0) {
+          const _scored = _layerItems.map((item) => {
+            const share = item.intensity / _layerSum;
+            return Object.assign({}, item, {
+              share: share,
+              score: 0.45 * item.intensity + 0.35 * share + 0.20 * item.centrality,
+              eligible: item.intensity >= 0.15 && item.confidence >= 0.50
+                && (share >= 0.10 || item.centrality >= 0.70)
+            });
+          }).filter((x) => x.eligible).sort((a, b2) => b2.score - a.score);
+          let _cumulative = 0;
+          for (let _i = 0; _i < _scored.length; _i++) {
+            _ringSelected.push(_scored[_i]);
+            _cumulative += _scored[_i].share;
+            if (_cumulative >= 0.85) break;
+          }
+          const _primaryAt = _ringSelected.findIndex((x) => x.emotion === _emoRaw);
+          if (_primaryAt > 0) {
+            const _primaryItem = _ringSelected.splice(_primaryAt, 1)[0];
+            _ringSelected.unshift(_primaryItem);
+          }
+        }
+        if (_ballColorMode === "mixed") {
+          const _visible = [];
+          if (_ringSelected.length) {
+            // only ring layers participate in the ball colour
+            _ringSelected.forEach((x) => _visible.push({ emotion: x.emotion, p: x.intensity }));
+          } else if (_layerItems.length) {
+            // layers exist but none became a ring: ball stays a pure base colour
+            _visible.push({ emotion: _emoRaw, p: null });
+          } else {
+            const _secColor = String(ev.emotion_secondary || "").trim().toLowerCase();
+            // old layers=null: ONE pure colour, never a fabricated mix
+            if (_secColor && _secColor !== _emoRaw) {
+              _visible.push({ emotion: _secColor, p: null });
+            } else {
+              _visible.push({ emotion: _emoRaw, p: null });
+            }
+          }
+          const _weights = _visible.map((item) => (item.p == null ? 1 : item.p));
+          const _weightSum = _weights.reduce((acc, w) => acc + w, 0);
+          _ballWeights = _visible.map((item, idx) =>
+            (_weightSum > 0 ? _weights[idx] / _weightSum : 0));
+          const _entries = [];
+          _visible.forEach((item, idx) => {
+            if (_ballWeights[idx] > 0) {
+              _entries.push({ rgb: _ballEmotionRgb(item.emotion),
+                              weight: _ballWeights[idx] });
+            }
+          });
+          _ballPrimaryWeight = (_visible.length && _visible[0].emotion === _emoRaw)
+            ? _ballWeights[0] : 0;
+          _mixedBall = _mixOklch(_entries);
+        }
         const bodyHsl = _vividHsl(col, b.imp);   // saturated, slightly deep
         const primaryRingHsl = { h: bodyHsl.h, s: bodyHsl.s, l: Math.min(60, bodyHsl.l + 7) };
         const _secKey = String(ev.emotion_secondary || "").trim();
@@ -1030,7 +1170,9 @@
         const ringHsl = _secHsl
           ? { h: _secHsl.h, s: _secHsl.s, l: Math.min(60, _secHsl.l + 7) }
           : inferredRingHsl;   // old data/no secondary: inferred secondary hue
-        const bodyFill = "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
+        const bodyFill = (_ballColorMode === "mixed" && _mixedBall)
+          ? _mixedBall.css
+          : "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
         const ringFill = "hsl(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%)";
         const ageAlpha = .16 + .70 * (1 - b.ageNorm);
         const forgotten = ev.peripheral_forgotten === true;
@@ -1088,17 +1230,46 @@
         window.__biocoreOrbitSpeed = { intensity: Number(_emoIntensity.toFixed(4)),
           speedFactor: Number(speedFactor.toFixed(3)) };
         let _rings = [];
-        if (_rawLayers) {
-          _rings = _rawLayers.map((item) => ({
-            emotion: String((item && item.emotion) || "").trim().toLowerCase(),
-            p: Number((item && item.p) || 0),
-            inferred: false
-          })).filter((item) => item.emotion && item.emotion !== _primaryEmo
+        if (_ballColorMode === "mixed") {
+          if (_rawLayers) {
+            // ring selection already computed above (four-signal scorer)
+            _rings = _ringSelected.map((item) => ({
+              emotion: item.emotion, p: item.intensity, inferred: false,
+              primary: item.emotion === _primaryEmo,
+              score: Number(item.score.toFixed(4)),
+              share: Number(item.share.toFixed(4))
+            }));
+          } else {
+            // old layers=null: ONE pure ring (secondary if present, else primary)
+            _rings = _secKey
+              ? [{ emotion: _secKey, p: null, inferred: false }]
+              : [{ emotion: _primaryEmo, p: null, inferred: false, primary: true }];
+          }
+        } else if (_rawLayers) {
+          const _primaryModeRings = _rawLayers.map((item) => {
+            const intensity = (item && item.intensity != null)
+              ? Number(item.intensity) : Number((item && item.p) || 0);
+            return {
+              emotion: String((item && item.emotion) || "").trim().toLowerCase(),
+              p: intensity,
+              inferred: false
+            };
+          }).filter((item) => item.emotion && item.emotion !== _primaryEmo
               && item.p >= 0.15)
             .sort((a, b2) => b2.p - a.p)
             .slice(0, 3);
+          _rings = _primaryModeRings;
         } else {
           _rings = [{ emotion: _secKey, p: null, inferred: !_secKey }];
+        }
+        const _ringWeights = _rings.map((item) => (item.p == null ? b.imp : item.p));
+        const _ringWidths = _rings.map((item, idx) =>
+          _bound(1.2 + 1.4 * _ringWeights[idx], 1.8, 2.8));
+        const _primaryRingIdx = _rings.findIndex((item) => item.primary);
+        if (_primaryRingIdx >= 0) {
+          // primary ring is the closest and the thickest one
+          _ringWidths[_primaryRingIdx] = Math.min(2.8,
+            Math.max.apply(null, _ringWidths) + 0.15);
         }
         const _outerRing = size + 4.2 + Math.max(0, _rings.length - 1) * 2.4;
         const _ringStyle = String((state.visual && state.visual.memoryRingStyle) || "orbit")
@@ -1112,7 +1283,11 @@
           orbitYaw: 0, orbitPitch: 0.42, orbitPts: [], highlightAngle: 0,
           orbitHighlightLen: 0, emotionIntensity: Number(_emoIntensity.toFixed(4)),
           speedFactor: Number(speedFactor.toFixed(3)),
-          yawRate: Number((0.9 * speedFactor).toFixed(3))
+          yawRate: Number((0.9 * speedFactor).toFixed(3)),
+          colorMode: _ballColorMode, ballColor: bodyFill,
+          ballOklch: _mixedBall,
+          ballWeights: _ballWeights.map((w) => Number(w.toFixed(4))),
+          primaryWeight: Number((_ballPrimaryWeight || 0).toFixed(3))
         };
         const fullTurn = Math.PI * 2;
         const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);
@@ -1126,12 +1301,17 @@
           const weight = ringItem.p == null ? b.imp : ringItem.p;
           const ringBaseR = size + 4.2 + ringIdx * 2.4;
           const ringAlphaR = _bound(.55 + .30 * weight, .55, .85);
-          const ringWidthR = _bound(1.2 + 1.4 * weight, 1.8, 2.8);
+          const ringWidthR = _ringWidths[ringIdx];
           let ringColorR;
           if (ringItem.inferred) {
             ringColorR = "hsla(" + inferredRingHsl.h.toFixed(0) + "," +
               inferredRingHsl.s.toFixed(0) + "%," +
               inferredRingHsl.l.toFixed(0) + "%,0.95)";
+          } else if (ringItem.primary && _ballColorMode === "mixed") {
+            const _ringHsl = _vividHsl(_ballEmotionRgb(ringItem.emotion),
+              _bound(weight, 0.15, 1));
+            ringColorR = "hsl(" + _ringHsl.h.toFixed(0) + "," +
+              _ringHsl.s.toFixed(0) + "%," + Math.min(60, _ringHsl.l + 7).toFixed(0) + "%)";
           } else if (ringItem.p == null && _secHsl) {
             ringColorR = ringFill;   // old records: keep the previous secondary colour
           } else {
@@ -1144,7 +1324,9 @@
           ctx.globalAlpha = ringAlphaR;
           ctx.setLineDash([]);
           if (_ringStyle === "orbit") {
-            const tilt = _orbitTilts[Math.min(ringIdx, 2)];
+            const tilt = (typeof _orbitTilts[ringIdx] === "number")
+              ? _orbitTilts[ringIdx]
+              : Math.max(0.08, 0.42 - ringIdx * 0.12);
             const yaw = _phaseYaw;
             const pitch = _phasePitch + (tilt - 0.42) * 0.5;
             const steps = 48;
@@ -1204,7 +1386,14 @@
             p: ringItem.p == null ? null : Number(weight.toFixed(4)),
             width: Number(ringWidthR.toFixed(2)),
             alpha: Number(ringAlphaR.toFixed(3)),
-            tilt: _ringStyle === "orbit" ? _orbitTilts[Math.min(ringIdx, 2)] : 0
+            tilt: _ringStyle === "orbit" ? _orbitTilts[Math.min(ringIdx, 2)] : 0,
+            role: ringItem.primary ? "primary"
+              : (ringItem.inferred ? "inferred" : "secondary"),
+            score: ringItem.score == null ? null : Number(ringItem.score),
+            share: ringItem.share == null ? null : Number(ringItem.share),
+            color: ringColorR,
+            family: ringItem.inferred ? "inferred"
+              : (_emotionFamily[ringItem.emotion] || ringItem.emotion)
           });
           if (ringIdx === 0) {
             window.__biocoreRing.alpha = Number(ringAlphaR.toFixed(3));
