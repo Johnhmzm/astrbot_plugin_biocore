@@ -29,6 +29,13 @@ __all__ = [
     "refusal_protocol",
     "milestone_from_text",
     "merge_milestones",
+    "commitment_investment",
+    "WE_MEMORY_TYPES",
+    "validate_we_memory",
+    "merge_we_memory",
+    "merge_annotations",
+    "apply_relationship_impression",
+    "apply_tom_update",
     "update_relationship_record",
     "summarize_relationship",
 ]
@@ -43,6 +50,13 @@ CALIBRATION_MAX_SOURCES = 20
 ROLE_TYPES = ("家人", "朋友", "同事", "伴侣", "宠物", "其他")
 MAX_SOCIAL_WORLD = 20
 MAX_MILESTONES = 10
+WE_MEMORY_TYPES = ("nickname", "ritual", "anniversary", "inside_joke", "shared_object")
+MAX_WE_MEMORY = 20
+WE_MEMORY_MIN_CONFIDENCE = 0.55
+MAX_ANNOTATIONS = 10
+MAX_BELIEF_ITEMS = 3
+IMPRESSION_MIN_CONFIDENCE = 0.55
+TOM_MIN_CONFIDENCE = 0.50
 
 _STOPWORDS = {
     "这个",
@@ -324,6 +338,227 @@ def merge_milestones(existing: Any, additions: Any) -> list[dict[str, Any]]:
     return out[-MAX_MILESTONES:]
 
 
+
+def commitment_investment(
+    state: Any,
+    trajectory: Any,
+    interactions: Any = 0,
+    repair_success: Any = 0,
+    promises_kept: Any = 0,
+) -> dict[str, float]:
+    """Bounded deterministic commitment/investment proxies (no behavior change)."""
+    try:
+        n_inter = max(0, int(float(interactions or 0)))
+    except Exception:
+        n_inter = 0
+    traj = [x for x in (trajectory if isinstance(trajectory, list) else [])[-80:]
+            if isinstance(x, dict)]
+    n_traj = len(traj)
+    if n_inter <= 0 and n_traj <= 0:
+        return {"commitment": 0.0, "investment": 0.0}
+    try:
+        n_repair = max(0, min(10, int(float(repair_success or 0))))
+    except Exception:
+        n_repair = 0
+    try:
+        n_promise = max(0, min(10, int(float(promises_kept or 0))))
+    except Exception:
+        n_promise = 0
+    traj_term = min(1.0, n_traj / 40.0)
+    inter_term = min(1.0, n_inter / 120.0)
+    repair_term = min(1.0, n_repair / 3.0)
+    promise_term = min(1.0, n_promise / 5.0)
+    commitment = _clamp(0.10 + 0.30 * traj_term + 0.25 * inter_term
+                        + 0.20 * repair_term + 0.15 * promise_term)
+    investment = _clamp(0.08 + 0.35 * traj_term + 0.30 * inter_term
+                        + 0.12 * repair_term + 0.15 * promise_term)
+    return {"commitment": round(commitment, 4), "investment": round(investment, 4)}
+
+
+def validate_we_memory(proposal: Any) -> dict[str, Any] | None:
+    """Validate one we-memory candidate; evidence-gated and bounded (no LLM)."""
+    if not isinstance(proposal, dict):
+        return None
+    mtype = str(proposal.get("type") or "").strip()
+    if mtype not in WE_MEMORY_TYPES:
+        return None
+    raw_text = " ".join(str(proposal.get("text") or "").split()).strip()
+    if not raw_text or len(raw_text) > 40:
+        return None
+    text = raw_text[:40]
+    refs = proposal.get("evidence_refs")
+    if not isinstance(refs, list) or not [str(x) for x in refs if str(x)]:
+        return None
+    try:
+        conf = _clamp(_num(proposal.get("confidence"), 0.0))
+    except Exception:
+        return None
+    if conf < WE_MEMORY_MIN_CONFIDENCE:
+        return None
+    return {
+        "type": mtype,
+        "text": text,
+        "evidence_refs": [str(x)[:80] for x in refs[:5] if str(x)],
+        "confidence": round(conf, 3),
+    }
+
+
+def merge_we_memory(existing: Any, proposals: Any) -> list[dict[str, Any]]:
+    """Merge validated we-memory items, dedupe by type+text, cap 20."""
+    out = []
+    seen = set()
+    items = list(existing if isinstance(existing, list) else []) + list(proposals if isinstance(proposals, list) else [])
+    for item in items:
+        valid = validate_we_memory(item)
+        if not valid:
+            continue
+        key = (valid["type"], valid["text"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(valid)
+    return out[-MAX_WE_MEMORY:]
+
+
+
+
+def _bounded_text(value: Any, limit: int = 80) -> str:
+    return " ".join(str(value or "").split()).strip()[:max(1, int(limit))]
+
+
+def merge_annotations(existing: Any, additions: Any, *,
+                      limit: int = MAX_ANNOTATIONS) -> list[dict[str, Any]]:
+    """Bounded relationship annotations (traits/relation events); no state writes."""
+    out: list[dict[str, Any]] = []
+    seen = set()
+    items = list(existing if isinstance(existing, list) else [])
+    items += list(additions if isinstance(additions, list) else [])
+    for item in items:
+        if isinstance(item, dict):
+            text = _bounded_text(item.get("text"), 80)
+            kind = _bounded_text(item.get("kind"), 20) or "annotation"
+            try:
+                confidence = round(_clamp(item.get("confidence", 0.55)), 3)
+            except Exception:
+                confidence = 0.55
+            refs = [str(x)[:80] for x in (item.get("evidence_refs") or []) if str(x)][:6]
+            ts = _num(item.get("ts"), 0.0)
+        else:
+            text = _bounded_text(item, 80)
+            kind = "annotation"
+            confidence = 0.55
+            refs = []
+            ts = 0.0
+        if not text:
+            continue
+        key = (kind, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"kind": kind, "text": text, "confidence": confidence,
+                    "evidence_refs": refs, "ts": round(ts, 3)})
+    return out[-max(1, int(limit)):]
+
+
+def apply_relationship_impression(record: Any, proposal: Any, *,
+                                  allowed_refs: Any = None) -> dict[str, Any]:
+    """Validate an LLM relationship-impression proposal; returns a record.
+
+    The LLM never writes trust/goals/state here: only bounded annotations and
+    evidence-gated we-memory candidates are merged into the relationship record.
+    """
+    base = dict(record) if isinstance(record, dict) else {}
+    if not isinstance(proposal, dict):
+        return base
+    try:
+        confidence = _clamp(proposal.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+    if confidence < IMPRESSION_MIN_CONFIDENCE:
+        return base
+    refs_raw = proposal.get("evidence_refs")
+    refs = [str(x)[:80] for x in (refs_raw if isinstance(refs_raw, list) else []) if str(x)][:8]
+    if isinstance(allowed_refs, (list, tuple, set)):
+        allowed = {str(x) for x in allowed_refs}
+        refs = [r for r in refs if r in allowed]
+    if not refs:
+        return base
+    additions: list[dict[str, Any]] = []
+    for text in (proposal.get("traits") or [])[:3]:
+        item = _bounded_text(text, 60)
+        if item:
+            additions.append({"kind": "trait", "text": item,
+                              "confidence": round(confidence, 3),
+                              "evidence_refs": refs[:6], "ts": 0.0})
+    for text in (proposal.get("relation_events") or [])[:2]:
+        item = _bounded_text(text, 80)
+        if item:
+            additions.append({"kind": "relation_event", "text": item,
+                              "confidence": round(confidence, 3),
+                              "evidence_refs": refs[:6], "ts": 0.0})
+    base["annotations"] = merge_annotations(base.get("annotations"), additions)
+    candidates = []
+    for item in (proposal.get("we_memory_candidates") or [])[:2]:
+        valid = validate_we_memory({**_valid_candidate(item), "evidence_refs": refs[:3]})
+        if valid:
+            candidates.append(valid)
+    if candidates:
+        base["we_memory"] = merge_we_memory(base.get("we_memory"), candidates)
+    return base
+
+
+def _valid_candidate(item: Any) -> dict[str, Any]:
+    """Copy only the schema keys a we-memory proposal may set (no evidence here)."""
+    data = item if isinstance(item, dict) else {}
+    return {"type": str(data.get("type") or "").strip(),
+            "text": _bounded_text(data.get("text"), 40),
+            "confidence": _num(data.get("confidence"), 0.0),
+            "evidence_refs": []}
+
+
+def apply_tom_update(user_data: Any, proposal: Any, *,
+                     allowed_refs: Any = None) -> dict[str, Any]:
+    """Validate a bounded ToM proposal and store it in the user record.
+
+    Never touches biological core state or trust; beliefs/desires/intentions are
+    capped, evidence-gated annotations used only by the interpretation layer.
+    """
+    data = dict(user_data) if isinstance(user_data, dict) else {}
+    if not isinstance(proposal, dict):
+        return data
+    try:
+        confidence = _clamp(proposal.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+    if confidence < TOM_MIN_CONFIDENCE:
+        return data
+    refs = [str(x)[:80] for x in (proposal.get("evidence_refs") or []) if str(x)][:8]
+    if isinstance(allowed_refs, (list, tuple, set)):
+        allowed = {str(x) for x in allowed_refs}
+        refs = [r for r in refs if r in allowed]
+    if not refs:
+        return data
+    previous = data.get("belief_state") if isinstance(data.get("belief_state"), dict) else {}
+    merged = {}
+    for key in ("beliefs", "desires", "intentions"):
+        old = [str(x)[:60] for x in (previous.get(key) or []) if str(x)][-MAX_BELIEF_ITEMS:]
+        new = [_bounded_text(x, 60) for x in (proposal.get(key) or [])[:MAX_BELIEF_ITEMS]]
+        values = []
+        for item in old + new:
+            if item and item not in values:
+                values.append(item)
+        merged[key] = values[-MAX_BELIEF_ITEMS:]
+    data["belief_state"] = {
+        "beliefs": merged["beliefs"],
+        "desires": merged["desires"],
+        "intentions": merged["intentions"],
+        "confidence": round(confidence, 3),
+        "evidence_refs": refs,
+        "ts": _num(proposal.get("ts"), 0.0),
+    }
+    return data
+
+
 def relationship_state(
     *,
     trust: Any = 0.5,
@@ -458,6 +693,11 @@ def update_relationship_record(
     absence: Any = None,
     social_world: Any = None,
     milestones: Any = None,
+    we_memory: Any = None,
+    interactions: Any = None,
+    repair_success: Any = None,
+    promises_kept: Any = None,
+    annotations: Any = None,
 ) -> dict[str, Any]:
     """Create/update the bounded relationship record stored with the user."""
     prev = previous if isinstance(previous, dict) else {}
@@ -473,6 +713,15 @@ def update_relationship_record(
     world = social_world if isinstance(social_world, list) else prev.get("social_world", [])
     attachment = attachment_profile(trajectory)
     marks = merge_milestones(prev.get("milestones"), milestones)
+    we_items = merge_we_memory(prev.get("we_memory"), we_memory) if isinstance(we_memory, list) else (
+        prev.get("we_memory") if isinstance(prev.get("we_memory"), list) else [])
+    _inter = interactions if interactions is not None else prev.get("interactions", len(trajectory))
+    _repair = repair_success if repair_success is not None else len([x for x in trajectory if float(x.get("repair", 0) or 0) >= 0.05])
+    _promises = promises_kept if promises_kept is not None else len([x for x in marks if x.get("type") == "promise_kept"])
+    commitment = commitment_investment(state, trajectory, _inter, _repair, _promises)
+    notes = (merge_annotations(prev.get("annotations"), annotations)
+             if isinstance(annotations, list)
+             else merge_annotations(prev.get("annotations"), []))
     return {
         "schema_version": RELATIONSHIP_SCHEMA_VERSION,
         "state": {
@@ -488,6 +737,10 @@ def update_relationship_record(
         "social_world": [dict(x) for x in world[:MAX_SOCIAL_WORLD] if isinstance(x, dict)],
         "attachment": attachment,
         "milestones": marks,
+        "we_memory": [dict(x) for x in we_items[:MAX_WE_MEMORY] if isinstance(x, dict)],
+        "commitment": commitment["commitment"],
+        "investment": commitment["investment"],
+        "annotations": notes,
     }
 
 

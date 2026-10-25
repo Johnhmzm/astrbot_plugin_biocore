@@ -280,7 +280,8 @@
   }
 
 
-  const LLM_FUNCTIONS=["persona_compile","event_summary","event_ranking","insight","memory_summary","image_caption"];
+  const LLM_FUNCTIONS=["persona_compile","event_summary","event_ranking","insight","memory_summary","image_caption",
+  "relationship_impression","repair_hint","empathy_hint","pragmatics_hint","tom_probe","diary","relationship_narrative","humor_hint"];
   const MEM_SOURCE_LABELS={direct:"用户直述",media:"图片/语音",told:"转述",retrieved:"检索",inferred:"推断",unknown:"未标注"};
   const MEM_TIER_LABELS={hot:"HOT 热",warm:"WARM 温",cold:"COLD 冷"};
   const MEM_REL_FIELDS=[["trust","信任"],["closeness","亲近"],["conflict","冲突"],["repair","修复"],["predictability","可预测"]];
@@ -456,7 +457,11 @@
       });
       tombstones+=(Array.isArray(s.tombstones)?s.tombstones.length:0);
     });
-    if(stats) stats.textContent="元数据："+total+" 条 · 低置信 "+low+" · 冲突 "+conflicts+" · 已总结 "+summarized+" · 墓碑 "+tombstones+"。";
+    if(stats){
+      const trace=(data&&Array.isArray(data.last_cause_trace))?data.last_cause_trace:[];
+      const hint=String((data&&data.last_strategy_hint)||"").slice(0,60);
+      stats.textContent="元数据："+total+" 条 · 低置信 "+low+" · 冲突 "+conflicts+" · 已总结 "+summarized+" · 墓碑 "+tombstones+" · trace "+trace.length+(hint?(" · hint "+hint):"") + "。";
+    }
     const sessionsSorted=valid.slice().sort((a,b)=>String(a.session||"").localeCompare(String(b.session||"")));
     if(memSessionFilter && sessionsSorted.every(s=>String(s.session||"")!==memSessionFilter)) memSessionFilter="";
     if(!memSessionFilter) memSessionFilter=String(sessionsSorted[0].session||"");
@@ -663,6 +668,24 @@
     const transHtml=trans.length?trans.sort((a,b)=>Number(b[1])-Number(a[1])).slice(0,4).map(x=>'<span class="chip">'+esc(String(x[0]))+' ×'+Number(x[1]||0)+'</span>').join(""):'<span class="empty-mini">暂无</span>';
     const dest=(rel.destination_map&&typeof rel.destination_map==="object")?Object.values(rel.destination_map):[];
     const destHtml=dest.length?dest.slice(0,3).map(x=>'<span class="chip">'+esc(String((x&&(x.sender_name||x.sender_id))||"?"))+' ×'+Number((x&&x.count)||0)+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    // Read-only exposure of bio v2 / we-memory / commitment / annotations.
+    const weItems=Array.isArray(rel.we_memory)?rel.we_memory:[];
+    const weHtml=weItems.length?weItems.slice(0,3).map(x=>'<span class="chip">'+esc(String((x&&x.type)||"we"))+':'+esc(String((x&&x.text)||"").slice(0,24))+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    const marks=Array.isArray(rel.milestones)?rel.milestones:[];
+    const markHtml=marks.length?marks.slice(0,3).map(x=>'<span class="chip">'+esc(String((x&&x.type)||"milestone"))+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    const anns=Array.isArray(rel.annotations)?rel.annotations:[];
+    const annHtml=anns.length?anns.slice(0,3).map(x=>'<span class="chip">'+esc(String((x&&x.text)||"").slice(0,28))+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    const attach=rel.attachment||{};
+    const absence=rel.absence||{};
+    const belief=cur.belief_state||{};
+    const beliefItems=[].concat(
+      (Array.isArray(belief.beliefs)?belief.beliefs:[]).map(x=>"信念:"+String(x)),
+      (Array.isArray(belief.desires)?belief.desires:[]).map(x=>"愿望:"+String(x)),
+      (Array.isArray(belief.intentions)?belief.intentions:[]).map(x=>"意图:"+String(x))
+    ).slice(0,3);
+    const beliefHtml=beliefItems.length?beliefItems.map(x=>'<span class="chip">'+esc(String(x).slice(0,28))+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    const repPhase=String(((rel.repair_state||{}).phase)||"stable");
+    const commit=Number(rel.commitment||0), invest=Number(rel.investment||0);
     const name=String(cur.sender_name||cur.sender_id||"用户");
     if(hint) hint.textContent="交互 "+Number(cur.interactions||0)+" 次 · 最近 "+memWhen(cur.last_seen||cur.ts);
     body.innerHTML='<div class="rel-card">'+
@@ -670,6 +693,9 @@
       '<div class="rel-state-grid">'+stateRows+'</div>'+
       '<div class="rel-trend"><div class="rel-trend-head"><small>最近轨迹</small><span class="rel-legend"><i class="rel-lg-trust"></i>信任<i class="rel-lg-close"></i>亲近<i class="rel-lg-conflict"></i>冲突</span></div>'+relSpark(traj)+trajRows+'</div>'+
       '<div class="rel-maps"><div><small>常谈主题 / TRANSACTIVE</small><div class="chips">'+transHtml+'</div></div><div><small>信息来源 / DESTINATION</small><div class="chips">'+destHtml+'</div></div></div>'+
+      '<div class="rel-maps"><div><small>共同记忆 / WE-MEMORY</small><div class="chips">'+weHtml+'</div></div><div><small>里程碑 / MILESTONES</small><div class="chips">'+markHtml+'</div></div></div>'+
+      '<div class="rel-maps"><div><small>关系印象 / ANNOTATIONS</small><div class="chips">'+annHtml+'</div></div><div><small>用户信念 / BELIEF STATE（只读）</small><div class="chips">'+beliefHtml+'</div></div></div>'+
+      '<div class="rel-maps"><div><small>承诺 '+(commit).toFixed(2)+' · 投资 '+(invest).toFixed(2)+' · 修复 '+esc(repPhase)+' · 回归 '+esc(String(absence.bucket||"same_day"))+'</small><div class="chips"><span class="chip">依恋 安全'+Number(attach.safe||0).toFixed(2)+'</span><span class="chip">焦虑'+Number(attach.anxious||0).toFixed(2)+'</span><span class="chip">回避'+Number(attach.avoidant||0).toFixed(2)+'</span></div></div></div>'+
     '</div>';
   }
   const _memSel=$("memSessionFilter");
@@ -861,7 +887,16 @@
     $("personaNote").textContent="stress "+Number(p.stress_reactivity||0).toFixed(2)+" · recovery "+Number(p.recovery_rate||0).toFixed(2)+" · social "+Number(p.social_baseline||0).toFixed(2);
     if($("selfWho")){const sm=data.self_model||{}; $("selfWho").value=sm.who_am_i||""; $("selfNarrative").value=sm.narrative||""; $("selfBoundaries").value=(sm.boundaries||[]).join("\n"); $("selfConsistency").value=(sm.consistency||[]).join("\n");}
     if($("goalList")){const gs=s.goals||[]; const cf=s.goal_conflict||[]; $("goalList").innerHTML=(gs.length?gs.map(g=>'<div><small>'+esc(g.name||"")+'</small><b>'+Number(g.progress||0).toFixed(2)+'</b></div>').join(""):'<div><small>goals</small><b>-</b></div>')+(cf.length?'<div><small>conflict</small><b>'+esc(cf.join(" / "))+'</b></div>':'');}
-    if($("autoBioList")){const ab=s.autobiography||[]; $("autoBioList").innerHTML=ab.length?ab.slice().reverse().map(x=>'<div class="event-card"><b>'+esc(x.title||"事件")+'</b><p>'+esc(x.meaning||x.reflection||"")+'</p></div>').join(""):'<p class="api-note">还没有自传体记录。</p>';}
+    if($("autoBioList")){
+      const ab=s.autobiography||[];
+      const sm=data.self_model||{};
+      const diary=Array.isArray(sm.diary)?sm.diary:[];
+      const narr=Array.isArray(sm.relationship_narratives)?sm.relationship_narratives:[];
+      const cards=ab.slice().reverse().map(x=>'<div class="event-card"><b>'+esc(x.title||"事件")+'</b><p>'+esc(x.meaning||x.reflection||"")+'</p></div>');
+      diary.slice(-3).reverse().forEach(x=>{cards.push('<div class="event-card"><b>日记 '+esc(String(x.date||""))+'</b><p>'+esc(String(x.text||""))+'</p></div>');});
+      narr.slice(-2).reverse().forEach(x=>{cards.push('<div class="event-card"><b>关系叙述</b><p>'+esc(String(x.text||""))+'</p></div>');});
+      $("autoBioList").innerHTML=cards.length?cards.join(""):'<p class="api-note">还没有自传体记录。</p>';
+    }
     if($("regStats")){const rs=s.regulation_stats||{}; const ks=Object.keys(rs); $("regStats").innerHTML=ks.length?ks.map(k=>{const v=rs[k]||{};return '<div><small>'+esc(k)+'</small><b>'+Number(v.uses||0)+' / '+Number(v.success||0)+'</b></div>';}).join(""):'<div><small>regulation</small><b>暂无</b></div>';}
     if($("personaBaseline")) $("personaBaseline").innerHTML=[
       ["baseline_v",p.baseline_v],["baseline_a",p.baseline_a],["energy",p.energy_baseline],
@@ -1463,7 +1498,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.58";
+  const BIO_VERSION = "v1.2.59";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";

@@ -41,6 +41,12 @@
     "type": "bool",
     "default": true
   },
+  "we_memory_enabled": {
+    "description": "共同记忆（we-memory，默认关）",
+    "hint": "默认关闭。开启后只从已有记忆里确定性抽取暗号/仪式/纪念日/共同物件，必须有 evidence_refs 且置信度≥0.55；不会新增 LLM 调用，也不会跨用户共享。",
+    "type": "bool",
+    "default": false
+  },
   "persona_id": {
     "description": "人格提示词来源",
     "hint": "选择 AstrBot 已有人设用于编译数值倾向；留空跟随当前默认人设。首次使用或更换人设时编译一次，重复加载不调用 LLM。",
