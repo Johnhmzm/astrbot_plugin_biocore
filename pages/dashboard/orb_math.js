@@ -200,6 +200,17 @@
     return focused ? DIM_FOCUSED : DIM_DIMMED;
   };
 
+  // task-54 addendum: inferred secondary ring colour for old events (no real
+  // secondary): rotate the primary hue +40deg, saturation 62% of the primary,
+  // lightness close to it. Never gray, never the same hue as the ball. Caller
+  // applies alpha .45-.60.
+  const inferredSecondaryHsl = (hue, sat, light) => {
+    const h = ((Number(hue) || 0) + 40) % 360;
+    const s = Math.max(22, Math.min(100, (Number(sat) || 0) * 0.62));
+    const l = Math.max(28, Math.min(72, Number(light) || 55));
+    return { h: h, s: s, l: l, alpha: 0.55 };
+  };
+
   // Frame-rate independent exponential smoothing; continuous, no snap.
   const smoothToward = (current, target, dtSec, tauSec) => {
     const cur = Number.isFinite(Number(current))
@@ -246,7 +257,7 @@
            projectPoint, orbitRingPoints,
            FOCUS_ZOOM, TAP_MAX_MOVE, TAP_MAX_MS, CAM_LERP, ZOOM_LERP,
            DEPTH_FAR, DEPTH_NEAR, DIM_FOCUSED, DIM_DIMMED, DIM_IDLE, DIM_TAU,
-           RING_FAR, RING_NEAR, ringDepth, ringShade,
+           RING_FAR, RING_NEAR, ringDepth, ringShade, inferredSecondaryHsl,
            depthFactor, dimTarget, smoothToward,
            zoomTarget, lerp, isTap, cameraPoint, cameraTarget, cameraStep };
 });

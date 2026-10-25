@@ -132,6 +132,12 @@
         return .72 + .28 * t;
       },
       dimTarget: (focused, anyFocus) => (anyFocus ? (focused ? 1.25 : .32) : 1),
+      inferredSecondaryHsl: (hue, sat, light) => ({
+        h: ((Number(hue) || 0) + 40) % 360,
+        s: Math.max(22, Math.min(100, (Number(sat) || 0) * 0.62)),
+        l: Math.max(28, Math.min(72, Number(light) || 55)),
+        alpha: 0.55
+      }),
       RING_FAR: .68, RING_NEAR: 1,
       ringDepth: (z) => Math.max(0, Math.min(1, (Number(z) + 1) / 2)),
       ringShade: (z) => {
@@ -419,7 +425,7 @@
     const _secKey = String(ev.emotion_secondary || "").trim();
     const _status = String((ev.source_check && ev.source_check.status) || "ok");
     const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
-      (_secKey ? " / 次情绪：" + _emotionZh(_secKey) : " / 次情绪：未知") +
+      (_secKey ? " / 次情绪：" + _emotionZh(_secKey) : " / 次情绪：推断（示意）") +
       " · 来源 " + _status;
     // Keep the hover card small: prefer the <=80-char small_summary (task-41);
     // old events without it fall back to the archived event / central details,
@@ -448,13 +454,18 @@
     orbTip.style.top = y + "px";
   }
 
+  // task-58: full emotion vocabulary (EMOTION_SPECTRUM 30+) in Chinese; a
+  // missing key never leaks raw English into the tooltip/focus/card UI.
   const _EMO_ZH = {
-    admiration:"钦佩", adoration:"爱慕", aesthetic:"审美欣赏", amusement:"好笑", anger:"生气",
-    anxiety:"焦虑", awe:"敬畏", awkwardness:"尴尬", boredom:"无聊", calmness:"平静",
-    confusion:"困惑", contempt:"轻蔑", contentment:"满足", desire:"欲望", disappointment:"失望",
-    disgust:"厌恶", empathic_pain:"共情痛苦", entrancement:"入迷", envy:"嫉妒", excitement:"兴奋",
-    fear:"害怕", guilt:"内疚", horror:"恐惧", interest:"兴趣", joy:"快乐",
-    loneliness:"孤独", nostalgia:"怀念", pride:"自豪", neutral:"平静", trust:"信任"
+    neutral:"平静", joy:"开心", sadness:"难过", fear:"害怕", anger:"生气",
+    surprise:"惊讶", trust:"信任", loneliness:"孤独", admiration:"钦佩",
+    adoration:"爱慕", aesthetic:"审美欣赏", amusement:"好笑", anxiety:"焦虑",
+    awe:"敬畏", awkwardness:"尴尬", boredom:"无聊", calmness:"平静",
+    confusion:"困惑", contempt:"轻蔑", contentment:"满足", desire:"欲望",
+    disappointment:"失望", disgust:"厌恶", empathic_pain:"共情痛苦",
+    entrancement:"入迷", envy:"嫉妒", excitement:"兴奋", guilt:"内疚",
+    horror:"恐惧", interest:"兴趣", nostalgia:"怀念", pride:"自豪",
+    satisfaction:"满足", shame:"羞耻"
   };
   const _SECONDARY_FAMILY = {
     admiration:"joy", adoration:"joy", aesthetic:"joy", amusement:"joy", awe:"joy",
@@ -464,9 +475,11 @@
     fear:"fear", anxiety:"fear", horror:"fear",
     loneliness:"loneliness", boredom:"neutral", confusion:"neutral", calmness:"trust"
   };
+  const _UNKNOWN_EMOTION_ZH = "未知情绪";
   function _emotionZh(key){
-    const k=String(key||"");
-    return _EMO_ZH[k] || k || "未知";
+    const k=String(key==null?"":key).trim().toLowerCase();
+    if(!k) return _UNKNOWN_EMOTION_ZH;
+    return _EMO_ZH[k] || _UNKNOWN_EMOTION_ZH;
   }
 
   function palette() {
@@ -816,7 +829,7 @@
         { k: "fear",       x: -.55, y: .75, z: -.30, c: "139,92,246" },
         { k: "anger",      x: -.60, y: .70, z: .55, c: "229,83,61" },
         { k: "loneliness", x: -.45, y: .20, z: .15, c: "79,93,170" },
-        { k: "neutral",    x: .05, y: .05, z: .50, c: "124,154,146" }
+        { k: "neutral",    x: .05, y: .05, z: .50, c: "116,146,168" }
       ];
       const cur = String((state.intent || {}).emotion || "neutral");
       const _ev = clamp((Number(s.v || 0) + 1) / 2);
@@ -893,7 +906,21 @@
     // apoapsis; Kepler III: n ∝ a^(-3/2) so near balls orbit faster.
     // Time radius: older events inner, recent events outer (fixed 60 day scale).
     if (!state.visual || state.visual.memoryNodes !== false) {
-      const _ec = { joy: "242,193,78", sadness: "91,141,239", anger: "229,83,61", fear: "139,92,246", loneliness: "79,93,170", neutral: "124,154,146", trust: "84,181,139" };
+      // task-58: neutral is a calm blue-gray (#7492a8, close to center-ball hue
+      // 196), not a gray-green; spectrum emotions resolve through their family
+      // colour instead of falling back to grey.
+      const _ec = { joy: "242,193,78", sadness: "91,141,239", anger: "229,83,61",
+                    fear: "139,92,246", loneliness: "79,93,170",
+                    neutral: "116,146,168", trust: "84,181,139" };
+      const _emotionFamily = { admiration:"joy", adoration:"joy", aesthetic:"joy",
+        amusement:"joy", awe:"joy", contentment:"joy", desire:"joy",
+        excitement:"joy", interest:"joy", joy:"joy", pride:"joy", satisfaction:"joy",
+        nostalgia:"sadness", sadness:"sadness", disappointment:"sadness",
+        empathic_pain:"sadness", guilt:"sadness", shame:"sadness",
+        anger:"anger", contempt:"anger", disgust:"anger", envy:"anger",
+        fear:"fear", anxiety:"fear", horror:"fear",
+        loneliness:"loneliness", trust:"trust", calmness:"trust",
+        neutral:"neutral", boredom:"neutral", confusion:"neutral" };
       const _memN0 = .55;                 // mean motion at a = 1 orb unit
       if (_memExtra > 0) {
         // events beyond the display cap collapse into an outer archive belt
@@ -982,23 +1009,22 @@
           _focusFoundNow = true;
           _focusState.prev = { x: b.x, y: b.y };   // camera follow target next frame
         }
-        let col = _ec[String(ev.emotion || "neutral")] || _ec.neutral;
+        const _emoRaw = String(ev.emotion || "neutral").trim().toLowerCase();
+        let col = _ec[_emotionFamily[_emoRaw] || _emoRaw] || _ec.neutral;
         if (ev._kind === "memory" && !ev.emotion_known) col = "142,148,158";
         const bodyHsl = _vividHsl(col, b.imp);   // saturated, slightly deep
         const primaryRingHsl = { h: bodyHsl.h, s: bodyHsl.s, l: Math.min(60, bodyHsl.l + 7) };
         const _secKey = String(ev.emotion_secondary || "").trim();
-        const _secRgb = _secKey ? (_ec[_SECONDARY_FAMILY[_secKey] || _secKey] || "") : "";
+        const _secRgb = _secKey ? (_ec[_emotionFamily[_secKey] || _SECONDARY_FAMILY[_secKey] || _secKey] || "") : "";
         const _secHsl = _secRgb ? _vividHsl(_secRgb, b.imp) : null;
-        // task-51: old records without emotion_secondary must not paint the ring
-        // in the primary ball colour (that made ring == ball). Use a neutral,
-        // low-saturation light tone; a regenerated event gets a real secondary
-        // from the core spectrum and the ring changes colour again.
-        const neutralRingHsl = isDark()
-          ? { h: 212, s: 9, l: 66 }
-          : { h: 212, s: 11, l: 58 };
+        // task-54 addendum: old records without emotion_secondary get an
+        // INFERRED secondary colour (primary hue +40deg, 62% saturation, close
+        // lightness) instead of gray or the primary colour. The UI marks it as
+        // inferred (示意); a regenerated event gets a real secondary instead.
+        const inferredRingHsl = _OM.inferredSecondaryHsl(bodyHsl.h, bodyHsl.s, bodyHsl.l);
         const ringHsl = _secHsl
           ? { h: _secHsl.h, s: _secHsl.s, l: Math.min(60, _secHsl.l + 7) }
-          : neutralRingHsl;   // old data/no secondary: neutral light fallback
+          : inferredRingHsl;   // old data/no secondary: inferred secondary hue
         const bodyFill = "hsl(" + bodyHsl.h.toFixed(0) + "," + bodyHsl.s.toFixed(0) + "%," + bodyHsl.l.toFixed(0) + "%)";
         const ringFill = "hsl(" + ringHsl.h.toFixed(0) + "," + ringHsl.s.toFixed(0) + "%," + ringHsl.l.toFixed(0) + "%)";
         const ageAlpha = .16 + .70 * (1 - b.ageNorm);
@@ -1035,37 +1061,62 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
-        // one importance ring: secondary emotion colour, now a COMPLETE 360
-        // degree circle (task-50): the 35%+65%*importance arc looked like a
-        // missing piece. Importance is expressed by line width
-        // (1.2 + 1.4 * importance) instead; slow dash rotation is kept.
-        // Old data without emotion_secondary keeps a static primary-lightened
-        // full ring. The central mood ball never spins here.
+        // one importance ring: secondary/inferred colour, a COMPLETE SOLID circle
+        // (task-54 addendum: no 3.2/4.8 dash blocks). Importance is the line
+        // width (1.2 + 1.4 * importance); slow rotation is a short 18-25%
+        // brighter highlight arc travelling on the same solid circle.
         const ringBase = size + 4.2;
         const ringAlpha = clamp(Math.max(0, (.28 + .40 * b.imp)) * depthK * dimK);
         const ringWidth = 1.2 + 1.4 * b.imp;
         const fullTurn = Math.PI * 2;
+        const spin = phase * 1.15;                         // slow rotation
+        const highlightLen = fullTurn * (0.18 + 0.07 * b.imp);  // 18-25% of ring
+        const ringColor = _secHsl
+          ? ringFill
+          : ("hsla(" + inferredRingHsl.h.toFixed(0) + "," +
+             inferredRingHsl.s.toFixed(0) + "%," +
+             inferredRingHsl.l.toFixed(0) + "%," +
+             (inferredRingHsl.alpha || .55).toFixed(2) + ")");
+        // task-54 addendum: two ring styles, configured from the dashboard.
+        // solid (default) = solid full circle + rotating bright highlight arc;
+        // orbit = 3D tilted ellipse orbit with perspective and slow rotation.
+        const _ringStyle = String((state.visual && state.visual.memoryRingStyle) || "solid")
+          .toLowerCase() === "orbit" ? "orbit" : "solid";
+        window.__biocoreMemoryRingStyle = _ringStyle;
         ctx.save();
         ctx.globalAlpha = ringAlpha;
-        if (_secHsl) {
-          const spin = phase * 1.15;              // slow dash travel, full circle
-          ctx.setLineDash([3.2, 4.8]);
-          ctx.lineDashOffset = -phase * 6.0;
+        ctx.setLineDash([]);                               // no dash blocks in either style
+        if (_ringStyle === "orbit") {
+          const orbitTilt = 0.42;
+          const orbitSpin = phase * 0.55;                  // slow 3D rotation
+          const steps = 56;
           ctx.beginPath();
-          ctx.arc(b.x, b.y, ringBase, spin, spin + fullTurn);
-          ctx.strokeStyle = ringFill;
+          for (let i = 0; i <= steps; i++) {
+            const a = i / steps * fullTurn + orbitSpin;
+            const ex = Math.cos(a) * ringBase;
+            const ey = Math.sin(a) * ringBase * Math.sin(orbitTilt);
+            const ez = Math.sin(a) * ringBase * Math.cos(orbitTilt);
+            const persp = 1 + (ez / Math.max(1, ringBase)) * 0.16;
+            const px = b.x + ex * persp;
+            const py = b.y + ey * persp + (ez / Math.max(1, ringBase)) * 2.0;
+            if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.strokeStyle = ringColor;
           ctx.lineWidth = ringWidth;
           ctx.stroke();
-          ctx.setLineDash([]);
         } else {
-          // old data/no-secondary fallback: neutral light ring (not the primary
-          // ball colour), same full-circle/width geometry, no rotation.
-          const start = -Math.PI / 2;
-          ctx.beginPath(); ctx.arc(b.x, b.y, ringBase, start, start + fullTurn);
-          ctx.strokeStyle = "hsla(" + neutralRingHsl.h.toFixed(0) + "," +
-            neutralRingHsl.s.toFixed(0) + "%," +
-            neutralRingHsl.l.toFixed(0) + "%,.55)";
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, ringBase, 0, fullTurn);
+          ctx.strokeStyle = ringColor;
           ctx.lineWidth = ringWidth;
+          ctx.stroke();
+          // rotating highlight arc on the same solid ring (no dashes)
+          ctx.globalAlpha = clamp(ringAlpha * 1.55);
+          ctx.beginPath();
+          ctx.arc(b.x, b.y, ringBase, spin, spin + highlightLen);
+          ctx.strokeStyle = ringColor;
+          ctx.lineWidth = ringWidth + .2;
           ctx.stroke();
         }
         ctx.restore();
@@ -1115,20 +1166,49 @@
       loneliness: 232, neutral: 196
     }[String((state.intent||{}).emotion || "neutral")] || 196;
     const _mv = Math.abs(Number(s.v || 0));
-    const _ma = Number(s.a == null ? 0.4 : s.a);
-    const _ms = Number(s.stress || 0);
+    const _ma = clamp(Number(s.a == null ? 0.4 : s.a));
+    const _ms = clamp(Number(s.stress || 0));
     // a = baseline activation, |v| = emotional charge, stress = extra tint.
-    // Keep a visible color at ordinary arousal; only very calm states go white.
-    const _mi = clamp(0.55 * _ma + 0.35 * _mv + 0.10 * _ms);
-    const _mSat = 16 + 72 * _mi;
-    const _mLight = 91 - 34 * _mi;
+    // task-58: two-sided bounds keep the core readable at every intensity. A
+    // calm state must not wash out to white (sat >= 45, light <= 76, alpha >=
+    // .45) and a strong state must not oversaturate (sat <= 92, light >= 48,
+    // alpha <= .88). The white glass highlight is a separate bounded overlay.
+    // The generic clamp() is 0..1; percentage/alpha bounds need a two-sided
+    // numeric clamp so the explicit floors and ceilings are honoured.
+    const _bound = (v, lo, hi) => Math.max(lo, Math.min(hi,
+      Number.isFinite(Number(v)) ? Number(v) : lo));
+    const _miRaw = clamp(0.55 * _ma + 0.35 * _mv + 0.10 * _ms);
+    const _mi = _bound(Math.max(0.35, _miRaw), 0.35, 1);
+    const _mSat = _bound(40 + 55 * _mi, 45, 92);
+    const _mLight = _bound(76 - 26 * _mi, 48, 76);
+    const _mAlpha = _bound(0.45 + 0.43 * _mi, 0.45, 0.88);
     const moodColor = "hsl(" + _moodHue + " " + _mSat.toFixed(1) + "% " + _mLight.toFixed(1) + "%)";
-    // The core is always glassy: even the strongest emotion stays translucent.
+    const _hlAlpha = _bound(0.08 + 0.12 * _mi, 0.04, 0.22);
+    window.__biocoreMoodColor = {
+      hue: _moodHue,
+      sat: Number(_mSat.toFixed(2)),
+      light: Number(_mLight.toFixed(2)),
+      alpha: Number(_mAlpha.toFixed(3)),
+      mi: Number(_mi.toFixed(3)),
+      whiteHighlightAlpha: Number(_hlAlpha.toFixed(3))
+    };
+    // The core is always glassy: translucent emotion fill + one bounded white
+    // specular highlight (total overlay 0.04..0.22, never enough to bleach it).
     ctx.save();
-    ctx.globalAlpha = Math.min(0.78, Math.max(0.30, 0.30 + 0.42 * _mi));
+    ctx.globalAlpha = _mAlpha;
     ctx.beginPath(); ctx.arc(CX, cy, sr, 0, Math.PI * 2);
     ctx.fillStyle = moodColor; ctx.fill();
     ctx.strokeStyle = "rgba(20,20,20,.28)"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.restore();
+    const _hl = ctx.createRadialGradient(CX - sr * 0.32, cy - sr * 0.38, sr * 0.08,
+                                         CX - sr * 0.32, cy - sr * 0.38, sr * 1.05);
+    _hl.addColorStop(0, "rgba(255,255,255," + _hlAlpha.toFixed(3) + ")");
+    _hl.addColorStop(0.55, "rgba(255,255,255," + (_hlAlpha * 0.45).toFixed(3) + ")");
+    _hl.addColorStop(1, "rgba(255,255,255,0)");
+    ctx.save();
+    ctx.globalAlpha = 1;
+    ctx.beginPath(); ctx.arc(CX, cy, sr, 0, Math.PI * 2);
+    ctx.fillStyle = _hl; ctx.fill();
     ctx.restore();
 
     // back halves remain visible through the translucent sphere
