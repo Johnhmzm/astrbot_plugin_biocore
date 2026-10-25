@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261025-1233" />
+<link rel="stylesheet" href="./styles.css?v=20261025-1248" />
 </head>
 <body>
 <div class="shell">
@@ -420,13 +420,14 @@
         </div>
         </div>
       </div>
-      <div class="section-title mt" data-settings-title="settingsMemory"><div><div class="eyebrow">MEMORY</div><h2>记忆设置</h2></div><span class="hint">私人模式 · 无安全限制</span></div>
+      <div class="section-title mt" data-settings-title="settingsMemory"><div><div class="eyebrow">MEMORY</div><h2>记忆设置</h2></div><span class="hint">默认私人模式 · 安全限制可开关</span></div>
       <div class="panel settings settings-panel" id="settingsMemory">
         <div class="setting-row"><div><b>启用记忆压缩</b><small>超过阈值后压缩旧记忆。</small></div><label class="switch"><input type="checkbox" id="swCompress"><span></span></label></div>
         <div class="api-grid">
           <label><span>触发阈值 / 字符</span><input id="compressThreshold" type="number" min="1000" step="500" value="6000"></label>
           <label><span>压缩后最大 / 字符</span><input id="compressMax" type="number" min="120" step="100" value="800"></label>
         </div>
+        <div class="setting-row"><div><b>安全限制（默认关）</b><small>开启后恢复敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤；私人使用保持关闭。</small></div><label class="switch"><input type="checkbox" id="swSafetyEnabled"><span></span></label></div>
         <div class="setting-row"><div><b>混合检索（词法 + MMR）</b><small>embedding 余弦之外加入词法分，并用 MMR 减少近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
         <div class="setting-row"><div><b>LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
         <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><div class="llm-route"><span class="llm-route-slot" aria-hidden="true"></span><select id="personaSelect" class="event-session"></select></div></div>
@@ -492,5 +493,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./app.js?v=20261025-1233"></script><script src="./orb.js?v=20261025-1233"></script>
+<script src="./app.js?v=20261025-1248"></script><script src="./orb.js?v=20261025-1248"></script>
 </body></html>

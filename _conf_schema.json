@@ -23,6 +23,12 @@
     "type": "bool",
     "default": true
   },
+  "safety_enabled": {
+    "description": "安全限制（默认关）",
+    "hint": "默认关闭，私人使用无限制。开启后恢复敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤。",
+    "type": "bool",
+    "default": false
+  },
   "hybrid_retrieval": {
     "description": "混合检索（词法 + MMR）",
     "hint": "默认开启。embedding 余弦之外加入字符二元组词法分，并用 MMR 降低近重复记忆占位；关闭则只用余弦。",

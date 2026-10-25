@@ -981,6 +981,7 @@
       }
     });
   }
+  bindBehaviorToggle("swSafetyEnabled","safety_enabled");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
   bindBehaviorToggle("swLlmOnlyReplySummary","llm_only_reply_summary");
@@ -1077,6 +1078,8 @@
     const comp = cfg.compression || {};
     const swc = $("swCompress"), th = $("compressThreshold"), mx = $("compressMax");
     if (swc) swc.checked = !!comp.enabled;
+    const swSafety = $("swSafetyEnabled");
+    if (swSafety) swSafety.checked = !!data.safety_enabled;
     const swHybrid = $("swHybridRetrieval");
     if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
     const swLlmCand = $("swLlmCandidates");
@@ -1460,7 +1463,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.55";
+  const BIO_VERSION = "v1.2.56";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
