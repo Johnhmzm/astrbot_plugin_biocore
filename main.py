@@ -1708,6 +1708,20 @@ class BioCore:
         except Exception:
             self._metabolic_energy_offset = 0.0
 
+    def apply_memory_trace(self, v_delta: float = 0.0, stress_delta: float = 0.0) -> dict:
+        """Single BioCore writer for L3 memory-trace nudges (bounded)."""
+        try:
+            dv = max(-0.05, min(0.05, float(v_delta or 0.0)))
+        except Exception:
+            dv = 0.0
+        try:
+            ds = max(-0.05, min(0.05, float(stress_delta or 0.0)))
+        except Exception:
+            ds = 0.0
+        self.v = _clip(float(getattr(self, "v", 0.0)) + dv, -1.0, 1.0)
+        self.stress = _clip(float(getattr(self, "stress", 0.0)) + ds, 0.0, 1.0)
+        return {"v_delta": round(dv, 4), "stress_delta": round(ds, 4)}
+
     def record_reply(self, text: str = "", meta=None) -> None:
         try:
             emo = str((self.labels or {}).get("emotion") or "neutral")
@@ -1863,7 +1877,7 @@ class BioCore:
                 "labels": dict(getattr(self, "labels", {}) or {})}
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.68")
+@register("astrbot_plugin_biocore", "Johnhmzm", "生物情绪层：注入表达意图，不生成回复", "1.2.69")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3041,7 +3055,7 @@ class BioCorePlugin(Star):
         except Exception:
             return {}
 
-    def _event_archive(self, limit: int = 5) -> list:
+    def _event_archive(self, limit: int = 5, read_only: bool = False) -> list:
         try:
             if not EVENT_ARCHIVE_PATH.exists():
                 return []
@@ -3067,7 +3081,7 @@ class BioCorePlugin(Star):
                     except Exception:
                         pass
                 out.append(d)
-            if forgotten:
+            if forgotten and not read_only:
                 self._persist_peripheral_forgetting(forgotten)
             # Recall/event_context are de-duplicated by normalized event_key,
             # newest first; appended duplicates from older versions collapse here.
@@ -4821,7 +4835,7 @@ class BioCorePlugin(Star):
             "astrbot_image": {k: v for k, v in (self._astrbot_image_default() or {}).items() if not k.startswith("_")},
             "cores": cores,
             "self_model": dict(self.self_model or {}),
-            "events": self._event_archive(30),
+            "events": self._event_archive(30, read_only=True),
             "insights": self._insights(5),
         }}
 
@@ -5876,8 +5890,7 @@ class BioCorePlugin(Star):
         v_delta = max(-0.05, min(0.05, 0.05 * avg_val))
         stress_delta = max(-0.02, min(0.05, 0.005 * abs(avg_val) + 0.01 * min(3, loop_count)))
         try:
-            core.v = _clip(float(core.v) + v_delta, -1.0, 1.0)
-            core.stress = _clip(float(core.stress) + stress_delta, 0.0, 1.0)
+            core.apply_memory_trace(v_delta, stress_delta)
         except Exception:
             pass
         trace = {"count": len(selected), "valence": round(avg_val, 3),
