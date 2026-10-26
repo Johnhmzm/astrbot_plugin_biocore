@@ -27,6 +27,8 @@ __all__ = [
     "source_precedence",
     "retrieval_weight",
     "should_abstain",
+    "CALIBRATION_MAX_CONFIDENCE_DELTA",
+    "calibration_confidence_delta",
     "classify_write_op",
     "memory_tier",
     "detect_conflict",
@@ -73,11 +75,19 @@ __all__ = [
     "update_goal_priority",
     "add_link",
     "linked_ids",
+    "MEMORY_TEMPORAL_HALF_LIFE_DAYS",
+    "MEMORY_IMPORTANCE_FLOOR",
+    "time_decay",
+    "decayed_assoc",
+    "effective_importance",
     "expand_query",
     "detect_poisoning",
     "verify_entry",
     "answer_consistency",
     "WORKING_SET_CAPACITY",
+    "WORKING_SET_TTL_SECONDS",
+    "MEMORY_SCHEMA_HALF_LIFE_DAYS",
+    "effective_schema_congruence",
     "update_working_set",
     "working_set_boost",
     "dedupe_texts",
@@ -202,6 +212,42 @@ def update_confidence(
         return round(_clamp(current), 4)
     blended = 0.6 * _clamp(previous) + 0.4 * _clamp(current)
     return round(_clamp(blended), 4)
+
+
+CALIBRATION_MAX_CONFIDENCE_DELTA = 0.05
+
+
+def calibration_confidence_delta(
+    calibration: Any, source: Any,
+    max_delta: float = CALIBRATION_MAX_CONFIDENCE_DELTA,
+) -> float:
+    """G1/L12: bounded per-source confidence nudge from recorded calibration.
+
+    calibration is relationship.calibration ({sources:{source:{ewma,brier,n}}}).
+    EWMA is a Brier-style error; 0.25 is the reference error of always saying
+    0.5. A better-than-reference source gains at most +max_delta, a worse one
+    loses at most -max_delta. Unknown/unrecorded source or no calibration ->
+    0.0, so behavior is unchanged without history.
+    """
+    if not isinstance(calibration, dict):
+        return 0.0
+    sources = calibration.get("sources")
+    if not isinstance(sources, dict):
+        return 0.0
+    row = sources.get(normalize_source(source))
+    if not isinstance(row, dict):
+        return 0.0
+    try:
+        ewma = float(row.get("ewma", 0.5))
+        limit = abs(float(max_delta))
+    except Exception:
+        return 0.0
+    if not math.isfinite(ewma):
+        return 0.0
+    ewma = _clamp(ewma, 0.0, 1.0)
+    # Map 0.0 -> +1, 0.25 -> 0, >=0.50 -> -1.
+    quality = max(-1.0, min(1.0, (0.25 - ewma) / 0.25))
+    return round(limit * quality, 6)
 
 
 def merge_sources(left: Any, right: Any) -> str:
@@ -1520,6 +1566,97 @@ def update_goal_priority(goal: Any, *, hit: bool = True, relevance: Any = 0.5,
 
 
 # ---------------------------------------------------------------------------
+# G7/G8: read-time temporal decay (raw counters stay stored; consumers compute
+# an effective value so old associations/importance cannot stay boosted forever)
+# ---------------------------------------------------------------------------
+MEMORY_TEMPORAL_HALF_LIFE_DAYS = 30.0
+MEMORY_IMPORTANCE_FLOOR = 0.15
+
+
+def time_decay(age_days: float,
+               half_life_days: float = MEMORY_TEMPORAL_HALF_LIFE_DAYS) -> float:
+    """0..1 exponential recency weight: 0.5 ** (age_days / half_life_days)."""
+    try:
+        age = max(0.0, float(age_days))
+        half = max(1e-6, float(half_life_days))
+        return 0.5 ** (age / half)
+    except Exception:
+        return 1.0
+
+
+def _entry_age_days(entry: dict, now: float | None = None, *,
+                    use_last_used: bool = True) -> float:
+    """Age since last touch; 0.0 for legacy entries without timestamps.
+
+    Associations refresh on recall (last_recall) and may also follow last_used;
+    importance is only boosted on recall, so it anchors on last_recall/ts.
+    """
+    try:
+        marks = [float(entry.get("last_recall", 0) or 0),
+                 float(entry.get("ts", 0) or 0)]
+        if use_last_used:
+            marks.append(float(entry.get("last_used", 0) or 0))
+        anchor = max(marks)
+        if anchor <= 0:
+            return 0.0
+        current = float(now if now is not None else time.time())
+        return max(0.0, (current - anchor) / 86400.0)
+    except Exception:
+        return 0.0
+
+
+def decayed_assoc(entry: Any, now: float | None = None,
+                  half_life_days: float = MEMORY_TEMPORAL_HALF_LIFE_DAYS) -> int:
+    """G7: effective co-recall count decayed since the entry's last touch."""
+    if not isinstance(entry, dict):
+        return 0
+    try:
+        raw = sum(int(v) for v in (entry.get("assoc") or {}).values())
+    except Exception:
+        raw = 0
+    if raw <= 0:
+        return 0
+    return max(0, int(round(raw * time_decay(_entry_age_days(entry, now), half_life_days))))
+
+
+def effective_importance(entry: Any, now: float | None = None,
+                         half_life_days: float = MEMORY_TEMPORAL_HALF_LIFE_DAYS,
+                         floor: float = MEMORY_IMPORTANCE_FLOOR) -> float:
+    """G8: slowly decaying importance with a hard 0.15 floor (read-time only)."""
+    if not isinstance(entry, dict):
+        return 0.5
+    try:
+        raw = float(entry.get("importance", 0.5) or 0.5)
+    except Exception:
+        raw = 0.5
+    value = raw * time_decay(
+        _entry_age_days(entry, now, use_last_used=False), half_life_days)
+    return round(max(float(floor), min(1.0, value)), 4)
+
+
+MEMORY_SCHEMA_HALF_LIFE_DAYS = 30.0
+
+
+def effective_schema_congruence(
+    entry: Any, now: float | None = None,
+    half_life_days: float = MEMORY_SCHEMA_HALF_LIFE_DAYS,
+) -> float:
+    """G9: read-time schema congruence with a 30-day decay (raw value kept).
+
+    Stored schema_congruence is a monotonic max from encoding time; reading it
+    through the decay means an old self-model match cannot stay maximally
+    relevant forever. No floor: a stale match may fall to 0.
+    """
+    if not isinstance(entry, dict):
+        return 0.0
+    try:
+        raw = max(0.0, min(1.0, float(entry.get("schema_congruence", 0.0) or 0.0)))
+    except Exception:
+        raw = 0.0
+    return round(max(0.0, min(1.0, raw * time_decay(_entry_age_days(entry, now), half_life_days))), 4)
+
+
+# ---------------------------------------------------------------------------
 # Memory graph links (A-MEM-like deterministic links, bounded)
 # ---------------------------------------------------------------------------
 def add_link(entry: Any, other_id: Any, *, weight: Any = 1, now: float | None = None,
@@ -1554,22 +1691,42 @@ def add_link(entry: Any, other_id: Any, *, weight: Any = 1, now: float | None = 
     return True
 
 
-def linked_ids(entry: Any, *, limit: int = 5, min_weight: float = 1.0) -> list:
-    """Strongest linked memory ids for one-hop graph expansion."""
+def linked_ids(entry: Any, *, limit: int = 5, min_weight: float = 1.0,
+               now: float | None = None) -> list:
+    """Strongest linked memory ids for one-hop graph expansion.
+
+    G7: when now is given, link weights are decayed on read (30-day
+    half-life) and re-ranked by effective weight; stored weights are untouched.
+    now=None keeps legacy callers and unit fixtures on raw weights.
+    """
     if not isinstance(entry, dict):
         return []
-    out = []
-    for item in (entry.get("links") or []):
+    current = None if now is None else float(now)
+    ranked = []
+    for index, item in enumerate(entry.get("links") or []):
         if not isinstance(item, dict):
             continue
         try:
             weight = float(item.get("weight", 0) or 0)
         except Exception:
             weight = 0.0
+        if current is not None:
+            try:
+                item_ts = float(item.get("ts", 0) or 0)
+                if item_ts > 0:
+                    weight *= time_decay(max(0.0, current - item_ts) / 86400.0)
+            except Exception:
+                pass
         if weight < float(min_weight):
             continue
         key = str(item.get("id") or "").strip()
-        if key and key not in out:
+        if not key:
+            continue
+        ranked.append((weight, index, key))
+    ranked.sort(key=lambda row: (-row[0], row[1]))
+    out = []
+    for _weight, _index, key in ranked:
+        if key not in out:
             out.append(key)
         if len(out) >= max(1, int(limit)):
             break
@@ -1694,10 +1851,17 @@ def answer_consistency(top: Any) -> float:
 # Working memory (MemGPT-like bounded read set)
 # ---------------------------------------------------------------------------
 WORKING_SET_CAPACITY = 8
+WORKING_SET_TTL_SECONDS = 7200.0
 
 
-def update_working_set(existing: Any, ids: Any, *, capacity: int = WORKING_SET_CAPACITY) -> list:
-    """LRU-like bounded working set of memory ids used in this session."""
+def update_working_set(existing: Any, ids: Any, *, capacity: int = WORKING_SET_CAPACITY,
+                       priorities: dict | None = None) -> list:
+    """LRU-like bounded working set of memory ids used in this session.
+
+    B12: when priorities (id -> importance) are supplied, over-capacity
+    eviction weighs recency (0.7) against importance (0.3) instead of pure LRU.
+    Without priorities the legacy pure-LRU order is preserved exactly.
+    """
     cap = max(1, int(capacity or WORKING_SET_CAPACITY))
     ordered = []
     for value in (existing or []):
@@ -1711,17 +1875,41 @@ def update_working_set(existing: Any, ids: Any, *, capacity: int = WORKING_SET_C
         if key in ordered:
             ordered.remove(key)
         ordered.append(key)
+    if len(ordered) > cap and isinstance(priorities, dict) and priorities:
+        total = float(len(ordered))
+        scored = []
+        for index, key in enumerate(ordered):
+            recency = (index + 1) / total
+            try:
+                importance = max(0.0, min(1.0, float(priorities.get(key, 0.5) or 0.5)))
+            except Exception:
+                importance = 0.5
+            scored.append((0.7 * recency + 0.3 * importance, index, key))
+        keep = {key for _score, _index, key in
+                sorted(scored, key=lambda row: (-row[0], row[1]))[:cap]}
+        ordered = [key for key in ordered if key in keep]
     return ordered[-cap:]
 
 
-def working_set_boost(entry: Any, working_set: Any) -> float:
-    """Small deterministic retrieval boost for ids in the working set."""
+def working_set_boost(entry: Any, working_set: Any, *, now: float | None = None,
+                      ttl_seconds: float = 0.0) -> float:
+    """Small deterministic retrieval boost for ids in the working set.
+
+    G12: when ttl_seconds > 0, an entry not touched within the TTL keeps no
+    boost (read-time TTL, stored ids are not pruned).
+    """
     if not isinstance(entry, dict) or not isinstance(working_set, (list, tuple)):
         return 1.0
     entry_id = str(entry.get("id") or "").strip()
-    if entry_id and entry_id in {str(x) for x in working_set}:
-        return 1.08
-    return 1.0
+    if not entry_id or entry_id not in {str(x) for x in working_set}:
+        return 1.0
+    try:
+        ttl = float(ttl_seconds or 0.0)
+    except Exception:
+        ttl = 0.0
+    if ttl > 0.0 and _entry_age_days(entry, now) * 86400.0 > ttl:
+        return 1.0
+    return 1.08
 
 
 def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 0) -> list[str]:

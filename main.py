@@ -156,6 +156,17 @@ DEFAULT_PROFILE = {
     "autonomy_gain": 1.0, "contagion_gain": 0.10, "baseline_v": 0.05, "baseline_a": 0.40,
 }
 
+# G3: one-shot bounded seed of core.trust from the persisted user record
+# (cold start / context rebuild only; never every turn, to avoid oscillation).
+TRUST_SEED_WEIGHT = 0.2
+TRUST_SEED_MAX_DELTA = 0.05
+
+# D5: stable default shape for the page-status memory-trace projection.
+DEFAULT_MEMORY_TRACE = {"count": 0, "valence": 0.0, "stress_delta": 0.0, "entry_ids": []}
+
+# G15: reflection-tree nodes older than this are hidden on read (soft forget).
+REFLECTION_TREE_TTL_DAYS = 90.0
+
 # Per-function LLM routing: each feature has its own enabled switch and a
 # provider choice ("follow_llm" = AstrBot main chat model, or a provider_id).
 # Defaults: only the two summary functions are enabled; everything else is
@@ -254,6 +265,10 @@ REGULATION_COST = {
     "express": 0.002,
     "distraction": 0.006,
 }
+
+# G4: regulation-strategy statistics carry a recency weight so evidence from a
+# strategy that has not been used for a long time counts less when choosing.
+REGULATION_STATS_HALF_LIFE_DAYS = 10.0
 
 # Mem0 UPDATE matching: an explicit correction ("改成/改为/其实是/更正")
 # only updates a memory whose semantic similarity passes this floor; the
@@ -694,6 +709,25 @@ class BioCore:
         only conflict/closeness are consumed by homeostasis._drives.
         """
         self.relationship_context = relationship if isinstance(relationship, dict) else None
+
+    def seed_trust_from_user(self, user_trust, weight=0.2, max_delta=0.05) -> float:
+        """G3: one-shot bounded trust seed from the user-level record.
+
+        The caller decides *when* (cold start / context rebuild); this method
+        only applies the bounded EMA step and marks the core as seeded. Trust
+        stays in [0,1] and a single step moves it by at most max_delta.
+        """
+        try:
+            target = _clip(float(user_trust), 0.0, 1.0)
+            current = _clip(float(self.trust), 0.0, 1.0)
+            delta = float(weight) * (target - current)
+            limit = abs(float(max_delta))
+            delta = max(-limit, min(limit, delta))
+            self.trust = _clip(current + delta, 0.0, 1.0)
+            self._user_trust_seeded = True
+            return round(float(self.trust), 4)
+        except Exception:
+            return float(getattr(self, "trust", 0.5))
 
     def load_state(self, d: dict) -> None:
         if not isinstance(d, dict):
@@ -1520,6 +1554,31 @@ class BioCore:
         })
         return names.get(pair, "混合")
 
+    def _regulation_rate(self, strategy: str, now: float = None) -> float:
+        """G4: recency-weighted success rate for one regulation strategy.
+
+        Raw uses/success/cost stay cumulative; the score is multiplied by an
+        exponential recency weight derived from last_update (half-life
+        REGULATION_STATS_HALF_LIFE_DAYS). Read-only: stats are never rewritten
+        here, and legacy stats without last_update keep their old score.
+        """
+        try:
+            st = (getattr(self, "regulation_stats", None) or {}).get(strategy) or {}
+            uses = int(st.get("uses", 0) or 0)
+            if uses <= 0:
+                return 0.0
+            success = float(st.get("success", 0) or 0)
+            cost = float(st.get("cost", 0) or 0)
+            score = success / uses - 0.05 * (cost / uses)
+            last = st.get("last_update")
+            if last is None:
+                return score
+            current = float(now if now is not None else time.time())
+            elapsed_days = max(0.0, current - float(last)) / 86400.0
+            return score * (0.5 ** (elapsed_days / REGULATION_STATS_HALF_LIFE_DAYS))
+        except Exception:
+            return 0.0
+
     def _choose_regulation(self) -> str:
         stress = float(getattr(self, "stress", 0.0))
         trust = float(getattr(self, "trust", 0.5))
@@ -1547,18 +1606,12 @@ class BioCore:
             _cands = ["distraction", "reappraise"]
         if _cands:
             if getattr(self, "regulation_stats", None):
-                def _rate(s):
-                    st = self.regulation_stats.get(s) or {}
-                    uses = int(st.get("uses", 0) or 0)
-                    cost = float(st.get("cost", 0) or 0)
-                    avg_cost = (cost / uses) if uses else 0.0
-                    return ((float(st.get("success", 0) or 0) / uses) if uses else 0.0) - 0.05 * avg_cost
-                _cands.sort(key=_rate, reverse=True)
+                _cands.sort(key=self._regulation_rate, reverse=True)
             return _cands[0]
         return "none"
 
     def _record_regulation(self, strategy: str, pre_stress: float) -> None:
-        """Persist uses / success / cumulative stress change / cumulative cost."""
+        """Persist uses / success / cumulative stress change / cost + last_update."""
         if not strategy or strategy == "none":
             return
         try:
@@ -1569,6 +1622,7 @@ class BioCore:
             st["uses"] = uses
             st["stress_delta"] = round(float(st.get("stress_delta", 0.0) or 0.0) + delta, 5)
             st["cost"] = round(float(st.get("cost", 0.0) or 0.0) + float(REGULATION_COST.get(strategy, 0.003)), 5)
+            st["last_update"] = round(time.time(), 3)
             if delta <= 0.0005:
                 st["success"] = int(st.get("success", 0) or 0) + 1
         except Exception:
@@ -1884,6 +1938,36 @@ class BioCore:
         except Exception:
             return {}
 
+    def _reflection_tree_view(self) -> dict:
+        """G15: read-only reflection tree with old nodes softly forgotten.
+
+        Nodes carry their creation ts; nodes older than REFLECTION_TREE_TTL_DAYS
+        are hidden from snapshots/dashboard without deleting stored history.
+        """
+        try:
+            tree = self.reflection_tree if isinstance(self.reflection_tree, dict) else {}
+            cutoff = time.time() - REFLECTION_TREE_TTL_DAYS * 86400.0
+
+            def _alive(node):
+                try:
+                    ts = float(node.get("ts", 0) or 0)
+                except Exception:
+                    ts = 0.0
+                return ts <= 0 or ts >= cutoff
+
+            roots = []
+            for node in (tree.get("roots") or [])[:10]:
+                if not isinstance(node, dict) or not _alive(node):
+                    continue
+                item = dict(node)
+                item["children"] = [dict(child) for child in
+                                    (node.get("children") or [])[-10:]
+                                    if isinstance(child, dict) and _alive(child)]
+                roots.append(item)
+            return {"roots": roots[-10:], "count": int(tree.get("count", 0) or 0)}
+        except Exception:
+            return {"roots": [], "count": 0}
+
     def snapshot(self) -> dict:
         self._decay_to_now()
         return {"v": round(self.v, 4), "a": round(self.a, 4),
@@ -1929,7 +2013,7 @@ class BioCore:
                 "goal_conflict": list(self.goal_conflict),
                 "goal_scores": dict(getattr(self, "goal_scores", {}) or {}),
                 "self_timeline": dict(self.self_timeline),
-                "reflection_tree": self.reflection_tree,
+                "reflection_tree": self._reflection_tree_view(),
                 "spectrum_probs": self._spectrum_probs(),
                 "sec": dict(self.sec),
                 "core_self": self.core_self,
@@ -1962,6 +2046,11 @@ class BioCorePlugin(Star):
         except Exception:
             self.event_summary_delay_hours = 6
         self.proactive_reply = bool(self.config.get("proactive_reply", False))
+        # A1: event ranking is deterministic by default; the optional LLM rerank
+        # follows the global rerank provider only when this switch is turned on.
+        self.event_ranking_llm = bool(self.config.get("event_ranking_llm", False))
+        # D5: stable default shape even before the first recall fills it.
+        self._last_memory_trace = dict(DEFAULT_MEMORY_TRACE)
         self.memory_dedup_embedding = bool(self.config.get("memory_dedup_embedding", True))
         # Safety switch: default OFF for private use. When OFF, no masking,
         # no cross-session isolation, no forced abstention, no poison filter.
@@ -2327,11 +2416,30 @@ class BioCorePlugin(Star):
         rel = (user_data or {}).get("relationship") if isinstance(user_data, dict) else None
         return rel if isinstance(rel, dict) else {}
 
-    def _deterministic_hint(self, text, user_data, events_raw, memory_meta):
+    def _deterministic_hint(self, text, user_data, events_raw, memory_meta, core=None):
         """One bounded deterministic token; interpretation owns the wording."""
         rel = self._relationship_of(user_data)
         repair_state = rel.get("repair_state") if isinstance(rel.get("repair_state"), dict) else {}
         hint = interpretation.repair_strategy_block(repair_state)
+        if not hint:
+            # G2/L9: refusal is a posture token derived from boundary state. It
+            # is not a gate and never decides whether a reply is sent.
+            try:
+                _state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+                _protocol = relationship_meta.refusal_protocol({
+                    "boundary_pressure": float(getattr(core, "boundary_pressure", 0.0) or 0.0),
+                    "trust": float(_state.get("trust", 0.5) or 0.5),
+                    "conflict": float(_state.get("conflict", 0.0) or 0.0),
+                })
+                hint = interpretation.refusal_strategy_block(_protocol)
+            except Exception:
+                hint = ""
+        if not hint:
+            # A4: deterministic empathy token from core affect (no LLM call).
+            try:
+                hint = interpretation.empathy_strategy_block(core)
+            except Exception:
+                hint = ""
         if not hint and interpretation.cause_question(text):
             hint = interpretation.cause_trace_block(getattr(self, "_last_cause_trace", []))
         if not hint:
@@ -2344,7 +2452,7 @@ class BioCorePlugin(Star):
 
     async def _maybe_llm_hints(self, event, core, user_data, events_raw, memory_meta, text):
         """Optional per-turn strategy refinement; only when a function is ON."""
-        parts = [self._deterministic_hint(text, user_data, events_raw, memory_meta)]
+        parts = [self._deterministic_hint(text, user_data, events_raw, memory_meta, core)]
         rel = self._relationship_of(user_data)
         state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
         repair_state = rel.get("repair_state") if isinstance(rel.get("repair_state"), dict) else {}
@@ -2412,9 +2520,12 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] tom probe failed: %s", exc)
 
     async def _maybe_relationship_impression(self, event, core):
-        """L-T01: event-driven bounded impression proposals (default OFF)."""
-        if not self._llm_allowed("relationship_impression"):
-            return
+        """L-T01/A3: bounded impression writing; deterministic by default.
+
+        The LLM path stays available behind the per-function switch (default
+        OFF). With the switch off, the relation numbers are mapped to a short
+        deterministic template. Neither path touches trust or core state.
+        """
         if not self._llm_v2_cooldown_ok("relationship_impression"):
             return
         try:
@@ -2427,16 +2538,22 @@ class BioCorePlugin(Star):
             if len(allowed) < 3:
                 return
             user_data = self._user_record(event)
-            proposal = await self._llm_v2_call(
-                "relationship_impression",
-                interpretation.relationship_impression_prompt(
-                    important, self._relationship_of(user_data)),
-                lambda raw: interpretation.parse_relationship_impression(
-                    raw, allowed_refs=allowed),
-                event)
-            if not proposal:
-                return
             current = self._relationship_of(user_data)
+            if self._llm_allowed("relationship_impression"):
+                proposal = await self._llm_v2_call(
+                    "relationship_impression",
+                    interpretation.relationship_impression_prompt(important, current),
+                    lambda raw: interpretation.parse_relationship_impression(
+                        raw, allowed_refs=allowed),
+                    event)
+                if not proposal:
+                    return
+            else:
+                proposal = interpretation.relationship_impression_template(
+                    current, len(important))
+                if not proposal.get("traits"):
+                    return
+                proposal["evidence_refs"] = allowed[:6]
             updated = relationship_meta.apply_relationship_impression(
                 current, proposal, allowed_refs=allowed)
             if not updated:
@@ -2627,6 +2744,27 @@ class BioCorePlugin(Star):
                 pass
             self.cores[key] = core
         return self.cores[key]
+
+    def _seed_trust_from_user(self, event, core) -> None:
+        """G3: seed core.trust from the user record once per session core.
+
+        Runs only on the first turn after a core is (re)built in this process;
+        the core-side method caps the single-step delta at 0.05 and marks the
+        core as seeded, so later turns cannot oscillate. User doc is read-only.
+        """
+        if core is None or getattr(core, "_user_trust_seeded", False):
+            return
+        try:
+            path = self._user_path(event)
+            if not path.exists():
+                return
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                return
+            core.seed_trust_from_user(
+                data.get("trust", 0.5), TRUST_SEED_WEIGHT, TRUST_SEED_MAX_DELTA)
+        except Exception:
+            pass
 
     async def _ensure_profile(self, event):
         if not self.profile and self.first_run_persona_compile:
@@ -4064,12 +4202,28 @@ class BioCorePlugin(Star):
                     removed)
         return removed
 
+    def _decayed_merge_count(self, event) -> int:
+        """G11: merge_count decays on the same schedule as peripheral forgetting."""
+        try:
+            count = int(event.get("merge_count", 0) or 0)
+            if count <= 0:
+                return 0
+            ts = float(event.get("ts", 0) or 0)
+            if ts <= 0:
+                return count
+            age_days = max(0.0, (time.time() - ts) / 86400.0)
+            decay = memory_meta.time_decay(age_days)
+            return max(0, int(round(count * decay)))
+        except Exception:
+            return 0
+
     def _persist_peripheral_forgetting(self, events) -> None:
         """Persist periphery forgetting to both archive layers.
 
         The returned view already hides forgotten details; this keeps the
         global events.jsonl and archives/sessions/<session>/events.jsonl in
-        sync through atomic rewrites instead of append-only drift.
+        sync through atomic rewrites instead of append-only drift. G11: the
+        event merge_count is decayed (30-day half-life) in the same rewrite.
         """
         try:
             targets = [d for d in (events or []) if isinstance(d, dict)]
@@ -4080,6 +4234,7 @@ class BioCorePlugin(Star):
                 for target in targets:
                     if not self._same_archive_event(obj, target):
                         continue
+                    obj["merge_count"] = self._decayed_merge_count(obj)
                     obj["peripheral_details"] = ""
                     obj["peripheral_retention"] = min(
                         float(obj.get("peripheral_retention", 1.0) or 1.0), 0.05)
@@ -4862,7 +5017,7 @@ class BioCorePlugin(Star):
                 if imp < 0.55 or score < 0.40:
                     continue
                 candidates.append((score, seg_text, seg_entries, vec, schema, imp))
-            if len(candidates) > 1:
+            if len(candidates) > 1 and getattr(self, "event_ranking_llm", False):
                 _docs = [c[1] for c in candidates]
                 _rs = await self._rerank_scores(
                     "event_ranking", "最近对话中值得记住的重要事件", _docs)
@@ -5848,7 +6003,8 @@ class BioCorePlugin(Star):
             "memory_index": _memory_index_rows(MEMORY_DIR),
             "relationships": _relationship_rows(USER_DIR),
             "last_memory_meta": dict(getattr(self, "_last_memory_meta", {}) or {}),
-            "last_memory_trace": dict(getattr(self, "_last_memory_trace", {}) or {}),
+            "last_memory_trace": {**DEFAULT_MEMORY_TRACE,
+                                  **dict(getattr(self, "_last_memory_trace", {}) or {})},
             # Paper mechanisms also at top level for dashboard/API consumers.
             "circadian_alertness": round(float(getattr(cores[0], "circadian_alertness", 0.5)), 3) if cores else 0.5,
             "allostatic_load": round(float(getattr(cores[0], "allostatic_load", 0.0)), 3) if cores else 0.0,
@@ -6330,7 +6486,8 @@ class BioCorePlugin(Star):
         auditable retrieval-contribution trace without the LLM ever generating
         one and without changing the ranking math.
         """
-        importance = float(entry.get("importance", 0.5) or 0.5)
+        # G8: slow 30-day decay with a 0.15 floor, computed on read only.
+        importance = memory_meta.effective_importance(entry)
         age = max(0.0, time.time() - float(entry.get("ts", 0) or 0))
         age_days = age / 86400.0
         recency = 1.0 / math.pow(1.0 + max(0.0, age_days) * 0.35, 0.55)
@@ -6338,10 +6495,9 @@ class BioCorePlugin(Star):
             recall_count = int(entry.get("recall_count", 0) or 0)
         except Exception:
             recall_count = 0
-        try:
-            assoc = sum(int(v) for v in (entry.get("assoc") or {}).values())
-        except Exception:
-            assoc = 0
+        # G7: co-recall counts are read through a 30-day half-life decay so
+        # an old association cannot stay permanently boosted.
+        assoc = memory_meta.decayed_assoc(entry)
         try:
             due = 1.15 if 0 < float(entry.get("next_review_ts", 0) or 0) <= time.time() else 1.0
         except Exception:
@@ -6358,7 +6514,8 @@ class BioCorePlugin(Star):
         except Exception:
             base = 0.5
         try:
-            schema = max(0.0, min(1.0, float(entry.get("schema_congruence", 0.0) or 0.0)))
+            # G9: read-time decay so an old self-model match cannot stay maxed.
+            schema = memory_meta.effective_schema_congruence(entry)
         except Exception:
             schema = 0.0
         inhibition = memory_meta.retrieval_inhibition(entry)
@@ -6983,7 +7140,7 @@ class BioCorePlugin(Star):
             pass
         return trace
 
-    async def _memory_recall(self, event, text: str, core=None, extra: str = "", vec=None, voice: str = "") -> str:
+    async def _memory_recall(self, event, text: str, core=None, extra: str = "", vec=None, voice: str = "", user_data=None) -> str:
         self._last_memory_meta = {"count": 0, "confidence": 0.0, "source": "unknown",
                                   "abstain": False, "tiers": {}, "answer_confidence": 0.0,
                                   "gate": "none", "conflicts": 0}
@@ -7037,7 +7194,8 @@ class BioCorePlugin(Star):
                 hybrid=bool(getattr(self, "hybrid_retrieval", True)),
                 sensitive_protect=bool(getattr(self, "sensitive_memory_protection", True)))
             try:
-                score *= memory_meta.working_set_boost(e, _working_set)
+                score *= memory_meta.working_set_boost(
+                e, _working_set, ttl_seconds=memory_meta.WORKING_SET_TTL_SECONDS)
             except Exception:
                 pass
             retrieval_pairs.append((e, cosine))
@@ -7110,9 +7268,11 @@ class BioCorePlugin(Star):
                 duplicate["conflict"] = True
                 duplicate["conflict_resolved"] = bool(_explicit_update)
                 try:
+                    # G1/L12: key the sample by memory provenance so the
+                    # bounded confidence consumer can match entries later.
                     self._record_calibration(
                         event,
-                        "explicit_correction" if _explicit_update else "conflict",
+                        memory_meta.normalize_source(duplicate.get("memory_source")),
                         duplicate.get("memory_confidence", 0.5),
                         0.0,
                     )
@@ -7181,7 +7341,10 @@ class BioCorePlugin(Star):
                            if isinstance(_e, dict)]
             doc["working_set"] = memory_meta.update_working_set(
                 doc.get("working_set") if isinstance(doc.get("working_set"), list) else [],
-                _recent_ids, capacity=max(4, self._memory_top_k(core) * 2))
+                _recent_ids, capacity=max(4, self._memory_top_k(core) * 2),
+                priorities={str(_e.get("id") or ""): float(_e.get("importance", 0.5) or 0.5)
+                            for _e in entries
+                            if isinstance(_e, dict) and str(_e.get("id") or "")})
             self._save_memory(event, doc)
         except Exception:
             pass
@@ -7290,12 +7453,15 @@ class BioCorePlugin(Star):
             _ws_current = doc.get("working_set") if isinstance(doc.get("working_set"), list) else _working_set
             doc["working_set"] = memory_meta.update_working_set(
                 _ws_current, [str(e.get("id") or "") for _score, e in top],
-                capacity=max(4, self._memory_top_k(core) * 2))
+                capacity=max(4, self._memory_top_k(core) * 2),
+                priorities={str(_e.get("id") or ""): float(_e.get("importance", 0.5) or 0.5)
+                            for _e in entries
+                            if isinstance(_e, dict) and str(_e.get("id") or "")})
             _top_ids = {id(e) for _score, e in top}
             _by_id = {str(e.get("id") or ""): e for e in entries
                       if isinstance(e, dict) and str(e.get("id") or "")}
             for _score, e in top:
-                for _lid in memory_meta.linked_ids(e, limit=2):
+                for _lid in memory_meta.linked_ids(e, limit=2, now=now):
                     _nb = _by_id.get(_lid)
                     if _nb is None or id(_nb) in _top_ids:
                         continue
@@ -7380,8 +7546,45 @@ class BioCorePlugin(Star):
                     self._save_memory(event, doc)
         except Exception:
             _foreign_lines = []
+        # G1/L12: bounded calibration -> confidence consumer. The recalled
+        # top entries get a <=0.05 per-source adjustment (relationship.
+        # calibration EWMA matched on memory_source) on a transient copy; the
+        # stored entries and ranking are untouched, so hit@k cannot regress.
+        _calibration_meta = {}
+        _meta_top = top
+        try:
+            _calibration = self._relationship_of(user_data).get("calibration")
+            if isinstance(_calibration, dict) and _calibration.get("sources") and top:
+                _adjusted_top = []
+                _deltas = []
+                for _score, _entry in top:
+                    _delta = memory_meta.calibration_confidence_delta(
+                        _calibration, _entry.get("memory_source"))
+                    if _delta:
+                        _copy = dict(_entry)
+                        try:
+                            _base_conf = float(_copy.get("memory_confidence", 0.5) or 0.5)
+                        except Exception:
+                            _base_conf = 0.5
+                        _copy["memory_confidence"] = round(
+                            max(0.0, min(1.0, _base_conf + _delta)), 4)
+                        _adjusted_top.append((_score, _copy))
+                        _deltas.append(_delta)
+                    else:
+                        _adjusted_top.append((_score, _entry))
+                if _deltas:
+                    _meta_top = _adjusted_top
+                    _calibration_meta = {
+                        "calibration_delta": round(sum(_deltas) / len(_deltas), 4),
+                        "calibration_entries": len(_deltas),
+                    }
+        except Exception:
+            _meta_top = top
+            _calibration_meta = {}
         self._last_memory_meta = memory_meta.summarize_recall(
-            top, now, consistency=_consistency)
+            _meta_top, now, consistency=_consistency)
+        if _calibration_meta:
+            self._last_memory_meta.update(_calibration_meta)
         _gate = str(self._last_memory_meta.get("gate") or "none")
         lines = []
         for score, e in top:
@@ -7624,6 +7827,10 @@ class BioCorePlugin(Star):
             return
         await self._ensure_profile(event)
         core = self._core(event)
+        try:
+            self._seed_trust_from_user(event, core)
+        except Exception:
+            pass
         # A4: capture open loops from *before* this turn so the continuity
         # opener cannot echo a loop created by the current message.
         _prior_open_loops = [dict(x) for x in (getattr(core, "open_loops", []) or [])
@@ -7662,7 +7869,8 @@ class BioCorePlugin(Star):
             pass
         _img = await self._image_context(event)
         _voice = await self._voice_context(event)
-        _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice)
+        _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice,
+                                         user_data=_user_data)
         try:
             asyncio.create_task(self._maybe_archive_events(event, core))
             asyncio.create_task(self._maybe_archive_strong_event(event, core, text))
