@@ -264,7 +264,28 @@ REGULATION_COST = {
     "avoid": 0.004,
     "express": 0.002,
     "distraction": 0.006,
+    # Batch4 B2: affect labeling is the 7th, lowest-cost strategy.
+    "label_emotion": 0.001,
 }
+
+# Batch4 A1: sensitization (dual of habituation): strong negative stimuli
+# repeated within the decay window give a bounded gain, half-life 24h.
+SENSITIZATION_STRONG_NEG_DV = -0.12
+SENSITIZATION_STEP = 0.15
+SENSITIZATION_MAX = 1.25
+SENSITIZATION_HALF_LIFE_HOURS = 24.0
+SENSITIZATION_HISTORY_MAX = 12
+SENSITIZATION_HISTORY_MAX_AGE = 2 * 86400.0
+
+# Batch4 B2: affect-labeling trigger thresholds (deterministic).
+AFFECT_LABEL_MIN_TOP_P = 0.60
+AFFECT_LABEL_MIN_AROUSAL = 0.60
+# Low-cost strategy should not be picked every tick; deterministic cooldown.
+AFFECT_LABEL_COOLDOWN_SECONDS = 600
+
+# Batch4 B4: contextual recovery-speed multiplier bounds.
+RECOVERY_CONTEXT_MIN = 0.8
+RECOVERY_CONTEXT_MAX = 1.2
 
 # G4: regulation-strategy statistics carry a recency weight so evidence from a
 # strategy that has not been used for a long time counts less when choosing.
@@ -385,6 +406,10 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "role": str(entry.get("role") or ""),
                 "ts": ts,
                 "importance": importance,
+                # S1: read-only effective values (G7/G8) for the dashboard.
+                "effective_importance": memory_meta.effective_importance(entry),
+                "effective_assoc": memory_meta.decayed_assoc(entry),
+                "last_recall": round(float(entry.get("last_recall", 0) or 0), 3),
                 "hits": int(entry.get("hits", 0) or 0),
                 "memory_source": str(entry.get("memory_source") or "direct"),
                 "memory_confidence": confidence,
@@ -642,6 +667,10 @@ class BioCore:
         # B-T06: exploration/boredom drive (bounded state; not a claim about feelings).
         self.novelty_need = 0.5
         self.boredom = 0.0
+        # Batch4: transient bounded states (not persisted): information-gap
+        # curiosity proxy and strong-negative sensitization history.
+        self.info_gap = 0.0
+        self._sensitization_history = []
         # B-T07: autonomy/refusal readiness (bounded state; strategy stays outside).
         self.boundary_pressure = 0.0
         self.refusal_readiness = 0.0
@@ -725,6 +754,7 @@ class BioCore:
             delta = max(-limit, min(limit, delta))
             self.trust = _clip(current + delta, 0.0, 1.0)
             self._user_trust_seeded = True
+            self._user_trust_seed_delta = round(delta, 4)
             return round(float(self.trust), 4)
         except Exception:
             return float(getattr(self, "trust", 0.5))
@@ -1240,6 +1270,16 @@ class BioCore:
                 self._novelty_history = (_hist + [_novelty_text])[-20:]
         except Exception:
             pass
+        # Batch4 B5: information-gap curiosity proxy. Question/unknown cues raise
+        # a bounded EMA that the homeostasis layer reads as extra curiosity.
+        try:
+            _question_cue = ("?" in t or "？" in t or any(
+                w in t for w in ("什么", "谁", "为什么", "怎么", "哪", "多少", "吗", "如何")))
+            self.info_gap = _clip(
+                0.85 * float(getattr(self, "info_gap", 0.0))
+                + 0.15 * (1.0 if _question_cue else 0.0), 0.0, 1.0)
+        except Exception:
+            self.info_gap = 0.0
         self.stimuli = [x for x in (getattr(self, "stimuli", []) or [])
                         if _now - float(x.get("ts", 0) or 0) <= float(getattr(self, "stimulus_decay_seconds", 300))]
         if _hits:
@@ -1268,15 +1308,37 @@ class BioCore:
             _hab = 1.0 / (1.0 + float(getattr(self, "stimulus_habituation", 0.75)) * _count)
             _novelty = float((getattr(self, "appraisal", {}) or {}).get("novelty", 0.0) or 0.0)
             _hab *= max(0.25, 1.0 - 0.6 * _novelty)
+            # Batch4 B1: sensitization is the dual of habituation. Only strong
+            # negative impulses (v_delta <= -0.12) repeated with >=0.55 text
+            # similarity get a gain: 1 + 0.15 * sum(0.5 ** (age_h / 24h)),
+            # capped at 1.25. Weak/neutral stimuli keep _sens = 1.0; the final
+            # impulse is base * _hab * _sens (habituation still applies).
+            _sens = 1.0
+            try:
+                _prior_sens = [x for x in (getattr(self, "_sensitization_history", []) or [])
+                               if isinstance(x, dict)
+                               and _now - float(x.get("ts", 0) or 0) <= SENSITIZATION_HISTORY_MAX_AGE]
+                if v_delta <= SENSITIZATION_STRONG_NEG_DV:
+                    _rep = 0.0
+                    for _old in _prior_sens:
+                        if self._text_similarity(_norm, str(_old.get("text", ""))) < 0.55:
+                            continue
+                        _age_h = max(0.0, _now - float(_old.get("ts", 0) or 0)) / 3600.0
+                        _rep += 0.5 ** (_age_h / SENSITIZATION_HALF_LIFE_HOURS)
+                    _sens = min(SENSITIZATION_MAX, 1.0 + SENSITIZATION_STEP * _rep)
+                    _prior_sens.append({"text": _norm, "ts": _now})
+                self._sensitization_history = _prior_sens[-SENSITIZATION_HISTORY_MAX:]
+            except Exception:
+                _sens = 1.0
             if _item:
                 _item["n"] = _count + 1
                 _item["ts"] = _now
             else:
                 self.stimuli.append({"labels": _labels, "text": _norm, "n": 1, "ts": _now, "event_key": _event_key})
-            v_delta *= _hab
-            a_delta *= _hab
-            d_delta *= _hab
-            social_delta *= _hab
+            v_delta *= _hab * _sens
+            a_delta *= _hab * _sens
+            d_delta *= _hab * _sens
+            social_delta *= _hab * _sens
             if _item:
                 # Repeated equivalent stimulus: boredom rises, novelty need rises.
                 self.boredom = _clip(self.boredom + (0.05 + 0.03 * min(3.0, _count)) * (1.0 - self.boredom), 0.0, 1.0)
@@ -1604,6 +1666,28 @@ class BioCore:
             _cands = ["seek_comfort", "avoid", "express", "distraction"]
         elif stress >= 0.45 and arousal >= 0.70 and attention < 0.55:
             _cands = ["distraction", "reappraise"]
+        # Batch4 B2: affect labeling (naming the emotion) is the 7th strategy.
+        # Deterministic trigger: spectrum top1 >= 0.45 and arousal >= 0.50.
+        if _cands and arousal >= AFFECT_LABEL_MIN_AROUSAL:
+            try:
+                _top_p = max((float(x.get("p", 0.0) or 0.0)
+                              for x in self._spectrum_probs() if isinstance(x, dict)),
+                             default=0.0)
+            except Exception:
+                _top_p = 0.0
+            try:
+                _label_stats = (getattr(self, "regulation_stats", {}) or {}).get(
+                    "label_emotion") or {}
+                _last_label = _label_stats.get("last_update")
+                if _last_label is None:
+                    _label_ready = True
+                else:
+                    _label_ready = (time.time() - float(_last_label)
+                                    >= AFFECT_LABEL_COOLDOWN_SECONDS)
+            except Exception:
+                _label_ready = True
+            if _top_p >= AFFECT_LABEL_MIN_TOP_P and _label_ready:
+                _cands = ["label_emotion"] + _cands
         if _cands:
             if getattr(self, "regulation_stats", None):
                 _cands.sort(key=self._regulation_rate, reverse=True)
@@ -1645,6 +1729,12 @@ class BioCore:
         elif r == "express":
             self.v = _clip(self.v + 0.01, -1, 1)
             self.stress = _clip(self.stress - 0.01, 0, 1)
+        elif r == "label_emotion":
+            # Batch4 B2: name the feeling; deliberately tiny effects (not a
+            # comfort button): v toward 0, arousal/stress slightly down.
+            self.v = _clip(self.v + 0.005, -1, 1)
+            self.a = _clip(self.a - 0.01, 0, 1)
+            self.stress = _clip(self.stress - 0.005, 0, 1)
         elif r == "distraction":
             # Brief relief: lower arousal/stress now, but attention and the
             # current goal pay for it because the concern is left unaddressed.
@@ -1794,6 +1884,40 @@ class BioCore:
         self._derive()
         self.echo_trace = _clip(0.9 * self.echo_trace + 0.1 * warm, -1, 1)
 
+    def _recovery_speed(self) -> float:
+        """Batch4 B4: contextual recovery-speed multiplier, bounded [0.8, 1.2].
+
+        speed = clamp(0.85 + 0.30*recovery_rate
+                      + 0.05*(2*coping_success - 1)
+                      + 0.05*(circadian_alertness - 0.5), 0.8, 1.2)
+        Applied as HL/speed only to dimensions below baseline (v<0, a>0.40,
+        social<0.55), so recovery is faster after rest/support and slower when
+        recovery_rate is low. Deterministic, no LLM, no new stored field.
+        """
+        try:
+            rate = _clip(float((getattr(self, "profile", {}) or {}).get(
+                "recovery_rate", 0.62) or 0.62), 0.0, 1.0)
+        except Exception:
+            rate = 0.62
+        success = 0.5
+        try:
+            stats = getattr(self, "regulation_stats", {}) or {}
+            uses = sum(int(v.get("uses", 0) or 0) for v in stats.values()
+                       if isinstance(v, dict))
+            succ = sum(int(v.get("success", 0) or 0) for v in stats.values()
+                       if isinstance(v, dict))
+            if uses > 0:
+                success = _clip(succ / uses, 0.0, 1.0)
+        except Exception:
+            success = 0.5
+        try:
+            alert = _clip(float(getattr(self, "circadian_alertness", 0.5) or 0.5), 0.0, 1.0)
+        except Exception:
+            alert = 0.5
+        speed = (0.85 + 0.30 * rate + 0.05 * (2.0 * success - 1.0)
+                 + 0.05 * (alert - 0.5))
+        return max(RECOVERY_CONTEXT_MIN, min(RECOVERY_CONTEXT_MAX, speed))
+
     def _decay_to_now(self) -> None:
         now = __import__("time").time()
         try:
@@ -1811,10 +1935,18 @@ class BioCore:
             return 0.5 ** (dt_min / hl)
         _emo = str((getattr(self, "labels", {}) or {}).get("emotion") or "neutral")
         _ef = float((getattr(self, "emotion_decay_factors", {}) or {}).get(_emo, 1.0))
-        self.v = _clip(self.v * factor(self.valence_decay_minutes * _ef), -1, 1)
-        self.a = _clip(0.40 + (self.a - 0.40) * factor(self.arousal_decay_minutes * max(0.5, _ef)), 0, 1)
+        # Batch4 B4: contextual recovery speed shortens the half-life only for
+        # dimensions that are recovering toward baseline.
+        _rec = self._recovery_speed()
+        _v_rec = _rec if self.v < 0 else 1.0
+        _a_rec = _rec if self.a > 0.40 else 1.0
+        _soc_rec = _rec if self.social < 0.55 else 1.0
+        self.v = _clip(self.v * factor(self.valence_decay_minutes * _ef / _v_rec), -1, 1)
+        self.a = _clip(0.40 + (self.a - 0.40) * factor(
+            self.arousal_decay_minutes * max(0.5, _ef) / _a_rec), 0, 1)
         self.d = _clip(0.55 + (self.d - 0.55) * factor(self.valence_decay_minutes * _ef), -1, 1)
-        self.social = _clip(0.55 + (self.social - 0.55) * factor(self.social_decay_minutes * _ef), 0, 1)
+        self.social = _clip(0.55 + (self.social - 0.55) * factor(
+            self.social_decay_minutes * _ef / _soc_rec), 0, 1)
         self._derive()
         try:
             self._apply_circadian_effects()
@@ -1964,9 +2096,16 @@ class BioCore:
                                     (node.get("children") or [])[-10:]
                                     if isinstance(child, dict) and _alive(child)]
                 roots.append(item)
-            return {"roots": roots[-10:], "count": int(tree.get("count", 0) or 0)}
+            stored_roots = [node for node in (tree.get("roots") or [])
+                            if isinstance(node, dict)]
+            stored_total = sum(
+                1 + len([c for c in (node.get("children") or []) if isinstance(c, dict)])
+                for node in stored_roots)
+            visible_total = sum(1 + len(item.get("children") or []) for item in roots)
+            return {"roots": roots[-10:], "count": int(tree.get("count", 0) or 0),
+                    "hidden_count": max(0, stored_total - visible_total)}
         except Exception:
-            return {"roots": [], "count": 0}
+            return {"roots": [], "count": 0, "hidden_count": 0}
 
     def snapshot(self) -> dict:
         self._decay_to_now()
@@ -2002,6 +2141,9 @@ class BioCore:
                 "homeostasis": dict(getattr(self, "homeostasis", {}) or {}),
                 "boundary_pressure": round(float(getattr(self, "boundary_pressure", 0.0)), 3),
                 "refusal_readiness": round(float(getattr(self, "refusal_readiness", 0.0)), 3),
+                "user_trust_seeded": bool(getattr(self, "_user_trust_seeded", False)),
+                "user_trust_seed_delta": round(
+                    float(getattr(self, "_user_trust_seed_delta", 0.0) or 0.0), 4),
                 "interpersonal": {k: round(float(v), 4) for k, v in (getattr(self, "interpersonal", {}) or {}).items()},
                 "daily_digests": [dict(x) for x in (getattr(self, "daily_digests", []) or [])[-30:]],
                 "meta_emotion": self.meta_emotion,
@@ -5925,14 +6067,41 @@ class BioCorePlugin(Star):
         return {"status": "ok", "data": {"files": len(results), "sessions": len(files)}}
 
     def _working_set_preview(self, key: str) -> dict:
-        """Bounded working-set exposure for the dashboard/evals (no new mechanism)."""
+        """Bounded working-set exposure for the dashboard/evals (no new mechanism).
+
+        S3: also exposes the read-time TTL (G12) and how many ids are still
+        fresh (touched within the TTL), so the UI never has to guess.
+        """
         try:
             doc = self._load_memory(types.SimpleNamespace(unified_msg_origin=str(key or "")))
-            ws = doc.get("working_set") if isinstance(doc, dict) else []
+            doc = doc if isinstance(doc, dict) else {}
+            ws = doc.get("working_set") if isinstance(doc.get("working_set"), list) else []
             ids = [str(x) for x in (ws or []) if str(x)][-8:]
-            return {"capacity": 8, "count": len(ids), "ids": ids}
+            fresh = 0
+            if ids:
+                by_id = {str(e.get("id") or ""): e for e in (doc.get("entries") or [])
+                         if isinstance(e, dict) and str(e.get("id") or "")}
+                _now = time.time()
+                for _id in ids:
+                    entry = by_id.get(_id)
+                    if entry is None:
+                        continue
+                    try:
+                        anchor = max(float(entry.get("last_recall", 0) or 0),
+                                     float(entry.get("last_used", 0) or 0),
+                                     float(entry.get("ts", 0) or 0))
+                    except Exception:
+                        anchor = 0.0
+                    # Legacy entries without timestamps are treated as fresh.
+                    if anchor <= 0 or (_now - anchor) <= memory_meta.WORKING_SET_TTL_SECONDS:
+                        fresh += 1
+            return {"capacity": 8, "count": len(ids), "ids": ids,
+                    "ttl_seconds": int(memory_meta.WORKING_SET_TTL_SECONDS),
+                    "fresh_count": fresh}
         except Exception:
-            return {"capacity": 8, "count": 0, "ids": []}
+            return {"capacity": 8, "count": 0, "ids": [],
+                    "ttl_seconds": int(memory_meta.WORKING_SET_TTL_SECONDS),
+                    "fresh_count": 0}
 
     async def page_status(self):
         _personas = []
@@ -6002,7 +6171,9 @@ class BioCorePlugin(Star):
             # audit rows, and per-user relationship state/trajectory/maps.
             "memory_index": _memory_index_rows(MEMORY_DIR),
             "relationships": _relationship_rows(USER_DIR),
-            "last_memory_meta": dict(getattr(self, "_last_memory_meta", {}) or {}),
+            "last_memory_meta": {
+                "calibration_delta": 0.0, "calibration_sources": 0,
+                **dict(getattr(self, "_last_memory_meta", {}) or {})},
             "last_memory_trace": {**DEFAULT_MEMORY_TRACE,
                                   **dict(getattr(self, "_last_memory_trace", {}) or {})},
             # Paper mechanisms also at top level for dashboard/API consumers.
@@ -6023,7 +6194,10 @@ class BioCorePlugin(Star):
             "astrbot_image": {k: v for k, v in (self._astrbot_image_default() or {}).items() if not k.startswith("_")},
             "cores": cores,
             "self_model": dict(self.self_model or {}),
-            "events": self._event_archive(30, read_only=True),
+            "events": [dict(_ev,
+                            effective_merge_count=self._decayed_merge_count(_ev))
+                       for _ev in self._event_archive(30, read_only=True)
+                       if isinstance(_ev, dict)],
             "insights": self._insights(5),
         }}
 
