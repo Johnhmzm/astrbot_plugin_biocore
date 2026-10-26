@@ -1,6 +1,13 @@
 # BioCore 插件更新说明
 
-当前版本：以 `metadata.yaml` 为准（当前 **1.2.97**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：以 `metadata.yaml` 为准（当前 **1.2.98**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 1.2.98 升级提示
+
+- 配置向后兼容：旧 config.json 不用改，新增项都有默认值；被移除的死配置项会被忽略。
+- 默认 LLM 调用收敛：升级后只保留事件总结 / 记忆总结两个摘要调用；如需恢复全部 LLM 能力，关闭 `llm_only_reply_summary`。
+- 数据目录仍是 `data/plugin_data/astrbot_plugin_biocore_standalone/`，更新不丢档；升级前建议备份。
+- 球下图例可在 设置 → 球体图层 → 「记忆球 / 记忆节点」行右侧的「显示图例」开关隐藏。
 
 ## 数据位置
 
