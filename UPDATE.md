@@ -43,3 +43,9 @@ AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
 - `image_service_port`：本地 llama-server 端口，默认 0；0=不启用本地 VLM，只有填本地路径且端口>0 才启动
 
 留空表示不启用本地图片服务；图片识别会优雅跳过，不影响文字聊天。
+
+## 主动行为与学习默认（review BLOCK-04/09）
+
+- 默认不主动发送；只有 proactive_autonomy=true + proactive_send=true 且私聊才可能发送，受 30min 冷却/每日3条/0–8点静默限制。
+- bio_learning 默认 true（小步长、硬边界）；需要完全冻结学习时设 bio_learning=false；/biocore learning reset 可恢复默认。
+- retention_model 默认 single（1.2.98 旧指数）；power_law/multi_scale 为实验模型，A/B 后再切换。

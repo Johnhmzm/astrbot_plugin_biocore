@@ -15,6 +15,8 @@ import time
 from typing import Any
 
 DRIVE_KEYS = ("energy", "social", "safety", "curiosity")
+# Task-15 P0-2: bounded noise jitter on action strength (only when autonomy on).
+AUTONOMY_ACTION_JITTER = 0.05
 BODY_KEYS = ("energy", "hydration", "warmth", "fatigue")
 NEED_LAYERS = ("physiological", "safety", "belonging", "esteem", "self_actualization")
 NEED_WEIGHTS = (1.0, 0.85, 0.65, 0.5, 0.35)
@@ -203,8 +205,22 @@ def action_tendency(state: Any, core: Any = None) -> dict[str, Any]:
         mode, why = "comfort", "internal_load"
     else:
         mode, why = "engage", "baseline"
-    strength = round(_clamp(0.35 + 0.40 * readiness + 0.25 * L_int), 4)
-    return {"mode": mode, "reason": why, "strength": strength}
+    strength = _clamp(0.35 + 0.40 * readiness + 0.25 * L_int)
+    # Task-15 P0-2: noise is an L1 input to expression tendency, not a parallel
+    # telemetry path. Bounded ±0.05 jitter on strength; disabled autonomy means
+    # the exact legacy value (no change).
+    try:
+        if core is not None and bool(getattr(core, "autonomy_enabled", False)):
+            _noise = getattr(core, "noise", {}) or {}
+            _st = float(_noise.get("stress", 0.0) or 0.0)
+            _so = float(_noise.get("social", 0.0) or 0.0)
+            _va = float(_noise.get("valence", 0.0) or 0.0)
+            _jitter = AUTONOMY_ACTION_JITTER * ((_st + _so - _va) / 0.30)
+            _jitter = max(-AUTONOMY_ACTION_JITTER, min(AUTONOMY_ACTION_JITTER, _jitter))
+            strength = _clamp(strength + _jitter, 0.0, 1.0)
+    except Exception:
+        pass
+    return {"mode": mode, "reason": why, "strength": round(strength, 4)}
 
 
 def dominance_low(state: Any) -> bool:

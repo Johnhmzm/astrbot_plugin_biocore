@@ -1,3 +1,7 @@
+## 1.2.98（未发布·本地改动）
+
+- 噪声→自主行为（默认关）、L1 学习（默认开）、注意力/事件链（默认关）、C8+C9 闭环（默认关）、readiness/learning 命令。
+
 # Changelog
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
@@ -143,3 +147,9 @@
 
 ### Added
 - 点击记忆球聚焦：相机跟随、自动放大、左侧显示该记忆详细总结。
+
+## 主动行为与学习默认（review BLOCK-04/09）
+
+- 默认不主动发送；只有 proactive_autonomy=true + proactive_send=true 且私聊才可能发送，受 30min 冷却/每日3条/0–8点静默限制。
+- bio_learning 默认 true（小步长、硬边界）；需要完全冻结学习时设 bio_learning=false；/biocore learning reset 可恢复默认。
+- retention_model 默认 single（1.2.98 旧指数）；power_law/multi_scale 为实验模型，A/B 后再切换。
