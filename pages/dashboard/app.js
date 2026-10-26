@@ -130,6 +130,7 @@
   const MEM_HALF_LIFE_DAYS=30;        // memory_meta.MEMORY_TEMPORAL_HALF_LIFE_DAYS (G7/G8/G11)
   const MEM_IMPORTANCE_FLOOR=0.15;    // memory_meta.MEMORY_IMPORTANCE_FLOOR
   const WORKING_SET_TTL_HOURS=2;      // memory_meta.WORKING_SET_TTL_SECONDS (G12)
+  const CHAIN_HALF_LIFE_DAYS=30;      // memory_meta.CHAIN_LINK_HALF_LIFE_DAYS (H2-1)
   const NEED_LABELS={physiological:"生理",safety:"安全",belonging:"归属",esteem:"尊重",self_actualization:"自我实现"};
   const INTERO_LABELS={low:"偏低 / 想休息",steady:"平稳",high:"充足 / 活跃"};
   // 0..1 exponential recency weight, same formula as the server half-life decay.
@@ -305,7 +306,7 @@
       localStorage.setItem("bio_vis_defaults_v3","1");
     }
   } catch (e) {}
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed",memoryBallGravity:storeGet("bio_memory_ball_gravity","1")!=="0",orbLegend:storeGet("bio_show_orb_legend","1")!=="0"};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed",memoryBallGravity:storeGet("bio_memory_ball_gravity","1")!=="0",orbLegend:storeGet("bio_show_orb_legend","1")!=="0",showAutonomyPanel:storeGet("bio_show_autonomy_panel","1")!=="0",showLearningPanel:storeGet("bio_show_learning_panel","1")!=="0",showChainList:storeGet("bio_show_chain_list","1")!=="0"};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -1388,6 +1389,137 @@
     if(!m) return "";
     return m[1]==="decline"?"refuse=decline":"refuse=negotiate";
   }
+  // 面板显示开关：只控制 Dashboard 上哪些只读面板可见，不改后端配置。
+  function applyPanelVisibility(){
+    [["panelAutonomy","showAutonomyPanel"],
+     ["panelLearning","showLearningPanel"],
+     ["chainBlock","showChainList"]].forEach(pair=>{
+      const el=$(pair[0]);
+      if(el) el.hidden=!visual[pair[1]];
+    });
+  }
+  // Task-16 只读：state.proactive_autonomy（默认 {enabled:false}）。
+  // 群聊只显示「仅私聊」；未开启显示「已关闭」；不补算、不写回、不触发发送。
+  function renderAutonomyPanel(s,coreKey){
+    const set=(id,value)=>{const el=$(id); if(el) el.textContent=value;};
+    const note=$("autonomyNote"), sourcesEl=$("autonomySources");
+    const auto=(s&&s.proactive_autonomy&&typeof s.proactive_autonomy==="object")?s.proactive_autonomy:null;
+    const type=parseSessionKey(coreKey||"").type;
+    const isGroup=(type==="GroupMessage"||type==="GuildMessage");
+    if(isGroup){
+      set("autoEnabled","仅私聊");
+      ["autoReady","autoThreshold","autoMaxChars","autoImpulse","autoSent"].forEach(id=>set(id,"—"));
+      if(sourcesEl) sourcesEl.innerHTML='<span class="chip">当前会话：群聊</span><span class="chip">只在私聊生效</span>';
+      if(note) note.textContent="群聊不显示可触发状态：自主行为只走私聊路径。开关在 AstrBot 插件配置（proactive_autonomy / proactive_send）。";
+      return;
+    }
+    if(!auto||!auto.enabled){
+      set("autoEnabled","已关闭");
+      ["autoReady","autoThreshold","autoMaxChars","autoImpulse","autoSent"].forEach(id=>set(id,"—"));
+      if(sourcesEl) sourcesEl.innerHTML='<span class="chip">未启用</span><span class="chip">默认关</span>';
+      if(note) note.textContent="已关闭（默认关）：不计算 readiness；仅在私聊路径、proactive_autonomy 开启后写入 threshold / max_chars / impulse。开关在 AstrBot 插件配置。";
+      return;
+    }
+    const src=(auto.sources&&typeof auto.sources==="object")?auto.sources:{};
+    const _num=(v)=>(v==null||!isFinite(Number(v)))?"—":Number(v).toFixed(2);
+    const _pick=(key,fallback)=>src[key]!=null?src[key]:fallback;
+    set("autoEnabled","已开启");
+    set("autoReady",auto.ready?"是":"否");
+    set("autoThreshold",_num(auto.threshold));
+    set("autoMaxChars",auto.max_chars==null?"—":String(Number(auto.max_chars)));
+    set("autoImpulse",auto.impulse==null?"—":Number(auto.impulse).toFixed(3));
+    set("autoSent",String(Number(auto.sent_count||0))+"/"+String(Number(auto.daily_cap||0)));
+    if(sourcesEl){
+      const items=[
+        ["chaos",_pick("chaos",auto.chaos)],
+        ["echo",_pick("echo_trace",null)],
+        ["stress_load",_pick("stress_load",null)],
+        ["drive_dev",_pick("drive_dev",null)],
+        ["trust",_pick("trust",null)],
+        ["closeness",_pick("closeness",null)]
+      ].filter(x=>x[1]!=null&&isFinite(Number(x[1])));
+      sourcesEl.innerHTML=items.length
+        ? items.map(x=>'<span class="chip">'+esc(x[0])+' '+Number(x[1]).toFixed(2)+'</span>').join("")
+        : '<span class="chip">来源未提供</span>';
+    }
+    if(note){
+      const cool=Number(auto.cooldown_seconds||0), cap=Number(auto.daily_cap||0), quiet=Array.isArray(auto.quiet_hours)?auto.quiet_hours:[];
+      note.textContent="只读投影：impulse 由 chaos / echo / stress_load / drive_dev / trust / closeness 加权（×autonomy_gain）；不发消息、不新增 LLM。"
+        +(cool>0?("冷却 ≥"+Math.round(cool/60)+" 分钟"):"")
+        +(cap>0?(" · 每日 ≤"+cap):"")
+        +(quiet.length>=2?(" · 静默 "+quiet[0]+"–"+quiet[1]+" 点"):"")
+        +"；开关在 AstrBot 插件配置。";
+    }
+  }
+  // Task-16 只读：state.learning（L1 Q-learning，确定性、有界、可审计）。
+  function renderLearningPanel(s){
+    const set=(id,value)=>{const el=$(id); if(el) el.textContent=value;};
+    const note=$("learningNote"), logEl=$("learningLog");
+    const l=(s&&s.learning&&typeof s.learning==="object")?s.learning:null;
+    if(!l||l.version==null){
+      ["learnVersion","learnUpdates","learnLast","learnTrustAlpha","learnRate","learnQTop"].forEach(id=>set(id,"—"));
+      set("learnVersion","未启用");
+      if(logEl) logEl.innerHTML='<span class="chip">未启用</span>';
+      if(note) note.textContent="旧 state 没有 learning 字段（未启用）；不会补算，也不写回。开关在 AstrBot 插件配置（bio_learning）。";
+      return;
+    }
+    const params=(l.params&&typeof l.params==="object")?l.params:{};
+    const q=(params.regulation_q&&typeof params.regulation_q==="object")?params.regulation_q:{};
+    const qRows=Object.keys(q).filter(k=>isFinite(Number(q[k])))
+      .sort((a,b)=>Math.abs(Number(q[b]))-Math.abs(Number(q[a]))).slice(0,3)
+      .map(k=>_regLabel(k)+" "+fmt(Number(q[k]),2));
+    set("learnVersion","v"+String(l.version));
+    set("learnUpdates",String(Number(l.updates_count||0)));
+    set("learnLast",Number(l.last_update||0)>0?memWhen(l.last_update):"—");
+    set("learnTrustAlpha",params.trust_alpha==null?"—":Number(params.trust_alpha).toFixed(2));
+    set("learnRate",params.learning_rate==null?"—":Number(params.learning_rate).toFixed(3));
+    set("learnQTop",qRows.length?qRows.join(" · "):"无样本");
+    if(logEl){
+      const log=Array.isArray(l.log)?l.log.filter(x=>x&&typeof x==="object").slice(-3).reverse():[];
+      logEl.innerHTML=log.length
+        ? log.map(x=>{
+            const param=String(x.param||"").replace("regulation_q.","");
+            return '<span class="chip" title="参数更新日志（最近 3 条）">'+esc(memWhen(x.ts))+' · '+esc(_regLabel(param))
+              +' '+fmt(Number(x.old||0),2)+'→'+fmt(Number(x.new||0),2)+'</span>';
+          }).join("")
+        : '<span class="chip">暂无参数更新日志</span>';
+    }
+    if(note) note.textContent="只读投影：Q 值与参数由后端确定性更新（最小样本 5、单步 ≤0.02）；updates_count 为 Q 更新次数。开关在 AstrBot 插件配置（bio_learning）。";
+  }
+  // Task-16 只读：事件归档 chain_links（H2-1 写路径，默认关）。
+  function renderChainLinks(){
+    const list=$("chainList");
+    if(!list) return;
+    const evs=(data&&Array.isArray(data.events))?data.events:[];
+    const filter=String(memSessionFilter||"");
+    const rows=[];
+    evs.forEach(ev=>{
+      if(!ev||typeof ev!=="object") return;
+      const links=Array.isArray(ev.chain_links)?ev.chain_links.filter(x=>x&&typeof x==="object"):[];
+      if(!links.length) return;
+      if(filter&&canonicalSessionKey(ev.session)!==filter) return;
+      rows.push({ev:ev,links:links});
+    });
+    rows.sort((a,b)=>Number(b.ev.ts||0)-Number(a.ev.ts||0));
+    if(!rows.length){
+      list.innerHTML='<div class="empty-mini">还没有事件链：chain_links 只在 memory_chain_enabled 开启后、新归档的事件上写入（默认关闭）。</div>';
+      return;
+    }
+    list.innerHTML=rows.slice(0,5).map(row=>{
+      const links=row.links.slice(0,3).map(lk=>{
+        const ts=Number(lk.ts||0);
+        const age=ts>0?Math.max(0,(Date.now()/1000-ts)/86400):0;
+        const stored=Number(lk.weight||0);
+        const eff=stored*Math.pow(0.5,age/CHAIN_HALF_LIFE_DAYS);
+        return '<span class="chip" title="存储权重 '+stored.toFixed(2)+'；读取时按 30 天半衰">→ '
+          +esc(String(lk.id||"").slice(0,10))+' · '+esc(String(lk.kind||"link"))
+          +' · w '+stored.toFixed(2)+'→'+eff.toFixed(2)+'</span>';
+      }).join("");
+      return '<div class="chain-event"><b>'+esc(String(row.ev.title||row.ev.event_key||"事件"))+'</b>'
+        +'<small>'+esc(memWhen(row.ev.ts))+' · 链 ×'+row.links.length+'</small>'
+        +'<div class="chips">'+links+'</div></div>';
+    }).join("");
+  }
   function render(){
     const core=(data.cores&&data.cores[0])||demo.cores[0];
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
@@ -1413,6 +1545,10 @@
     renderSelfPanels(s);
     renderSteadyState(s);
     renderRecallMeta(core);
+    applyPanelVisibility();
+    renderAutonomyPanel(s, core.key);
+    renderLearningPanel(s);
+    renderChainLinks();
     $("pluginBadge").textContent=data.enabled?"BioCore · ON":"BioCore · OFF";
     $("heroTitle").textContent=L(it.emotion)+" · "+L(it.intent);
     $("heroSub").textContent=it.need==="be_heard"?"现在更像是想被听见，不急着解决问题。":it.need==="space"?"现在更像是需要一点空间，不想被追问。":it.need==="share"?"现在更像是想分享，语气可以轻一点。":it.need==="vent"?"现在更像是想吐槽，先接住，不用讲道理。":"现在像是普通聊天，接不接都可以。";
@@ -1572,7 +1708,7 @@
     $("crumbView").textContent=names[name]||name;
   }
   document.querySelectorAll(".nav-item").forEach(a=>a.addEventListener("click",()=>switchView(a.dataset.view)));
-  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);storeSet("bio_memory_ball_gravity",visual.memoryBallGravity?"1":"0");storeSet("bio_show_orb_legend",visual.orbLegend?"1":"0");if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
+  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);storeSet("bio_memory_ball_gravity",visual.memoryBallGravity?"1":"0");storeSet("bio_show_orb_legend",visual.orbLegend?"1":"0");storeSet("bio_show_autonomy_panel",visual.showAutonomyPanel?"1":"0");storeSet("bio_show_learning_panel",visual.showLearningPanel?"1":"0");storeSet("bio_show_chain_list",visual.showChainList?"1":"0");if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
   $("swShowNoise").checked=visual.noise; $("swShowEcho").checked=visual.echo; $("swShowRipple").checked=visual.ripple;
   if($("swShowDominance"))$("swShowDominance").checked=visual.dominance;
   if($("swShowSocial"))$("swShowSocial").checked=visual.social;
@@ -1582,6 +1718,9 @@
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").checked=visual.memoryNodes;
   if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").checked=visual.memoryBallsImportant;
   if($("swOrbLegend"))$("swOrbLegend").checked=visual.orbLegend;
+  if($("swShowAutonomyPanel"))$("swShowAutonomyPanel").checked=visual.showAutonomyPanel;
+  if($("swShowLearningPanel"))$("swShowLearningPanel").checked=visual.showLearningPanel;
+  if($("swShowChainList"))$("swShowChainList").checked=visual.showChainList;
   if($("swShowEmotionRings"))$("swShowEmotionRings").checked=visual.emotionRings;
   $("orbIntensity").value=visual.intensity;
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").value=visual.memoryRingStyle;
@@ -1598,6 +1737,9 @@
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();updateOrbLegend();});
   if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();updateOrbLegend();});
   if($("swOrbLegend"))$("swOrbLegend").addEventListener("change",e=>{visual.orbLegend=e.target.checked;visualSave();updateOrbLegend();});
+  if($("swShowAutonomyPanel"))$("swShowAutonomyPanel").addEventListener("change",e=>{visual.showAutonomyPanel=e.target.checked;visualSave();applyPanelVisibility();});
+  if($("swShowLearningPanel"))$("swShowLearningPanel").addEventListener("change",e=>{visual.showLearningPanel=e.target.checked;visualSave();applyPanelVisibility();});
+  if($("swShowChainList"))$("swShowChainList").addEventListener("change",e=>{visual.showChainList=e.target.checked;visualSave();applyPanelVisibility();});
   if($("swShowEmotionRings"))$("swShowEmotionRings").addEventListener("change",e=>{visual.emotionRings=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").addEventListener("change",e=>{visual.memoryRingStyle=e.target.value==="orbit"?"orbit":"solid";visualSave();});
@@ -1640,7 +1782,7 @@
   LLM_FUNCTIONS.forEach(bindLlmFunctionRoute);
   const resetVisualBtn=$("resetVisualBtn");
   if(resetVisualBtn) resetVisualBtn.addEventListener("click",()=>{
-    try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_show_memory_balls_important","bio_show_orb_legend","bio_show_emotion_rings","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
+    try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_show_memory_balls_important","bio_show_orb_legend","bio_show_autonomy_panel","bio_show_learning_panel","bio_show_chain_list","bio_show_emotion_rings","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
     try{ location.reload(); }catch(e){}
   });
   const selfSave=$("selfSaveBtn");
