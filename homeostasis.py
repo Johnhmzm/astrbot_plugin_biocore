@@ -79,7 +79,8 @@ def _drives(core: Any, body: dict, relationship: Any = None) -> dict[str, float]
     social = _core(core, "social", 0.55)
     safety = _clamp(1.0 - _core(core, "stress", 0.1))
     curiosity = _clamp(0.60 * (1.0 - _core(core, "boredom", 0.0)) +
-                       0.40 * _core(core, "novelty_need", 0.5))
+                       0.40 * _core(core, "novelty_need", 0.5) +
+                       0.10 * _core(core, "info_gap", 0.0))
     if isinstance(relationship, dict):
         state = relationship.get("state") if isinstance(relationship.get("state"), dict) else {}
         try:

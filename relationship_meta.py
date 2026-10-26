@@ -301,9 +301,9 @@ def attachment_profile(trajectory: Any) -> dict[str, float]:
 def refusal_protocol(state: Any) -> dict[str, Any]:
     """Coarse refusal mode from boundary pressure; behavior strategy stays elsewhere.
 
-    Test-only / no runtime wiring (BIO §4 item 2): no plugin caller reads this;
-    boundary_pressure and refusal_readiness remain snapshot state with no
-    behavior outlet.
+    Wired (G2/L9, 2026-10-26): BioCorePlugin._deterministic_hint calls this and
+    renders a bounded refuse=negotiate|decline token (<=140 chars, no LLM); it
+    is a posture token, not a gate that decides whether to reply.
     """
     d = state if isinstance(state, dict) else {}
     pressure = _clamp(d.get("boundary_pressure", 0.0))
