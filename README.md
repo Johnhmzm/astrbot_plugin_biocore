@@ -1,12 +1,14 @@
-# BioCore · 生物情绪核心
+# BioCore · 拟态生物情绪核心
 
-`BioCore` 是面向 AstrBot 的**本地生物情绪层**：读取当前人设并维护数值档案，在对话过程中维护情感、压力、能量、信任、记忆事件和关系轨迹，再由解释层转成简短的表达意图注入 LLM 请求。
+`BioCore` 是面向 AstrBot 的**本地拟态生物情绪核心**：读取当前人设并维护数值档案，在对话过程中模拟情感、压力、能量、信任、记忆事件和关系轨迹，再由解释层转成简短的表达意图注入 LLM 请求。
+
+这里的“拟态”指**行为层模拟**：模仿生物情绪系统的功能结构，不声称复刻神经元、内分泌或意识。
 
 它不生成回复、不替换人设、不改写聊天历史，也不代表临床诊断、真实意识或现实因果；它只是一个可观察、可调整的本地状态与表达提示层。
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
-- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.96`）
+- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.97`）
 - 作者：`Johnhmzm`
 - GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
 - Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
@@ -14,10 +16,56 @@
 
 ![BioCore Dashboard](preview.png)
 
+## 拟态机制：模仿生物的什么
+
+BioCore 不是生物本体。这里的“拟态”是**行为/功能层模拟**：用可计算状态模仿生物情绪系统的功能结构，而不是复刻神经元、内分泌或意识。
+
+### 模仿的生物行为
+
+- 情绪产生与变化：事件触发评价，形成核心情感与情绪频谱。
+- 情绪衰减与恢复：情绪回到基线，压力与能量参与恢复。
+- 压力反应与稳态调节：偏离设定点后产生需求、压力和恢复过程。
+- 趋近、回避与停顿：状态转成表达/行动意图。
+- 记忆巩固与遗忘：重要事件被归档、总结，边缘细节会淡出。
+- 回忆与再激活：记忆可被召回并影响当前状态。
+- 关系建立、冲突与修复：信任、亲近、冲突、修复形成轨迹。
+- 依恋与缺席反应：对重要对象的稳定联系和缺失感。
+- 自我叙事：把经历整合成对“我是谁”的连续描述。
+
+### 机制映射
+
+| 生物行为 / 机制 | BioCore 的拟态实现 | 边界 |
+|---|---|---|
+| 核心情感 | PAD：valence / arousal / dominance，加 social / trust / stress / energy | 不是神经递质或脑区活动 |
+| 认知评价 | appraisal：novelty / goal relevance / coping / agency | 不是大脑成像或临床评估 |
+| 情绪频谱 | emotion / compound + 强度与不确定性 | 不是临床情绪量表 |
+| 情绪衰减 | decay / baseline / 稳态回归 | 参数化近似，不是真实生理曲线 |
+| 压力与恢复 | stress / energy / allostasis | 不是内分泌或免疫系统 |
+| 内感受与驱动 | drives / set-points / need pyramid | 不是真实饥饿、疲劳或疼痛 |
+| 记忆巩固 | importance / event summary / archive | 不是 engram 或突触固化 |
+| 遗忘 | peripheral forgetting / decay | 不是真实神经遗忘 |
+| 回忆 | memory index / recall count / 时间线 | 不是海马体检索 |
+| 关系 | trust / closeness / conflict / repair | 行为代理，不是依恋理论本体 |
+| 社会世界 | destination / social map | 不是心理理论或社会认知本体 |
+| 自我模型 | self_model / narrative | 不是意识或自由意志 |
+| 表达倾向 | 解释层 → 简短表达意图 | 不生成回复、不改写历史 |
+
+### 不模仿的部分
+
+```text
+不模仿神经元放电
+不模仿内分泌/激素
+不模仿真实记忆痕迹（engram）
+不声称意识、自由意志或临床情绪
+不声称真实因果
+```
+
+一句话：BioCore 模仿的是生物情绪系统的**功能结构**与**可观察行为**，用可计算状态近似，不声称生物本体。
+
 ## 功能
 
 - **一次性人设编译（可选）**：开启 `persona_compile` 且配置 Provider 时，首次运行读取 AstrBot 当前人设并编译为数值档案缓存，之后不再每轮解析人设文本；该 LLM 功能默认关闭，关闭时保留已有/默认档案。
-- **本地生物状态**：维护 valence / arousal / dominance / social / trust / stress / energy 等连续状态，并带衰减、稳态和基础动力学。状态更新是确定性的，LLM 不直接写状态。
+- **拟态状态**：维护 valence / arousal / dominance / social / trust / stress / energy 等连续状态，并带衰减、稳态和基础动力学。状态更新是确定性的，LLM 不直接写状态。
 - **解释层**：唯一负责把数值状态转成 LLM 可读的紧凑表达意图（`[BC]`）；回复中的模型输出由解释层校验后再交给生物层。
 - **记忆与事件**：本地记忆索引、记忆巩固、重要事件归档、事件总结和事件时间线；支持旧数据兼容与回退。
 - **关系与用户模型**：按会话/用户维护信任、亲近、冲突、修复等关系轨迹，以及自我模型摘要。
@@ -28,7 +76,7 @@
 
 ### 从 AstrBot 插件市场安装
 
-上架后，在 AstrBot WebUI → 插件市场搜索 **BioCore 生物情绪核心** 并安装。
+上架后，在 AstrBot WebUI → 插件市场搜索 **BioCore 拟态生物情绪核心** 并安装。
 
 ### 从 GitHub 安装
 
@@ -135,7 +183,7 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 
 ## 更新日志
 
-- 当前版本：`1.2.96`（以 `metadata.yaml` 为准）
+- 当前版本：`1.2.97`（以 `metadata.yaml` 为准）
 - 详细历史见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)
 - 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
 
