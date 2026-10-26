@@ -31,14 +31,27 @@
       spectrum_probs:[{key:"joy",name:"快乐",p:.62},{key:"contentment",name:"满足",p:.23},{key:"amusement",name:"好笑",p:.15}],
       sec:{relevance:.72,implication:.41,coping_potential:.58,normative:.66},
       spectrum_calibration:{samples:18,families:2,calibrated:3},
-      goals:[{key:"relationship",name:"和重要的人保持亲近",horizon:"long",progress:.5}], goal_conflict:[], autobiography:[{ts:1793001000,title:"对方的承诺",meaning:"确认自己没有被当成工具"}], regulation_stats:{} },
-      intent:{emotion:"joy",intensity:"high",need:"share",intent:"approach",expression:"open",plan:"顺着分享接话",compound:"亲近",regulation:"none",spectrum:[{key:"joy",name:"快乐",distance:.18}]} }],
+      circadian_alertness:.62, allostatic_load:.18, boundary_pressure:.12, refusal_readiness:.08,
+      homeostasis:{L_int:.14, readiness:.71, tick:42, setpoint_ticks:9,
+        body:{energy:.74,fatigue:.22,hydration:.68,warmth:.63},
+        drives:{energy:.72,social:.66,safety:.58,curiosity:.61},
+        set_points:{energy:.68,social:.60,safety:.60,curiosity:.55},
+        need_pyramid:{score:.19,dominant:"belonging",deficits:{physiological:.10,safety:.12,belonging:.26,esteem:.14,self_actualization:.20}},
+        interoception:{signal:.67,label:"steady",expression_hint:"normal"},
+        action:{mode:"engage",reason:"ready",strength:.64}},
+      goals:[{key:"relationship",name:"和重要的人保持亲近",horizon:"long",progress:.5}], goal_conflict:[], autobiography:[{ts:1793001000,title:"对方的承诺",meaning:"确认自己没有被当成工具"}],
+      regulation_stats:{reappraise:{uses:6,success:5,stress_delta:-.14,cost:.018,last_update:1793002000}} },
+      intent:{emotion:"joy",intensity:"high",need:"share",intent:"approach",expression:"open",plan:"顺着分享接话",compound:"亲近",regulation:"none",spectrum:[{key:"joy",name:"快乐",distance:.18}]},
+      working_set:{capacity:8,count:3,ids:["a1b2c3d4e5f6","f6e5d4c3b2a1","998877665544"],ttl_seconds:7200} }],
     events:[
       {title:"对方的承诺", event:"对方说以后会先询问意愿，并记得说过的话。", event_key:"对方-承诺-先询问", session:"demo:session", ts:1793000600, time_span:{start_ts:1793000000,end_ts:1793000900}, importance:.86, centrality:.82, central_details:"对方主动承诺先询问意愿，而不是替自己做决定。", peripheral_details:"当时是在走廊里说的。", peripheral_retention:.18, peripheral_forgotten:false, meaning_to_her:"确认自己没有被当成工具。", reflection:"被认真问一句就足够安心。", confidence:.93, modalities:["语音"], source_check:{status:"ok"}},
       {title:"未说出口的担心", event:"在出发前犹豫了一下，还是把担心咽了回去。", event_key:"自己-犹豫-咽下担心", session:"demo:session", ts:1793001500, time_span:{start_ts:1793001400,end_ts:1793001800}, importance:.63, centrality:.55, central_details:"没有说出口的担心。", peripheral_details:"", peripheral_retention:.05, peripheral_forgotten:true, meaning_to_her:"不想让对方担心。", reflection:"习惯把难受藏起来。", confidence:.81, modalities:[], source_check:{status:"ok"}},
       {title:"走廊里的小烟花", event:"和同伴在走廊里放了一支小烟花。", event_key:"同伴-烟花-放松", session:"demo:session", ts:1793002100, time_span:{start_ts:1793001900,end_ts:1793002200}, importance:.66, centrality:.48, central_details:"难得的放松。", peripheral_details:"烟花是蓝色的。", peripheral_retention:.52, peripheral_forgotten:false, meaning_to_her:"普通日子也值得庆祝。", reflection:"快乐要分给身边的人。", confidence:.7, modalities:["图片"], source_check:{status:"weak"}}
     ],
     insights:[{insight:"被认真询问意愿，会更愿意承担任务。"}],
+    last_memory_meta:{count:3,confidence:.66,answer_confidence:.58,gate:"none",abstain:false,conflicts:1,consistency:.72,tiers:{hot:1,warm:2},calibration_delta:0.012,calibration_entries:2},
+    last_memory_trace:{count:3,valence:.18,stress_delta:.02,entry_ids:["a1b2c3d4e5f6"]},
+    last_strategy_hint:"refuse=negotiate",
     memory_index:[
       {session:"demo:session", entries:[
         {id:"a1b2c3d4e5f6", text:"对方说以后会先询问意愿，并记得说过的话。", role:"user", ts:1793000600, importance:.86, hits:4, memory_source:"direct", memory_confidence:.93, memory_tier:"hot", conflict:false, last_write_op:"UPDATE", previous_versions:["对方说以后会先问一句。"], summarized:false},
@@ -57,7 +70,8 @@
            {ts:1793002100,trust:.57,closeness:.61,conflict:.22,repair:.18,predictability:.74}
          ],
          transactive_map:{"老板":6,"担心":3,"承诺":2},
-         destination_map:{"demo-user":{sender_id:"demo-user",sender_name:"重要的人",count:3,last_ts:1793002100,latest_text:"对方说以后会先询问意愿。"}}
+         destination_map:{"demo-user":{sender_id:"demo-user",sender_name:"重要的人",count:3,last_ts:1793002100,latest_text:"对方说以后会先询问意愿。"}},
+         calibration:{sources:{direct:{n:6,brier_sum:.72,brier:.12,ewma:.10},inferred:{n:2,brier_sum:.68,brier:.34,ewma:.31}}}
        }}
     ]
   };
@@ -82,9 +96,13 @@
   const map={...EMOTION_ZH,approach:"靠近",hold:"停住",withdraw:"退开",far:"远",near:"近",soft:"轻",blunt:"直",playful:"俏皮",quiet:"安静",short:"短",normal:"正常",open:"展开",low:"低",high:"高",calm:"松",tense:"紧",overloaded:"过载",be_heard:"被听见",space:"空间",vent:"吐槽",share:"分享",talk:"说话"};
   // task-58: a missing key must never leak raw English into the UI. Unknown
   // values render as 未知情绪; non-emotion enums stay translated below.
-  const mapExtra={none:"无",closed:"闭",restrained:"克制",seek_comfort:"找安慰",reappraise:"换个角度",suppress:"压住",avoid:"回避",express:"说出",distraction:"分散注意"};
+  // Regulation strategies are enums, not emotions: keep their own table and use
+  // _regLabel() for display so an unknown/new strategy key stays readable as its
+  // raw token instead of leaking "未知情绪". Batch4 B2 adds label_emotion (#7).
+  const mapExtra={none:"无",closed:"闭",restrained:"克制",seek_comfort:"找安慰",reappraise:"换个角度",suppress:"压住",avoid:"回避",express:"说出",distraction:"分散注意",label_emotion:"命名情绪"};
   Object.assign(map,mapExtra);
   const L=(v)=>{const k=String(v==null?"":v);if(Object.prototype.hasOwnProperty.call(map,k))return map[k];return UNKNOWN_EMOTION;};
+  function _regLabel(v){const k=String(v==null?"":v).trim();if(!k)return "-";return Object.prototype.hasOwnProperty.call(mapExtra,k)?mapExtra[k]:k;}
   function emotionZh(v){const k=String(v==null?"":v).trim().toLowerCase();if(!k)return UNKNOWN_EMOTION;return Object.prototype.hasOwnProperty.call(EMOTION_ZH,k)?EMOTION_ZH[k]:UNKNOWN_EMOTION;}
   function emotionLabel(v){const k=String(v==null?"":v).trim();return k?emotionZh(k):"—";}
   // task-64: hidden/composite emotion layer (0-3 short Chinese labels).
@@ -106,6 +124,52 @@
   const fmt=(v,d=2)=>(Number(v)>=0?"+":"")+Number(v||0).toFixed(d);
   const esc=(s)=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const shortSession=(v)=>{const t=String(v||"");return t.length>36?t.slice(0,33)+"…":t;};
+  // Read-only window constants mirrored from the plugin (dashboard never writes
+  // the bio layer; these only label numbers the server already computed).
+  const REG_HALF_LIFE_DAYS=10;        // main.REGULATION_STATS_HALF_LIFE_DAYS (G4)
+  const MEM_HALF_LIFE_DAYS=30;        // memory_meta.MEMORY_TEMPORAL_HALF_LIFE_DAYS (G7/G8/G11)
+  const MEM_IMPORTANCE_FLOOR=0.15;    // memory_meta.MEMORY_IMPORTANCE_FLOOR
+  const WORKING_SET_TTL_HOURS=2;      // memory_meta.WORKING_SET_TTL_SECONDS (G12)
+  const NEED_LABELS={physiological:"生理",safety:"安全",belonging:"归属",esteem:"尊重",self_actualization:"自我实现"};
+  const INTERO_LABELS={low:"偏低 / 想休息",steady:"平稳",high:"充足 / 活跃"};
+  // 0..1 exponential recency weight, same formula as the server half-life decay.
+  function _decayWeight(ageDays,halfLifeDays){
+    const age=Math.max(0,Number(ageDays)||0), half=Math.max(1e-6,Number(halfLifeDays)||MEM_HALF_LIFE_DAYS);
+    return Math.pow(0.5,age/half);
+  }
+  function _ageDaysFrom(ts){
+    const value=Number(ts||0);
+    if(!(value>0)) return 0;
+    return Math.max(0,(Date.now()/1000-value)/86400);
+  }
+  // G4: recency-weighted regulation score (mirrors BioCore._regulation_rate).
+  function _regWeightedScore(st,nowMs){
+    const s=(st&&typeof st==="object")?st:{};
+    const uses=Number(s.uses||0);
+    if(!(uses>0)) return null;
+    const success=Number(s.success||0), cost=Number(s.cost||0);
+    const score=success/uses-0.05*(cost/uses);
+    const last=Number(s.last_update||0);
+    if(!(last>0)) return score;
+    const ageDays=Math.max(0,((nowMs||Date.now())/1000-last)/86400);
+    return score*_decayWeight(ageDays,REG_HALF_LIFE_DAYS);
+  }
+  // G15: reflection nodes older than the TTL are hidden server-side; report how
+  // many were hidden instead of letting "COUNT" silently disagree with ROOTS.
+  function _treeHiddenCount(tree){
+    const t=(tree&&typeof tree==="object")?tree:{};
+    const total=Number(t.count||0);
+    const shown=Array.isArray(t.roots)?t.roots.length:0;
+    return Math.max(0,total-shown);
+  }
+  function _needLabel(key){
+    const k=String(key||"").trim();
+    return NEED_LABELS[k]||k||"—";
+  }
+  function _interoLabel(label){
+    const k=String(label||"").trim();
+    return INTERO_LABELS[k]||k||"—";
+  }
   // AstrBot session keys look like "default:FriendMessage:2396952936"
   // (event archive) or "default_FriendMessage_2396952936" (memory file stem).
   // Render them as Chinese labels: 私聊 · <名字> / 群聊 · <群号>.
@@ -701,34 +765,9 @@
         last_recall:Number(e.last_recall||e.ts||0), summarized:true, role:"event"};
     }).filter(Boolean).sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0)).slice(0,10);
   }
-  // Only important memories form balls by default: importance >= 0.60 or
-  // self-defining (identity-central) memory. Toggle restores "show all".
-  const MEMORY_BALL_IMPORTANCE=0.60;
-  function importantMemoryBalls(list){
-    if(!Array.isArray(list)) return [];
-    if(!visual.memoryBallsImportant) return list;
-    return list.filter(ev=>ev&&(ev._kind==="event"||ev.self_defining===true||Number(ev.importance||0)>=MEMORY_BALL_IMPORTANCE));
-  }
-  function updateOrbLegend(){
-    if(!$("orbMemLegend")) return;
-    if(!visual.memoryNodes){
-      $("orbMemLegend").textContent="中心球 = 当前情绪球（只有一个）· 记忆节点已关闭，可在 设置 → 球体图层 开启";
-      return;
-    }
-    const st=window.__biocoreState||{};
-    const all=Array.isArray(st.memories)?st.memories:[];
-    const shown=importantMemoryBalls(all).slice(0,10);
-    if(!shown.length){
-      $("orbMemLegend").textContent="还没有总结后的球：记忆巩固/总结后生成记忆球；归档事件会作为事件总结球显示";
-      return;
-    }
-    if(shown.every(b=>b._kind==="event")){
-      $("orbMemLegend").textContent="事件总结球 ×"+shown.length+"：已归档的重要事件（如“深夜表白澄清”）· 球大小=重要度 · 记忆总结后会追加记忆球 · 悬停查看";
-      return;
-    }
-    const suffix=visual.memoryBallsImportant?"总结后重要记忆（重要度≥0.60 或自指）":"总结后记忆（最多 10）";
-    $("orbMemLegend").textContent="记忆球 ×"+shown.length+"："+suffix+" · 球大小=重要度 · 外环数=情绪强度 · 悬停查看";
-  }
+  // The important-memory ball filter (importance >= 0.60 or self-defining)
+  // lives in orb.js, where the balls are actually drawn; app.js no longer
+  // duplicates it now that the under-orb legend row is gone.
   function normMemEntry(e){
     const src=(e&&typeof e==="object")?e:{};
     const conf=src.memory_confidence==null?(src.confidence==null?null:Number(src.confidence)):Number(src.memory_confidence);
@@ -743,7 +782,13 @@
       versions:versions, summarized:!!src.summarized,
       sensitive:!!src.sensitive, poison:!!src.poison_risk,
       links:Number(src.links||0), scope:String(src.scope||""),
-      verification:String(src.verification||"")};
+      verification:String(src.verification||""),
+      // G7/G8 read-time decay: prefer server-computed effective values; if the
+      // backend does not expose them yet, derive only when the exact anchor
+      // (last_recall) and the assoc map are present, never by guessing.
+      effectiveImportance:Number(src.effective_importance==null?NaN:Number(src.effective_importance)),
+      effectiveAssoc:Number(src.effective_assoc==null?NaN:Number(src.effective_assoc)),
+      lastRecall:Number(src.last_recall||0)};
   }
   function renderMemoryMeta(){
     const sel=$("memSessionFilter"), list=$("memEntryList"), empty=$("memEmpty"),
@@ -781,8 +826,9 @@
     });
     if(stats){
       const trace=(data&&Array.isArray(data.last_cause_trace))?data.last_cause_trace:[];
-      const hint=String((data&&data.last_strategy_hint)||"").slice(0,60);
-      stats.textContent="元数据："+total+" 条 · 低置信 "+low+" · 冲突 "+conflicts+" · 已总结 "+summarized+" · 墓碑 "+tombstones+" · trace "+trace.length+(hint?(" · hint "+hint):"") + "。";
+      // The strategy hint moved to 活动会话 → 记忆元数据 (full 140-char bound +
+      // posture decode); this line keeps only the compact counts.
+      stats.textContent="元数据："+total+" 条 · 低置信 "+low+" · 冲突 "+conflicts+" · 已总结 "+summarized+" · 墓碑 "+tombstones+" · trace "+trace.length+"（策略提示见 记忆元数据）。";
     }
     // task-55: the dropdown is the canonical union (memory + events + live cores
     // + relationships), and one canonical choice merges every ":"/"_" raw variant
@@ -845,9 +891,20 @@
         e.sensitive?'<span class="mem-flag mem-flag-warn">敏感</span>':"",
         e.poison?'<span class="mem-flag mem-flag-danger">注入风险</span>':"",
         e.verification==="verified"?'<span class="mem-flag mem-flag-ok">已验证</span>':"",
-        e.links>0?'<span class="mem-flag mem-flag-ok">关联 '+e.links+'</span>':"",
+        e.links>0?'<span class="mem-flag mem-flag-ok" title="存储的 links 条数；检索用 30 天半衰的共召回有效值">关联 '+e.links+'</span>':"",
         e.scope==="session"?'<span class="mem-flag">会话内</span>':""
       ].filter(Boolean).join("");
+      // Read-only effective value (G7/G8): server value first, else recompute
+      // from the stored anchor only when the exact fields are present.
+      let impText="存储 "+Number(e.importance||0).toFixed(2);
+      let effImp=Number.isFinite(e.effectiveImportance)?e.effectiveImportance:NaN;
+      if(!Number.isFinite(effImp)&&e.lastRecall>0){
+        const age=_ageDaysFrom(e.lastRecall);
+        effImp=Math.max(MEM_IMPORTANCE_FLOOR,Math.min(1,Number(e.importance||0.5)*_decayWeight(age,MEM_HALF_LIFE_DAYS)));
+      }
+      if(Number.isFinite(effImp)) impText+=" → 有效 "+Number(effImp).toFixed(2);
+      let linkText="关联 "+Number(e.links||0)+" 条";
+      if(Number.isFinite(e.effectiveAssoc)) linkText+="（有效 "+Number(e.effectiveAssoc).toFixed(0)+"）";
       const delLabel=armed&&armed.op==="delete"?"再点确认删除":"删除";
       const rbLabel=armed&&armed.op==="rollback"?"再点确认回滚":"回滚";
       const rbDisabled=e.versions>0?"":' disabled title="没有上一版本"';
@@ -862,7 +919,8 @@
         '<p class="mem-text">'+esc(_clipText(e.text||"",320))+'</p>'+
         '<div class="mem-meta-row">'+
           '<div class="mem-conf"><small>置信度</small><div class="mem-conf-track"><i style="width:'+confW.toFixed(0)+'%"></i></div><b>'+esc(confText)+'</b></div>'+
-          '<small>重要度 '+Number(e.importance||0).toFixed(2)+'</small>'+
+          '<small title="存储值；检索按 30 天半衰、下限 0.15 的有效重要度排序">'+esc(impText)+'</small>'+
+          '<small title="存储的 links 条数（未衰减）">'+esc(linkText)+'</small>'+
           '<small>召回 '+Number(e.hits||0)+' 次</small>'+
           '<small>写入 '+esc(e.lastOp||"—")+'</small>'+
         '</div>'+
@@ -1086,6 +1144,18 @@
       (Array.isArray(belief.intentions)?belief.intentions:[]).map(x=>"意图:"+String(x))
     ).slice(0,3);
     const beliefHtml=beliefItems.length?beliefItems.map(x=>'<span class="chip">'+esc(String(x).slice(0,28))+'</span>').join(""):'<span class="empty-mini">暂无</span>';
+    // G1/L12: calibration is record-only (EWMA/Brier per evidence source). It is
+    // consumed only as a bounded (±0.05) recall-confidence nudge; it never
+    // rewrites trust and never gates a reply.
+    const calSources=(rel.calibration&&typeof rel.calibration==="object"&&rel.calibration.sources&&typeof rel.calibration.sources==="object")
+      ?Object.entries(rel.calibration.sources):[];
+    const calHtml=calSources.length?calSources.sort((a,b)=>Number((b[1]||{}).n||0)-Number((a[1]||{}).n||0)).slice(0,6).map(x=>{
+      const st=(x[1]&&typeof x[1]==="object")?x[1]:{};
+      const ewma=Number(st.ewma||0);
+      // ≤0.25 is at/better than the always-0.5 reference error -> +delta.
+      const dir=ewma<=0.25?"+":"-";
+      return '<span class="chip" title="EWMA/Brier 误差（越小越好）；只用于召回置信度 ≤±0.05">'+esc(String(x[0]))+' · 误差 '+ewma.toFixed(2)+' · n'+Number(st.n||0)+' · '+dir+'≤0.05</span>';
+    }).join(""):'<span class="empty-mini">暂无校准样本（只在记忆冲突时记录）</span>';
     const repPhase=String(((rel.repair_state||{}).phase)||"stable");
     const commit=Number(rel.commitment||0), invest=Number(rel.investment||0);
     const name=String(cur.sender_name||cur.sender_id||"用户");
@@ -1097,7 +1167,8 @@
       '<div class="rel-maps"><div><small>常谈主题 / TRANSACTIVE</small><div class="chips">'+transHtml+'</div></div><div><small>信息来源 / DESTINATION</small><div class="chips">'+destHtml+'</div></div></div>'+
       '<div class="rel-maps"><div><small>共同记忆 / WE-MEMORY</small><div class="chips">'+weHtml+'</div></div><div><small>里程碑 / MILESTONES</small><div class="chips">'+markHtml+'</div></div></div>'+
       '<div class="rel-maps"><div><small>关系印象 / ANNOTATIONS</small><div class="chips">'+annHtml+'</div></div><div><small>用户信念 / BELIEF STATE（只读）</small><div class="chips">'+beliefHtml+'</div></div></div>'+
-      '<div class="rel-maps"><div><small>承诺 '+(commit).toFixed(2)+' · 投资 '+(invest).toFixed(2)+' · 修复 '+esc(repPhase)+' · 回归 '+esc(String(absence.bucket||"same_day"))+'</small><div class="chips"><span class="chip">依恋 安全'+Number(attach.safe||0).toFixed(2)+'</span><span class="chip">焦虑'+Number(attach.anxious||0).toFixed(2)+'</span><span class="chip">回避'+Number(attach.avoidant||0).toFixed(2)+'</span></div></div></div>'+
+      '<div class="rel-maps"><div><small>承诺 '+(commit).toFixed(2)+' · 投资 '+(invest).toFixed(2)+' · 修复 '+esc(repPhase)+' · 回归 '+esc(String(absence.bucket||"same_day"))+'</small><div class="chips"><span class="chip" title="只读投影，无行为出口">依恋（只读） 安全'+Number(attach.safe||0).toFixed(2)+'</span><span class="chip">焦虑'+Number(attach.anxious||0).toFixed(2)+'</span><span class="chip">回避'+Number(attach.avoidant||0).toFixed(2)+'</span></div></div></div>'+
+      '<div class="rel-maps"><div><small>CALIBRATION / 校准记录（只记录，不写 trust）</small><div class="chips">'+calHtml+'</div></div><div><small>稳态联动 / C6</small><div class="chips"><span class="chip">关系 → 稳态：一轮延迟</span><span class="chip">冲突 / 亲近只喂驱力</span></div></div></div>'+
       _relEventsHtml(cur)+
     '</div>';
   }
@@ -1190,7 +1261,8 @@
     if ($("tlPresent")) $("tlPresent").textContent = tl.present || "—";
     if ($("tlFuture")) $("tlFuture").innerHTML = (Array.isArray(tl.future) ? tl.future.slice(0, 5) : []).map(x => '<li>' + esc(x) + '</li>').join("") || '<li class="muted">—</li>';
     const tree = s.reflection_tree || { roots: [], count: 0 };
-    if ($("treeCount")) $("treeCount").textContent = "COUNT " + Number(tree.count || 0) + " · ROOTS " + ((Array.isArray(tree.roots) ? tree.roots : []).length);
+    const _hidden = _treeHiddenCount(tree);
+    if ($("treeCount")) $("treeCount").textContent = "COUNT " + Number(tree.count || 0) + " · ROOTS " + ((Array.isArray(tree.roots) ? tree.roots : []).length) + (_hidden ? (" · 隐藏 " + _hidden) : "");
     if ($("reflectionTree")) $("reflectionTree").innerHTML = renderTree(tree);
     const probs = Array.isArray(s.spectrum_probs) ? s.spectrum_probs.slice(0, 3) : [];
     if ($("spectrumProbs")) $("spectrumProbs").innerHTML = probs.length ? probs.map(x => {
@@ -1198,6 +1270,12 @@
       return '<div class="spec-row"><span>' + esc(x.name || x.key || "?") + '</span><div class="spec-track"><i style="width:' +
         pct(p) + '"></i></div><b>' + (p * 100).toFixed(1) + '%</b></div>';
     }).join("") : '<div class="empty-mini">光谱概率未生成。</div>';
+    const _specCal = (s.spectrum_calibration && typeof s.spectrum_calibration === "object") ? s.spectrum_calibration : null;
+    if ($("spectrumCalNote")) {
+      $("spectrumCalNote").textContent = _specCal
+        ? "光谱校准（仅本会话）：样本 " + Number(_specCal.samples || 0) + " · 情绪家族 " + Number(_specCal.families || 0) + " · 已校准原型 " + Number(_specCal.calibrated || 0) + "；样本不足时使用纯原型锚点，跨会话不共享。"
+        : "光谱校准：当前状态未提供 calibration（旧数据或尚未累积历史）；不会补算，也不写回。";
+    }
     const sec = s.sec || {};
     const secMap = [["relevance", "相关性"], ["implication", "影响"], ["coping_potential", "应对潜力"], ["normative", "规范一致"]];
     if ($("secGrid")) $("secGrid").innerHTML = secMap.map(pair => {
@@ -1205,6 +1283,76 @@
       return '<div class="sec-item"><small>' + pair[1] + '</small><b>' + value.toFixed(2) + '</b><div class="bar"><i style="width:' +
         pct(value) + '"></i></div></div>';
     }).join("");
+  }
+  // Read-only steady-state / posture projection (snapshot + page/status top level).
+  // Every value is display-only; nothing here can write the bio layer.
+  function renderSteadyState(s){
+    const body=(s&&s.homeostasis&&typeof s.homeostasis==="object")?s.homeostasis:{};
+    const top=(data&&typeof data==="object")?data:{};
+    const set=(id,value)=>{const el=$(id); if(el) el.textContent=value;};
+    const circ=(s&&s.circadian_alertness!=null)?s.circadian_alertness:top.circadian_alertness;
+    const allo=(s&&s.allostatic_load!=null)?s.allostatic_load:top.allostatic_load;
+    set("sCircadian",circ==null?"—":Number(circ).toFixed(2));
+    set("sAllostatic",allo==null?"—":Number(allo).toFixed(2));
+    set("sLint",body.L_int==null?"—":Number(body.L_int).toFixed(3));
+    set("sReadiness",body.readiness==null?"—":Number(body.readiness).toFixed(2));
+    const pyr=(body.need_pyramid&&typeof body.need_pyramid==="object")?body.need_pyramid:{};
+    set("sNeedDominant",pyr.dominant?_needLabel(pyr.dominant):"—");
+    const intero=(body.interoception&&typeof body.interoception==="object")?body.interoception:{};
+    set("sIntero",intero.label?(_interoLabel(intero.label)+(intero.signal==null?"":" "+Number(intero.signal).toFixed(2))):"—");
+    set("sBoundary",s&&s.boundary_pressure!=null?Number(s.boundary_pressure).toFixed(2):"—");
+    set("sRefusalLevel",s&&s.refusal_readiness!=null?Number(s.refusal_readiness).toFixed(2):"—");
+    const note=$("steadyNote");
+    if(note){
+      const hasBody=Object.keys(body).length>0;
+      note.textContent=hasBody
+        ? "只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。"
+        : "只读投影：当前状态文件没有 homeostasis（旧数据或该能力未开启），缺失项显示 —；不会补算，也不写回。";
+    }
+  }
+  // Read-only recall metadata: page/status.last_memory_meta + working_set +
+  // last_memory_trace + last_strategy_hint. Calibration and the refusal posture
+  // are labels only: they never act as reply gates here.
+  function renderRecallMeta(core){
+    const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
+    const trace=(data&&data.last_memory_trace&&typeof data.last_memory_trace==="object")?data.last_memory_trace:null;
+    const ws=(core&&core.working_set&&typeof core.working_set==="object")?core.working_set:null;
+    const set=(id,value)=>{const el=$(id); if(el) el.textContent=value;};
+    set("memRecallCount",meta?String(Number(meta.count||0)):"—");
+    set("memRecallConf",meta&&meta.confidence!=null?Number(meta.confidence).toFixed(2):"—");
+    set("memRecallAnswer",meta&&meta.answer_confidence!=null?Number(meta.answer_confidence).toFixed(2):"—");
+    set("memRecallGate",meta?String(meta.gate||"none"):"—");
+    set("memRecallConflicts",meta?String(Number(meta.conflicts||0)):"—");
+    const delta=meta&&meta.calibration_delta!=null?Number(meta.calibration_delta):null;
+    set("memCalibration",delta==null?"—":(delta>=0?"+":"")+delta.toFixed(3)+(meta&&meta.calibration_entries?(" ×"+Number(meta.calibration_entries)):""));
+    const ttlNote="（TTL "+WORKING_SET_TTL_HOURS+"h）";
+    if(!ws||ws.count==null) set("memWorkingSet","—");
+    else {
+      const ttl=Number(ws.ttl_seconds||0);
+      set("memWorkingSet",String(Number(ws.count||0))+"/"+String(Number(ws.capacity||0))+(ttl>0?(" · "+Math.round(ttl/3600)+"h"):" · 未提供 TTL"));
+    }
+    if(!trace) set("memTrace","—");
+    else set("memTrace",String(Number(trace.count||0))+" 条 · v "+(Number(trace.valence||0)>=0?"+":"")+Number(trace.valence||0).toFixed(2));
+    const noteEl=$("memRecallNote");
+    if(noteEl){
+      noteEl.textContent="召回元数据是只读投影：校准偏移只作用于本轮召回的置信度（≤±0.05，不写存储）；工作集"+ttlNote+"在召回时过滤，这里显示后端已给的原始列表。";
+    }
+    const hintEl=$("memHintNote");
+    if(hintEl){
+      const hint=String((data&&data.last_strategy_hint)||"");
+      if(!hint){
+        hintEl.textContent="策略提示：本轮没有生成提示（提示槽由 repair / 姿态 / 共情 / 记忆回执等择一占用）。";
+      } else {
+        const posture=_postureFromHint(hint);
+        hintEl.textContent="策略提示："+hint+(posture?("（"+posture+" 是姿态 token，不是 gate：不决定是否回复）"):"");
+      }
+    }
+  }
+  // Extract the G2/L9 refusal posture token from the bounded strategy hint.
+  function _postureFromHint(hint){
+    const m=String(hint||"").match(/refuse=(negotiate|decline)/);
+    if(!m) return "";
+    return m[1]==="decline"?"refuse=decline":"refuse=negotiate";
   }
   function render(){
     const core=(data.cores&&data.cores[0])||demo.cores[0];
@@ -1222,13 +1370,14 @@
       _ballPool=_ballPool.concat(_extra);
     }
     window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_ballPool};
-    updateOrbLegend();
     renderSessionMemory();
     renderMemoryMeta();
     renderRelationships();
     renderInsightHistory();
     syncInsightAuto();
     renderSelfPanels(s);
+    renderSteadyState(s);
+    renderRecallMeta(core);
     $("pluginBadge").textContent=data.enabled?"BioCore · ON":"BioCore · OFF";
     $("heroTitle").textContent=L(it.emotion)+" · "+L(it.intent);
     $("heroSub").textContent=it.need==="be_heard"?"现在更像是想被听见，不急着解决问题。":it.need==="space"?"现在更像是需要一点空间，不想被追问。":it.need==="share"?"现在更像是想分享，语气可以轻一点。":it.need==="vent"?"现在更像是想吐槽，先接住，不用讲道理。":"现在像是普通聊天，接不接都可以。";
@@ -1278,7 +1427,7 @@
     if($("iNovelty"))$("iNovelty").textContent=Number(_ap.novelty||0).toFixed(2);
     if($("iGoal"))$("iGoal").textContent=Number(_ap.goal_relevance||0).toFixed(2);
     if($("iCoping"))$("iCoping").textContent=Number(_ap.coping==null?.5:_ap.coping).toFixed(2);
-    if($("iReg"))$("iReg").textContent=it.regulation||"-";
+    if($("iReg"))$("iReg").textContent=_regLabel(it.regulation);
     if($("iSelf"))$("iSelf").textContent=(data.self_model&&data.self_model.who_am_i)?data.self_model.who_am_i:"未建立";
     if($("iNorm"))$("iNorm").textContent=Number(_ap.norm_compatibility||0.5).toFixed(2);
     if($("iExpected"))$("iExpected").textContent=Number(_ap.expectedness==null?1:_ap.expectedness).toFixed(2);
@@ -1300,7 +1449,17 @@
       narr.slice(-2).reverse().forEach(x=>{cards.push('<div class="event-card"><b>关系叙述</b><p>'+esc(String(x.text||""))+'</p></div>');});
       $("autoBioList").innerHTML=cards.length?cards.join(""):'<p class="api-note">还没有自传体记录。</p>';
     }
-    if($("regStats")){const rs=s.regulation_stats||{}; const ks=Object.keys(rs); $("regStats").innerHTML=ks.length?ks.map(k=>{const v=rs[k]||{};return '<div><small>'+esc(k)+'</small><b>'+Number(v.uses||0)+' / '+Number(v.success||0)+'</b></div>';}).join(""):'<div><small>regulation</small><b>暂无</b></div>';}
+    if($("regStats")){
+      const rs=s.regulation_stats||{}; const ks=Object.keys(rs); const nowMs=Date.now();
+      const rows=ks.map(k=>{
+        const v=rs[k]||{};
+        const weighted=_regWeightedScore(v,nowMs);
+        const wText=weighted==null?"no use":((weighted>=0?"+":"")+weighted.toFixed(2));
+        const ageText=Number(v.last_update||0)>0?(" · "+Math.round(_ageDaysFrom(v.last_update))+"d"):"";
+        return '<div title="'+esc(k)+'：存储值 uses/success/cost 只增不减；选择策略时用 10 天半衰加权分"><small>'+esc(_regLabel(k))+'</small><b>'+Number(v.uses||0)+' / '+Number(v.success||0)+' · 加权 '+wText+ageText+'</b></div>';
+      }).join("");
+      $("regStats").innerHTML=rows||'<div><small>regulation</small><b>暂无</b></div>';
+    }
     if($("personaBaseline")) $("personaBaseline").innerHTML=[
       ["baseline_v",p.baseline_v],["baseline_a",p.baseline_a],["energy",p.energy_baseline],
       ["social",p.social_baseline],["dominance",p.da_baseline],["recovery",p.recovery_rate]
@@ -1401,7 +1560,7 @@
   if($("swShowNodes"))$("swShowNodes").addEventListener("change",e=>{visual.nodes=e.target.checked;visualSave();});
   if($("swShowNodeLinks"))$("swShowNodeLinks").addEventListener("change",e=>{visual.nodeLinks=e.target.checked;visualSave();});
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();});
-  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();updateOrbLegend();});
+  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();});
   if($("swShowEmotionRings"))$("swShowEmotionRings").addEventListener("change",e=>{visual.emotionRings=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").addEventListener("change",e=>{visual.memoryRingStyle=e.target.value==="orbit"?"orbit":"solid";visualSave();});

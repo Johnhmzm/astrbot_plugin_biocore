@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261026-0247" />
+<link rel="stylesheet" href="./styles.css?v=20261026-1846" />
 </head>
 <body>
 <div class="shell">
@@ -62,7 +62,6 @@
             <span class="orb-tag ot-spike">sync <b id="orbSpike">--</b></span>
           </div>
           <div class="orb-meta"><b id="orbValence">+0.00</b><span>PAD valence</span></div>
-          <div class="orb-mem-legend" id="orbMemLegend">记忆球：仅重要记忆成球 · 球大小=重要度 · 外环数=情绪强度</div>
         </div>
       </div>
 
@@ -91,6 +90,20 @@
             <div><small>spiking rate</small><b id="sRate">--</b></div>
           </div>
         </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>稳态与姿态</h3><span class="hint">ALLOSTATIC / CIRCADIAN / POSTURE · READ-ONLY</span></div>
+        <div class="signal-grid" id="steadyGrid">
+          <div><small>circadian / 昼夜警觉</small><b id="sCircadian">--</b></div>
+          <div><small>allostatic / 稳态负荷</small><b id="sAllostatic">--</b></div>
+          <div><small>L_int / 内部失配</small><b id="sLint">--</b></div>
+          <div><small>readiness / 准备度</small><b id="sReadiness">--</b></div>
+          <div><small>need / 主导缺口</small><b id="sNeedDominant">--</b></div>
+          <div><small>intero / 内感受</small><b id="sIntero">--</b></div>
+          <div><small>boundary / 边界压力</small><b id="sBoundary">--</b></div>
+          <div><small>refusal_readiness / 拒绝就绪</small><b id="sRefusalLevel">--</b></div>
+        </div>
+        <p class="api-note" id="steadyNote">只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。</p>
       </div>
       <div class="panel signal-panel">
         <div class="panel-head"><h3>实时生物信号</h3><span class="hint">COMPOSITE · INTERFERENCE · DECAY</span></div>
@@ -261,16 +274,19 @@
       <div class="panel persona-tabpanel" data-persona-tab="autobio">
         <div class="panel-head"><h3>自传体时间线</h3><span class="hint">AUTOBIOGRAPHICAL SELF</span></div>
         <div id="autoBioList"></div>
+        <p class="api-note" id="regNote">调节策略统计：uses / success / cost 是累计存储值；选择策略时按 10 天半衰做近因加权（只读，不改存储）。</p>
         <div class="signal-grid" id="regStats"></div>
       </div>
       <div class="panel persona-tabpanel" data-persona-tab="tree">
         <div class="panel-head"><h3>长期洞察树</h3><span class="hint" id="treeCount">LONG-TERM INSIGHT TREE</span></div>
+        <p class="api-note" id="treeNote">节点超过 90 天会从视图隐藏（只读软遗忘，存储不删除）。</p>
         <div class="tree" id="reflectionTree"></div>
       </div>
       <div class="panel persona-tabpanel" data-persona-tab="spectrum">
         <div class="panel-head"><h3>光谱概率 / SEC</h3><span class="hint">COWEN PROTOTYPES · SEC</span></div>
         <div class="spec-list" id="spectrumProbs"></div>
         <div class="sec-grid" id="secGrid"></div>
+        <p class="api-note" id="spectrumCalNote">光谱校准：仅本会话历史（跨会话不共享）；样本不足时使用纯原型锚点。</p>
       </div>
       <div class="notice">人设文本留在 AstrBot。这里只展示数值倾向，不写记忆、不改身份。</div>
     </section>
@@ -305,7 +321,20 @@
           <span class="mem-legend-tag">来源：用户直述 / 图片语音 / 转述 / 检索 / 推断 / 未知</span>
           <span class="mem-legend-tag">层级：HOT / WARM / COLD</span>
           <span class="mem-legend-tag">删除 = 软删除并保留墓碑</span>
+          <span class="mem-legend-tag">重要度 / 关联为存储值，检索按 30 天半衰有效值</span>
         </div>
+        <div class="signal-grid" id="memRecallGrid">
+          <div><small>recall / 召回条数</small><b id="memRecallCount">--</b></div>
+          <div><small>confidence / 平均置信</small><b id="memRecallConf">--</b></div>
+          <div><small>answer / 答案置信</small><b id="memRecallAnswer">--</b></div>
+          <div><small>gate / 弃权门</small><b id="memRecallGate">--</b></div>
+          <div><small>calibration / 校准偏移</small><b id="memCalibration">--</b></div>
+          <div><small>working_set / 工作集</small><b id="memWorkingSet">--</b></div>
+          <div><small>trace / 记忆痕迹</small><b id="memTrace">--</b></div>
+          <div><small>conflicts / 冲突条数</small><b id="memRecallConflicts">--</b></div>
+        </div>
+        <p class="api-note" id="memHintNote">策略提示：--</p>
+        <p class="api-note" id="memRecallNote">召回元数据是只读投影：校准偏移只作用于本轮召回的置信度（≤±0.05，不写存储）；工作集 TTL 2 小时在召回时过滤，这里显示后端已给的原始列表。</p>
         <p class="api-note" id="memEmpty">还没有可展示的记忆条目。</p>
         <div id="memEntryList"></div>
         <div class="mem-tombstones">
@@ -330,6 +359,7 @@
           <label><span>用户</span><select id="relUserFilter" class="event-session"></select></label>
           <span class="hint" id="relStateHint">关系状态与最近轨迹</span>
         </div>
+        <p class="api-note" id="relNote">只读关系投影：calibration 只记录（EWMA/Brier），并只用于召回置信度；关系 → 稳态（C6）有一轮延迟。</p>
         <p class="api-note" id="relEmpty">还没有关系记录。</p>
         <div id="relBody"></div>
       </div>
@@ -470,7 +500,7 @@
         <div class="setting-row"><div><b>粒子连线</b><small>连接同环相邻粒子，仅 attention 高或悬停球体时淡入。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪节点</b><small>与情绪环表达重叠，默认关闭；需要调试时再开启。</small></div><label class="switch"><input type="checkbox" id="swShowNodes" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪影响线</b><small>情绪节点之间的淡线，默认关闭。</small></div><label class="switch"><input type="checkbox" id="swShowNodeLinks" checked><span></span></label></div>
-        <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>默认只显示“事件总结球”：已归档的重要事件（如“深夜表白澄清”），通常只有一个；记忆经过巩固/总结后才会追加记忆球（最多 10 个）；普通每轮闲聊不成球。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
+        <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>默认只显示“事件总结球”：已归档的重要事件，通常只有一个；记忆经过巩固/总结后才会追加记忆球（最多 10 个）；普通每轮闲聊不成球。</small></div><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div>
         <div class="setting-row"><div><b>只显示重要记忆球</b><small>默认开启：只有重要度≥0.60 或“自指记忆”才成球（普通闲聊/低重要度记忆不成球）；关闭后最多显示 10 条记忆球。</small></div><label class="switch"><input type="checkbox" id="swMemoryBallsImportant" checked><span></span></label></div>
         <div class="setting-row"><div><b>情绪强度环</b><small>球体外的虚线环数量随情绪强度（arousal + |valence| + 控制感偏离）变化，1–4 圈；越强圈越多。</small></div><label class="switch"><input type="checkbox" id="swShowEmotionRings" checked><span></span></label></div>
         <div class="setting-row"><div><b>恢复默认显示</b><small>清除本地可视化开关缓存并刷新页面（不影响后端数据）。</small></div><button type="button" class="btn mini" id="resetVisualBtn">恢复默认显示</button></div>
@@ -504,5 +534,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261026-0247"></script><script src="./app.js?v=20261026-0247"></script><script src="./orb.js?v=20261026-0247"></script>
+<script src="./orb_math.js?v=20261026-1846"></script><script src="./app.js?v=20261026-1846"></script><script src="./orb.js?v=20261026-1846"></script>
 </body></html>
