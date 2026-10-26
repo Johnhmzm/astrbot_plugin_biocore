@@ -305,7 +305,7 @@
       localStorage.setItem("bio_vis_defaults_v3","1");
     }
   } catch (e) {}
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed",memoryBallGravity:storeGet("bio_memory_ball_gravity","1")!=="0"};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed",memoryBallGravity:storeGet("bio_memory_ball_gravity","1")!=="0",orbLegend:storeGet("bio_show_orb_legend","1")!=="0"};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -765,9 +765,43 @@
         last_recall:Number(e.last_recall||e.ts||0), summarized:true, role:"event"};
     }).filter(Boolean).sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0)).slice(0,10);
   }
-  // The important-memory ball filter (importance >= 0.60 or self-defining)
-  // lives in orb.js, where the balls are actually drawn; app.js no longer
-  // duplicates it now that the under-orb legend row is gone.
+  // Only important memories form balls by default: importance >= 0.60 or
+  // self-defining (identity-central) memory. The toggle restores "show all".
+  const MEMORY_BALL_IMPORTANCE=0.60;
+  function importantMemoryBalls(list){
+    if(!Array.isArray(list)) return [];
+    if(!visual.memoryBallsImportant) return list;
+    return list.filter(ev=>ev&&(ev._kind==="event"||ev.self_defining===true||Number(ev.importance||0)>=MEMORY_BALL_IMPORTANCE));
+  }
+  // Read-only legend row under the orb. visual.orbLegend (设置 → 球体图层) hides
+  // it entirely; otherwise it explains what the balls are and what size means.
+  function updateOrbLegend(){
+    const el=$("orbMemLegend");
+    if(!el) return;
+    if(!visual.orbLegend){
+      el.textContent="";
+      el.hidden=true;
+      return;
+    }
+    el.hidden=false;
+    if(!visual.memoryNodes){
+      el.textContent="中心球 = 当前情绪球（只有一个）· 记忆节点已关闭，可在 设置 → 球体图层 开启";
+      return;
+    }
+    const st=window.__biocoreState||{};
+    const all=Array.isArray(st.memories)?st.memories:[];
+    const shown=importantMemoryBalls(all).slice(0,10);
+    if(!shown.length){
+      el.textContent="还没有总结后的球：记忆巩固/总结后生成记忆球；归档事件会作为事件总结球显示";
+      return;
+    }
+    if(shown.every(b=>b._kind==="event")){
+      el.textContent="事件总结球 ×"+shown.length+"：已归档的重要事件 · 球大小=重要度 · 记忆总结后会追加记忆球 · 悬停查看";
+      return;
+    }
+    const suffix=visual.memoryBallsImportant?"总结后重要记忆（重要度≥0.60 或自指）":"总结后记忆（最多 10）";
+    el.textContent="记忆球 ×"+shown.length+"："+suffix+" · 球大小=重要度 · 外环数=情绪强度 · 悬停查看";
+  }
   function normMemEntry(e){
     const src=(e&&typeof e==="object")?e:{};
     const conf=src.memory_confidence==null?(src.confidence==null?null:Number(src.confidence)):Number(src.memory_confidence);
@@ -1370,6 +1404,7 @@
       _ballPool=_ballPool.concat(_extra);
     }
     window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_ballPool};
+    updateOrbLegend();
     renderSessionMemory();
     renderMemoryMeta();
     renderRelationships();
@@ -1537,7 +1572,7 @@
     $("crumbView").textContent=names[name]||name;
   }
   document.querySelectorAll(".nav-item").forEach(a=>a.addEventListener("click",()=>switchView(a.dataset.view)));
-  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);storeSet("bio_memory_ball_gravity",visual.memoryBallGravity?"1":"0");if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
+  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);storeSet("bio_memory_ball_gravity",visual.memoryBallGravity?"1":"0");storeSet("bio_show_orb_legend",visual.orbLegend?"1":"0");if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
   $("swShowNoise").checked=visual.noise; $("swShowEcho").checked=visual.echo; $("swShowRipple").checked=visual.ripple;
   if($("swShowDominance"))$("swShowDominance").checked=visual.dominance;
   if($("swShowSocial"))$("swShowSocial").checked=visual.social;
@@ -1546,6 +1581,7 @@
   if($("swShowNodeLinks"))$("swShowNodeLinks").checked=visual.nodeLinks;
   if($("swShowMemoryNodes"))$("swShowMemoryNodes").checked=visual.memoryNodes;
   if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").checked=visual.memoryBallsImportant;
+  if($("swOrbLegend"))$("swOrbLegend").checked=visual.orbLegend;
   if($("swShowEmotionRings"))$("swShowEmotionRings").checked=visual.emotionRings;
   $("orbIntensity").value=visual.intensity;
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").value=visual.memoryRingStyle;
@@ -1559,8 +1595,9 @@
   if($("swShowLinks"))$("swShowLinks").addEventListener("change",e=>{visual.links=e.target.checked;visualSave();});
   if($("swShowNodes"))$("swShowNodes").addEventListener("change",e=>{visual.nodes=e.target.checked;visualSave();});
   if($("swShowNodeLinks"))$("swShowNodeLinks").addEventListener("change",e=>{visual.nodeLinks=e.target.checked;visualSave();});
-  if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();});
-  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();});
+  if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();updateOrbLegend();});
+  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();updateOrbLegend();});
+  if($("swOrbLegend"))$("swOrbLegend").addEventListener("change",e=>{visual.orbLegend=e.target.checked;visualSave();updateOrbLegend();});
   if($("swShowEmotionRings"))$("swShowEmotionRings").addEventListener("change",e=>{visual.emotionRings=e.target.checked;visualSave();});
   $("orbIntensity").addEventListener("input",e=>{visual.intensity=Number(e.target.value);visualSave();});
   if($("selMemoryRingStyle"))$("selMemoryRingStyle").addEventListener("change",e=>{visual.memoryRingStyle=e.target.value==="orbit"?"orbit":"solid";visualSave();});
@@ -1603,7 +1640,7 @@
   LLM_FUNCTIONS.forEach(bindLlmFunctionRoute);
   const resetVisualBtn=$("resetVisualBtn");
   if(resetVisualBtn) resetVisualBtn.addEventListener("click",()=>{
-    try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_show_memory_balls_important","bio_show_emotion_rings","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
+    try{ ["bio_show_noise","bio_show_echo","bio_show_ripple","bio_show_dominance","bio_show_social","bio_show_links","bio_show_nodes","bio_show_node_links","bio_show_memory_nodes","bio_show_memory_balls_important","bio_show_orb_legend","bio_show_emotion_rings","bio_intensity"].forEach(k=>localStorage.removeItem(k)); }catch(e){}
     try{ location.reload(); }catch(e){}
   });
   const selfSave=$("selfSaveBtn");
