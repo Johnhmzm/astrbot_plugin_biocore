@@ -465,6 +465,23 @@
     orbTip.classList.remove("show");
     orbTip.hidden = true;
   }
+  // G11: merge_count is stored raw; consumers see a 30-day half-life effective
+  // value (memory_meta.time_decay). Display-only: never rewrites the archive.
+  const MERGE_HALF_LIFE_DAYS = 30;
+  function _effectiveMergeCount(ev) {
+    const raw = Math.max(0, Number((ev && ev.merge_count) || 0));
+    if (!(raw > 0)) return 0;
+    const ts = Number((ev && ev.ts) || 0);
+    if (!(ts > 0)) return raw;
+    const ageDays = Math.max(0, (Date.now() / 1000 - ts) / 86400);
+    return Math.max(0, Math.round(raw * Math.pow(0.5, ageDays / MERGE_HALF_LIFE_DAYS)));
+  }
+  function _mergeTip(ev) {
+    const raw = Math.max(0, Number((ev && ev.merge_count) || 0));
+    if (!(raw > 0)) return "";
+    const eff = _effectiveMergeCount(ev);
+    return " · 合并 " + raw + (eff !== raw ? ("（有效 " + eff + "）") : "");
+  }
   function _tipClean(value, limit) {
     let text = String(value == null ? "" : value).replace(/\s+/g, " ").trim();
     if (text.length > limit) text = text.slice(0, limit - 1).trimEnd() + "…";
@@ -479,7 +496,7 @@
     const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
       " · 年龄 " + Math.round(hit.ageDays) + "d" +
       (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
-      ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
+      _mergeTip(ev);
     const _secKey = String(ev.emotion_secondary || "").trim();
     const _status = String((ev.source_check && ev.source_check.status) || "ok");
     const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
@@ -1014,7 +1031,9 @@
         const imp = Math.max(0, Math.min(1, Number(ev.importance == null ? .5 : ev.importance)));
         const cent = Math.max(0, Math.min(1, Number(ev.centrality == null ? .5 : ev.centrality)));
         const recall = Math.max(0, Number(ev.recall_count || 0));
-        const merge = Math.max(0, Number(ev.merge_count || 0));
+        // G11: stored merge_count decays on read (30-day half-life); ball mass
+        // uses the effective value so an old duplicate does not stay "heavy".
+        const merge = _effectiveMergeCount(ev);
         const tsS = Number(ev.ts || 0) > 0 ? Number(ev.ts) : _nowS;
         const ageDays = Math.max(0, (_nowS - tsS) / 86400);
         const ageNorm = Math.min(1, ageDays / 60);          // fixed 60d scale
@@ -1659,7 +1678,7 @@
         const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
           " · 年龄 " + Math.round(hit.ageDays) + "d" +
           (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
-          ((Number(ev.merge_count) || 0) > 0 ? " · 合并 " + Number(ev.merge_count) : "");
+          _mergeTip(ev);
         const small = String(ev.small_summary || "").trim();
         const fallbackText = small ? "小总结：" + small
           : String(ev.event || ev.central_details || ev.meaning_to_her || "");
