@@ -214,6 +214,12 @@
     "type": "bool",
     "default": true
   },
+  "memory_worthiness_enabled": {
+    "description": "记忆点判定（默认开）",
+    "hint": "默认开启：事件按确定性多角度 W/W_her/K 评分，只有 W≥0.60 且（W_her≥0.45 或 I≥0.75）或 K≥0.70 才生成记忆点；0.40–0.60 只归档；<0.40 或工具问答不生成。关闭 = 完全回到旧行为（不过滤、不写 worthiness）。无新增 LLM。",
+    "type": "bool",
+    "default": true
+  },
   "safety_enabled": {
     "description": "安全限制（默认关）",
     "hint": "默认关闭，私人使用无限制。开启后恢复敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤。",

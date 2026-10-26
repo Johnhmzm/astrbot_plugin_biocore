@@ -1,9 +1,16 @@
 # BioCore 插件更新说明
 
-当前版本：以 `metadata.yaml` 为准（当前 **1.2.98**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：以 `metadata.yaml` 为准（当前 **1.2.99**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 1.2.99 升级提示
+
+- 记忆点判定默认开启：琐碎事件（纯工具问答、低情绪/低关系增量）不再生成记忆点；如需恢复旧行为，关闭 `memory_worthiness_enabled`。
+- `bio_learning=true` 默认开启：调节策略 Q 与 trust 学习率会随经验更新（小步长、有界，可关闭）。
+- 记忆保持默认 `single`（与 1.2.98 一致）；`power_law` / `multi_scale` 为实验模型，A/B 后再切换。
+- 主动发送、注意力 L17–L19、事件链、自主循环默认关；开启前请先看 README 的边界说明。
+- 升级前建议备份 `plugin_data`。
 
 ## 1.2.98 升级提示
-
 - 配置向后兼容：旧 config.json 不用改，新增项都有默认值；被移除的死配置项会被忽略。
 - 默认 LLM 调用收敛：升级后只保留事件总结 / 记忆总结两个摘要调用；如需恢复全部 LLM 能力，关闭 `llm_only_reply_summary`。
 - 数据目录仍是 `data/plugin_data/astrbot_plugin_biocore_standalone/`，更新不丢档；升级前建议备份。

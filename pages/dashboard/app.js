@@ -747,7 +747,9 @@
   // late-night confession-clarification ball.
   function eventBallsFromArchive(){
     const evs=Array.isArray(data.events)?data.events:[];
-    return evs.filter(e=>e&&typeof e==="object").map(e=>{
+    // task-33: archive-only rows (memory_point=false) stay in the archive for
+    // retrieval but are NOT memory points, so they get no ball.
+    return evs.filter(e=>e&&typeof e==="object"&&e.memory_point!==false).map(e=>{
       const text=String(e.event||e.title||"").trim();
       if(!text) return null;
       return {_kind:"event", id:String(e.id||("evt_"+Number(e.ts||0))),
@@ -763,6 +765,9 @@
         self_defining:!!e.self_defining,
         emotion:String(e.emotion||"neutral"), emotion_known:!!String(e.emotion||"").trim(),
         emotion_secondary:String(e.emotion_secondary||""),
+        worthiness:(e.worthiness&&typeof e.worthiness==="object")?e.worthiness:null,
+        user_marked:e.user_marked===true,
+        memory_point:e.memory_point!==false,
         last_recall:Number(e.last_recall||e.ts||0), summarized:true, role:"event"};
     }).filter(Boolean).sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0)).slice(0,10);
   }
@@ -2244,7 +2249,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.98";
+  const BIO_VERSION = "v1.2.99";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -2396,16 +2401,67 @@
     }
     if (busy) _focusShowMsg(label || "处理中…", false);
   }
-  async function _focusApi(payload){
+  async function _focusApi(payload, path){
     if (!bridge || typeof bridge.apiPost !== "function") {
       throw new Error("预览模式无法保存，请从 AstrBot 插件视图打开");
     }
-    const raw = await bridge.apiPost("page/event_summary", payload);
+    const raw = path
+      ? await bridge.apiPost(String(path), payload)
+      : await bridge.apiPost("page/event_summary", payload);
     const body = raw && raw.data ? raw.data : raw;
     if (!body || body.status === "error" || body.status === "fail") {
       throw new Error((body && body.message) || "保存失败");
     }
     return body;
+  }
+  async function _focusFixApi(payload){
+    return _focusApi(payload, "page/memory_point_feedback");
+  }
+  // task-33: merge a feedback API row into the open focus detail.
+  function _focusApplyFeedbackResult(data){
+    if (!_heroFocusSaved || !_heroFocusDetail) return;
+    const body = data || {};
+    const d = _heroFocusDetail || {};
+    _heroFocusDetail = Object.assign({}, d, {
+      title: body.title == null ? String(d.title || "") : String(body.title),
+      small_summary: body.small_summary == null ? String(d.small_summary || "") : String(body.small_summary),
+      importance: body.importance == null ? Number(d.importance == null ? .5 : d.importance) : Number(body.importance),
+      user_marked: body.user_marked == null ? !!d.user_marked : body.user_marked === true,
+      memory_point: body.memory_point == null ? (d.memory_point !== false) : body.memory_point !== false,
+      label_edited: body.label_edited == null ? !!d.label_edited : body.label_edited === true,
+      worthiness: (body.worthiness && typeof body.worthiness === "object")
+        ? body.worthiness : (d.worthiness || null)
+    });
+  }
+  async function _focusFeedback(action, extra){
+    const d = _heroFocusDetail || {};
+    const eventId = _focusEventId(d);
+    if (!eventId) { _focusShowMsg("这条记忆没有可反馈的事件 id", true); return; }
+    _focusSetBusy(true, "提交中…");
+    let result = null, failure = null;
+    try {
+      result = await _focusFixApi(Object.assign({ event_id: eventId, action: action }, extra || {}));
+    } catch (err) {
+      failure = err;
+    } finally {
+      _focusSetBusy(false);
+    }
+    if (failure) { _focusShowMsg(String((failure && failure.message) || failure), true); return; }
+    if (!result) return;
+    const okText = action === "restore" ? "已恢复"
+      : (action === "unimportant" ? "已标记不重要"
+      : (action === "important" ? "已标记重要" : "已更新"));
+    _focusApplyFeedbackResult(result);
+    _renderHeroMemoryRead();
+    _focusShowMsg(okText, false);
+    await _focusReloadData();
+    if (_heroFocusSaved && _heroFocusDetail) {
+      _focusApplyFeedbackResult(result);
+      const latest = _focusLatestDetail(_focusEventId(_heroFocusDetail));
+      if (latest) _heroFocusDetail = Object.assign({}, _heroFocusDetail, latest);
+      _renderHeroMemoryRead();
+      _focusShowMsg(okText, false);
+    }
   }
   function _focusApplyApiResult(data){
     // If the user already left focus while the request was in flight, drop the
@@ -2425,7 +2481,13 @@
         : (Array.isArray(d.summary_history) ? d.summary_history : []),
       emotion_nuance: Array.isArray(body.emotion_nuance)
         ? body.emotion_nuance
-        : (Array.isArray(d.emotion_nuance) ? d.emotion_nuance : [])
+        : (Array.isArray(d.emotion_nuance) ? d.emotion_nuance : []),
+      importance: body.importance == null ? Number(d.importance == null ? .5 : d.importance) : Number(body.importance),
+      user_marked: body.user_marked == null ? !!d.user_marked : body.user_marked === true,
+      memory_point: body.memory_point == null ? (d.memory_point !== false) : body.memory_point !== false,
+      label_edited: body.label_edited == null ? !!d.label_edited : body.label_edited === true,
+      worthiness: (body.worthiness && typeof body.worthiness === "object")
+        ? body.worthiness : (d.worthiness || null)
     });
   }
   async function _focusReloadData(){
@@ -2452,7 +2514,12 @@
           summary_history: Array.isArray(ev.summary_history) ? ev.summary_history : [],
           emotion_nuance: Array.isArray(ev.emotion_nuance) ? ev.emotion_nuance : [],
           event: String(ev.event || ""),
-          central_details: String(ev.central_details || "")
+          central_details: String(ev.central_details || ""),
+          importance: Number(ev.importance == null ? .5 : ev.importance),
+          user_marked: ev.user_marked === true,
+          memory_point: ev.memory_point !== false,
+          label_edited: ev.label_edited === true,
+          worthiness: (ev.worthiness && typeof ev.worthiness === "object") ? ev.worthiness : null
         };
       }
     } catch (e) { /* keep the API result as the fallback */ }
@@ -2538,6 +2605,57 @@
       _renderHeroMemoryRead();
       _focusShowMsg("已保存", false);
     }
+  }
+  function _focusWorthinessHtml(d){
+    const w = d && d.worthiness;
+    if (!w || typeof w !== "object") return "";
+    const num = (v) => (Number.isFinite(Number(v)) ? Number(v).toFixed(2) : "—");
+    const decision = String(w.decision || "");
+    const label = decision === "memory_point" ? "生成记忆点"
+      : (decision === "archive_only" ? "只归档"
+      : (decision === "skip" ? "不生成" : ""));
+    const reason = String(w.reason || "");
+    return '<details class="hero-mem-worth"><summary>判定 W ' + num(w.W) +
+      ' · W_her ' + num(w.W_her) + ' · K ' + num(w.K) + '</summary>' +
+      '<p class="hero-mem-worth-parts">I ' + num(w.I) + ' · S ' + num(w.S) +
+      ' · C ' + num(w.C) + ' · G ' + num(w.G) + ' · PE ' + num(w.PE) +
+      ' · R ' + num(w.R) + ' · P ' + num(w.P) + ' · N ' + num(w.N) +
+      (label ? ' · ' + label : '') + (reason ? '（' + reason + '）' : '') +
+      '</p></details>';
+  }
+  function _renderHeroMemoryFixEdit(){
+    const panel = _heroPanelEl();
+    const d = _heroFocusDetail || {};
+    if (!panel) return;
+    panel.innerHTML =
+      '<div class="eyebrow">MEMORY FOCUS · 修正记忆点 · 编辑标签</div>' +
+      '<label class="hero-mem-field"><small>标签（标题，≤80 字）</small>' +
+      '<input id="heroMemFixTitle" type="text" maxlength="80" value="' +
+      esc(String(d.title || "").slice(0, 80)) + '"></label>' +
+      '<label class="hero-mem-field"><small>小标签（≤80 字，可留空）</small>' +
+      '<textarea id="heroMemFixSmall" maxlength="80" rows="2">' +
+      esc(String(d.small_summary || "").slice(0, 80)) + '</textarea></label>' +
+      '<div class="hero-mem-actions">' +
+        '<button type="button" class="btn mini" id="heroMemFixSave">保存</button>' +
+        '<button type="button" class="btn mini" id="heroMemFixCancel">取消</button>' +
+      '</div>' +
+      '<p class="hero-mem-msg" id="heroMemMsg" hidden></p>';
+    const save = panel.querySelector("#heroMemFixSave");
+    const cancel = panel.querySelector("#heroMemFixCancel");
+    if (save) save.addEventListener("click", () => { _focusSaveLabel(); });
+    if (cancel) cancel.addEventListener("click", () => { _renderHeroMemoryRead(); });
+  }
+  function _focusSaveLabel(){
+    const panel = _heroPanelEl();
+    if (!panel) return;
+    const titleEl = panel.querySelector("#heroMemFixTitle");
+    const smallEl = panel.querySelector("#heroMemFixSmall");
+    const title = titleEl ? String(titleEl.value || "").trim() : "";
+    const small = smallEl ? String(smallEl.value || "").trim() : "";
+    if (!title && !small) { _focusShowMsg("至少填写标签或小标签", true); return; }
+    if (title.length > 80) { _focusShowMsg("标签不能超过 80 字", true); return; }
+    if (small.length > 80) { _focusShowMsg("小标签不能超过 80 字", true); return; }
+    _focusFeedback("edit_label", { title: title, small_summary: small });
   }
   function _renderHeroMemoryEdit(){
     const panel = _heroPanelEl();
@@ -2649,10 +2767,15 @@
         '<details class="hero-mem-history"><summary>历史总结（' + history.length +
         '）</summary><div class="hero-mem-history-list">' + items + '</div></details>';
     }
+    // task-33: user feedback marker + collapsed worthiness (W/W_her/K).
+    const marked = d.user_marked === true;
+    const markedHtml = marked ? '<span class="hero-mem-badge is-marked">已修正</span>' : "";
+    const worthHtml = _focusWorthinessHtml(d);
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
       '<div class="hero-mem-head"><h2 id="heroMemTitle">' + esc(title) + '</h2>' +
-      '<span class="hero-mem-badge ' + badgeClass + '">' + esc(badge) + '</span></div>' +
+      '<span class="hero-mem-badge ' + badgeClass + '">' + esc(badge) + '</span>' +
+      markedHtml + '</div>' +
       '<div class="hero-mem-grid">' +
         '<span>主情绪 <b>' + esc(primary) + '</b></span>' +
         '<span>次情绪 <b>' + esc(secondary) + '</b></span>' +
@@ -2660,10 +2783,19 @@
         '<span>时间 <b>' + esc(when) + '</b></span>' +
         '<span>来源 <b>' + esc(source) + '</b></span>' +
         '<span>召回 <b>' + esc(String(recall)) + ' 次</b></span>' +
-      '</div>' + nuanceHtml + summaries + historyHtml +
-      '<div class="hero-mem-actions">' +
+      '</div>' + worthHtml + nuanceHtml + summaries + historyHtml +
+      '<div class="hero-mem-actions hero-mem-actions-fix">' +
         '<button type="button" class="btn mini" id="heroMemRegen">重新总结</button>' +
         '<button type="button" class="btn mini" id="heroMemEdit">编辑总结</button>' +
+        '<span class="hero-mem-fixwrap">' +
+          '<button type="button" class="btn mini" id="heroMemFix">修正记忆点</button>' +
+          '<span class="hero-mem-fixmenu" id="heroMemFixMenu" hidden>' +
+            '<button type="button" class="btn mini" data-fix="important">标记重要</button>' +
+            '<button type="button" class="btn mini" data-fix="unimportant">标记不重要</button>' +
+            '<button type="button" class="btn mini" data-fix="edit_label">编辑标签</button>' +
+            '<button type="button" class="btn mini" data-fix="restore">恢复</button>' +
+          '</span>' +
+        '</span>' +
       '</div>' +
       '<p class="hero-mem-msg" id="heroMemMsg" hidden></p>' +
       (updated ? '<p class="hero-mem-updated">更新于 ' + esc(updated) + '</p>' : '') +
@@ -2672,6 +2804,23 @@
     const edit = panel.querySelector("#heroMemEdit");
     if (regen) regen.addEventListener("click", () => { _focusRegenerate(); });
     if (edit) edit.addEventListener("click", () => { _renderHeroMemoryEdit(); });
+    const fix = panel.querySelector("#heroMemFix");
+    const fixMenu = panel.querySelector("#heroMemFixMenu");
+    if (fix && fixMenu) {
+      fix.addEventListener("click", (e) => {
+        if (e && e.stopPropagation) e.stopPropagation();
+        fixMenu.hidden = !fixMenu.hidden;
+      });
+    }
+    if (fixMenu) {
+      fixMenu.addEventListener("click", (e) => {
+        const btn = (e && e.target && e.target.closest) ? e.target.closest("[data-fix]") : null;
+        if (!btn) return;
+        const action = String(btn.getAttribute("data-fix") || "");
+        if (action === "edit_label") { _renderHeroMemoryFixEdit(); return; }
+        _focusFeedback(action);
+      });
+    }
   }
   function showHeroMemoryPanel(detail){
     const copy = _heroCopyEl();

@@ -2052,3 +2052,125 @@ def dedupe_texts(texts: Any, *, threshold: float = 0.88, limit: int = 0) -> list
         if cap > 0 and len(out) >= cap:
             break
     return out
+
+
+# ---------------------------------------------------------------------------
+# task-33: deterministic "is this event worth a memory point" worthiness
+# ---------------------------------------------------------------------------
+# Engineering approximation (weights not fitted; see
+# docs/BIOCORE-MEMORY-WORTHINESS-LIT-v1.md §4). No LLM is involved and the
+# gate only decides whether the existing event archive path produces a memory
+# point; it never writes biological state.
+WORTHINESS_MEMORY_POINT = 0.60
+WORTHINESS_HER_PASS = 0.45
+WORTHINESS_INTENSITY_OVERRIDE = 0.75
+WORTHINESS_ARCHIVE_FLOOR = 0.40
+WORTHINESS_CORE_IMPACT = 0.70
+WORTHINESS_TOOL_GUARD = 0.75
+# Routine / tool-question cues (N=1). Deliberately conservative: a false
+# positive only means "remember less", never "remember more".
+_ROUTINE_CUES = (
+    "天气", "气温", "时间", "几点", "日期", "几号", "星期", "翻译", "计算",
+    "算一下", "搜索", "查一下", "帮我查", "百度", "闹钟", "提醒我", "怎么用",
+    "教程", "设置", "打开", "关闭", "播放", "暂停", "命令", "查询", "下载",
+    "安装", "版本号", "网址", "链接",
+)
+
+
+def is_routine_event(text: Any, *, intensity: Any = 0.0,
+                     novelty: Any = 0.0, schema: Any = 0.0) -> bool:
+    """Deterministic N proxy: tool/routine query with no affective/self signal."""
+    value = str(text or "")
+    if not any(cue in value for cue in _ROUTINE_CUES):
+        return False
+    return (_clamp(intensity) < WORTHINESS_INTENSITY_OVERRIDE
+            and _clamp(novelty) < 0.60
+            and _clamp(schema) < 0.60)
+
+
+def _worthiness_log_norm(count: Any) -> float:
+    """log1p(x)/log1p(10) in [0,1] (repetition/rehearsal proxy P)."""
+    try:
+        number = max(0.0, float(count or 0.0))
+    except Exception:
+        number = 0.0
+    return _clamp(math.log1p(number) / math.log1p(10.0))
+
+
+def worthiness_decision(W: Any, W_her: Any, intensity: Any, K: Any,
+                        routine: Any = False) -> tuple[str, str]:
+    """Three-way gate (task-33 A2).
+
+    Returns (decision, reason) with decision in
+    {"memory_point", "archive_only", "skip"}.
+    """
+    w = _clamp(W)
+    her = _clamp(W_her)
+    intense = _clamp(intensity)
+    impact = _clamp(K)
+    is_routine = bool(routine)
+    if impact >= WORTHINESS_CORE_IMPACT:
+        return "memory_point", "core_impact"
+    if is_routine and w < WORTHINESS_TOOL_GUARD:
+        return "skip", "tool_or_routine"
+    if w < WORTHINESS_ARCHIVE_FLOOR:
+        return "skip", "below_floor"
+    if w >= WORTHINESS_MEMORY_POINT and (her >= WORTHINESS_HER_PASS
+                                         or intense >= WORTHINESS_INTENSITY_OVERRIDE):
+        return "memory_point", "worthiness"
+    return "archive_only", "archive_band"
+
+
+def compute_worthiness(*, intensity: Any = 0.0, schema_congruence: Any = 0.0,
+                       self_defining: Any = False, milestone: Any = 0.0,
+                       boundary_score: Any = 0.0, recall_count: Any = 0,
+                       merge_count: Any = 0, goal_relevance: Any = 0.0,
+                       novelty: Any = 0.0, rel_trust: Any = 0.5,
+                       rel_closeness: Any = 0.5, rel_conflict: Any = 0.0,
+                       rel_repair: Any = 0.0, routine: Any = False,
+                       pad_delta: Any = 0.0, self_delta: Any = 0.0,
+                       rel_delta: Any = 0.0, drives_delta: Any = 0.0,
+                       persistence: Any = 0.0) -> dict[str, Any]:
+    """W / W_her / K multi-angle worthiness + gate decision (no LLM).
+
+    All inputs are existing L1/relationship fields (or their bounded proxies);
+    NaN/Inf inputs degrade to 0. Engineering approximation, not a calibrated
+    psychometric score.
+    """
+    I = _clamp(intensity)
+    S = _clamp(0.60 * _clamp(schema_congruence)
+               + 0.40 * (1.0 if self_defining else 0.0))
+    rehearsal = _worthiness_log_norm(float(recall_count or 0)
+                                     + float(merge_count or 0))
+    C = _clamp(0.40 * _clamp(milestone) + 0.30 * _clamp(boundary_score)
+               + 0.30 * rehearsal)
+    G = _clamp(goal_relevance)
+    PE = _clamp(novelty)
+    trust_dev = abs(_clamp(rel_trust) - 0.5) * 2.0
+    closeness_dev = abs(_clamp(rel_closeness) - 0.5) * 2.0
+    R = _clamp(0.50 * (trust_dev + closeness_dev) / 2.0
+               + 0.30 * _clamp(rel_conflict)
+               + 0.20 * _clamp(rel_repair))
+    P = _worthiness_log_norm(merge_count)
+    N = 1.0 if routine else 0.0
+    W = _clamp(0.22 * I + 0.20 * S + 0.15 * C + 0.15 * G
+               + 0.10 * PE + 0.13 * R + 0.05 * P - 0.25 * N)
+    W_her = _clamp(0.45 * S + 0.25 * R + 0.20 * G + 0.10 * C)
+    K_raw = _clamp(0.35 * _clamp(pad_delta) + 0.25 * _clamp(self_delta)
+                   + 0.20 * _clamp(rel_delta) + 0.20 * _clamp(drives_delta))
+    K = _clamp(K_raw * _clamp(persistence))
+    decision, reason = worthiness_decision(W, W_her, I, K, routine=N >= 1.0)
+    return {"W": round(W, 4), "W_her": round(W_her, 4), "K": round(K, 4),
+            "I": round(I, 4), "S": round(S, 4), "C": round(C, 4),
+            "G": round(G, 4), "PE": round(PE, 4), "R": round(R, 4),
+            "P": round(P, 4), "N": int(N), "decision": decision,
+            "reason": reason}
+
+
+def event_self_defining(schema_congruence: Any, importance: Any,
+                        *, threshold: float = SCHEMA_SELF_DEFINING_THRESHOLD,
+                        importance_min: float = 0.62) -> bool:
+    """Self-defining proxy for event records (they start with no recall count)."""
+    return (_clamp(schema_congruence) >= float(threshold)
+            and _clamp(importance) >= float(importance_min))
+

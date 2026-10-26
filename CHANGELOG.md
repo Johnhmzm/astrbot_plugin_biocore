@@ -1,13 +1,36 @@
-## 1.2.98（未发布·本地改动）
-
-- 噪声→自主行为（默认关）、L1 学习（默认开）、注意力/事件链（默认关）、C8+C9 闭环（默认关）、readiness/learning 命令。
-
 # Changelog
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
 
-## [1.2.98] - 2026-10-26
+## [1.2.99] - 2026-10-27
 
+### Added
+- 记忆点判定：W / W_her / K 多角度加权 + 三向闸门（生成记忆点 / 只归档 / 不生成），默认开启；事件记录写入 worthiness 明细（I/S/C/G/PE/R/P/N）。
+- Dashboard「修正记忆点」：标记重要 / 标记不重要 / 编辑标签 / 恢复，原子写回、不物理删除。
+- L1 学习：调节策略 Q 学习（N≥5 门槛、单步 ≤0.02）、trust 自适应学习率（Nassar 近似）、`/biocore learning` 与 reset。
+- 噪声→自主行为：就绪度 threshold/max_chars/impulse、后台 tick、私聊门槛、冷却 30min、每日 3 条、0–8 静默（默认关）。
+- 最小自主循环：显著性→候选→价值（目标梯度/延迟折扣/努力成本）→仲裁→反馈（默认关、token-only）。
+- 记忆注意力：L17 激活概率门控 / L18 fan 惩罚 / L19 容量 4（默认关）；显著度乘子与句级排重（默认关）。
+- 事件连锁：事件-事件边（同会话/时间邻近/因果词、≤3 边、30 天半衰）+ 1 跳召回 + 链接预算；多跳 experimental 默认关。
+- Dashboard 只读面板：自主就绪度、学习状态、事件链。
+- embedding：LRU512 缓存、超时可配（默认 1500ms，100–15000）、sensitive 内容不送 embedding。
+
+### Changed
+- 默认行为变化：`bio_learning=true`（Q/trust 会随经验更新）；记忆保持默认 `single`（1.2.98 旧指数）；`memory_worthiness_enabled=true`（琐碎事件不再生成记忆点）。
+- 新增机制默认关：`proactive_autonomy/proactive_send`、注意力 L17–L19、事件链、自主循环；主动发送仅私聊。
+
+### Fixed
+- 修复 embedding 路径 `self._sha256` 崩溃（生产必现 AttributeError）。
+- 修复 embedding 缓存 key 与 payload 截断长度不一致。
+- 修复 eval_attention_three 因时间漂移导致的偶发失败。
+
+### 兼容性
+- 配置向后兼容：新增项全部带默认值，旧 config.json 不用改。
+- 数据向后兼容：目录不变；旧记忆/状态缺新字段按默认读取。
+- 关闭 `memory_worthiness_enabled` 可完全回到 1.2.98 归档逻辑。
+- 无新增默认 LLM 调用；AstrBot 版本要求不变（>=4.16,<5）。
+
+## [1.2.98] - 2026-10-26
 ### Added
 - 补全记忆层闭环：confidence↔召回、importance↔召回、stability↔复习、inhibition↔召回、assoc↔召回；G8 重要度读时 30 天半衰（下限 0.15）、G7 关联 30 天半衰、G11 事件重复计数半衰、G12 working_set 2h TTL、B12 换出、G15 反思树 90 天软遗忘、G9 schema 一致度衰减、G1 calibration→置信（±0.05）。
 - 生物层对偶补齐：敏化 ×1.0–1.25、7 种调节策略（含 label_emotion「命名情绪」）、恢复 speed 0.8–1.2、信息缺口好奇 +0.10·gap。

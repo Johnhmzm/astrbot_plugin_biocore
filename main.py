@@ -142,6 +142,7 @@ def event_effective_time(record) -> float:
 
 
 EVENT_SUMMARY_ACTIONS = ("regenerate", "update")
+MEMORY_POINT_FEEDBACK_ACTIONS = ("important", "unimportant", "edit_label", "restore")
 EVENT_SUMMARY_HARD_MAX = 20000
 EVENT_SUMMARY_SMALL_MAX = 80
 EVENT_SUMMARY_HISTORY_MAX = 20
@@ -3073,7 +3074,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.2.98")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.2.99")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3207,6 +3208,10 @@ class BioCorePlugin(Star):
         # D5: stable default shape even before the first recall fills it.
         self._last_memory_trace = dict(DEFAULT_MEMORY_TRACE)
         self.memory_dedup_embedding = bool(self.config.get("memory_dedup_embedding", True))
+        # task-33: deterministic memory-point worthiness gate (default ON).
+        # OFF = exact legacy behaviour (archive every candidate, no new fields).
+        self.memory_worthiness_enabled = bool(
+            self.config.get("memory_worthiness_enabled", True))
         # Safety switch: default OFF for private use. When OFF, no masking,
         # no cross-session isolation, no forced abstention, no poison filter.
         self.safety_enabled = bool(self.config.get("safety_enabled", False))
@@ -5167,6 +5172,246 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
 
+    # ---- task-33: deterministic memory-point worthiness + feedback ----
+    @staticmethod
+    def _worth_num(value, default: float = 0.0, lo: float = 0.0,
+                   hi: float = 1.0) -> float:
+        """Finite bounded float for worthiness inputs (NaN/Inf -> default)."""
+        try:
+            number = float(value)
+        except Exception:
+            return default
+        if number != number or number in (float("inf"), float("-inf")):
+            return default
+        return max(lo, min(hi, number))
+
+    def _event_worthiness_for(self, record, core, relationship=None, *,
+                              text: str = "", title: str = "",
+                              schema=None):
+        """task-33: deterministic W/W_her/K for one event record (no LLM).
+
+        Returns None when memory_worthiness_enabled is OFF: the caller then
+        archives exactly like 1.2.98 (no worthiness field, no gate). All inputs
+        are existing fields/proxies; the gate never writes biological state.
+        """
+        if not getattr(self, "memory_worthiness_enabled", True):
+            return None
+        rec = record if isinstance(record, dict) else {}
+        body = str(text or rec.get("event") or rec.get("title") or "")
+        heading = str(title or rec.get("title") or "")
+        if schema is None:
+            try:
+                schema = memory_meta.schema_congruence(
+                    body or heading, self._self_schema_texts(core))
+            except Exception:
+                schema = 0.0
+        try:
+            intensity = float(core._intensity()) if core is not None else 0.0
+        except Exception:
+            intensity = 0.0
+        appraisal = (getattr(core, "appraisal", None)
+                     if core is not None else None)
+        appraisal = appraisal if isinstance(appraisal, dict) else {}
+        importance = self._worth_num(rec.get("importance"), 0.5)
+        schema_v = self._worth_num(schema, 0.0)
+        self_defining = memory_meta.event_self_defining(schema_v, importance)
+        try:
+            milestone = 1.0 if relationship_meta.milestone_from_text(
+                heading + " " + body) else 0.0
+        except Exception:
+            milestone = 0.0
+        rel = relationship if isinstance(relationship, dict) else {}
+        rel_state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+        trust = self._worth_num(rel_state.get("trust"), 0.5)
+        closeness = self._worth_num(rel_state.get("closeness"), 0.5)
+        conflict = self._worth_num(rel_state.get("conflict"), 0.0)
+        repair = self._worth_num(rel_state.get("repair"), 0.0)
+        novelty = self._worth_num(appraisal.get("novelty"), 0.0)
+        routine = False
+        try:
+            routine = bool(memory_meta.is_routine_event(
+                body or heading, intensity=intensity, novelty=novelty,
+                schema=schema_v))
+        except Exception:
+            routine = False
+        # K (core-impact) proxies from existing L1 state.
+        momentum = getattr(core, "momentum", None) if core is not None else None
+        momentum = momentum if isinstance(momentum, dict) else {}
+        pad_delta = self._worth_num(
+            2.0 * (abs(self._worth_num(momentum.get("v"), 0.0, -1.0, 1.0))
+                   + abs(self._worth_num(momentum.get("a"), 0.0, -1.0, 1.0))
+                   + abs(self._worth_num(momentum.get("d"), 0.0, -1.0, 1.0))),
+            0.0)
+        self_delta = self._worth_num(
+            abs(self._worth_num(getattr(core, "boundary_pressure", 0.0), 0.0))
+            + abs(self._worth_num(getattr(core, "refusal_readiness", 0.0), 0.0)))
+        homeo = getattr(core, "homeostasis", None) if core is not None else None
+        homeo = homeo if isinstance(homeo, dict) else {}
+        drives_delta = self._worth_num(homeo.get("L_int"), 0.0)
+        trust_dev = abs(trust - 0.5) * 2.0
+        close_dev = abs(closeness - 0.5) * 2.0
+        rel_delta = self._worth_num(
+            0.50 * (trust_dev + close_dev) / 2.0
+            + 0.30 * conflict + 0.20 * repair)
+        persistence = self._worth_num(
+            0.40 + 0.60 * max(intensity, drives_delta, self_delta, rel_delta))
+        return memory_meta.compute_worthiness(
+            intensity=intensity, schema_congruence=schema_v,
+            self_defining=self_defining, milestone=milestone,
+            boundary_score=rec.get("boundary_score", 0.0),
+            recall_count=rec.get("recall_count", 0),
+            merge_count=rec.get("merge_count", 0),
+            goal_relevance=appraisal.get("goal_relevance", 0.0),
+            novelty=novelty, rel_trust=trust, rel_closeness=closeness,
+            rel_conflict=conflict, rel_repair=repair, routine=routine,
+            pad_delta=pad_delta, self_delta=self_delta,
+            rel_delta=rel_delta, drives_delta=drives_delta,
+            persistence=persistence)
+
+    def _event_worthiness_decision(self, record, core, relationship=None, **kw):
+        """Gate wrapper -> (worthiness|None, decision); OFF => legacy memory_point."""
+        worth = self._event_worthiness_for(record, core, relationship, **kw)
+        if worth is None:
+            return None, "memory_point"
+        return worth, str(worth.get("decision") or "archive_only")
+
+    @staticmethod
+    def _memory_point_snapshot(record) -> dict:
+        rec = record if isinstance(record, dict) else {}
+        return {"importance": rec.get("importance", 0.5),
+                "user_marked": bool(rec.get("user_marked", False)),
+                "title": str(rec.get("title") or "")[:80],
+                "small_summary": str(rec.get("small_summary") or "")[:80]}
+
+    def _apply_memory_point_feedback(self, record, event_id: str,
+                                     action: str, body=None) -> bool:
+        """Atomic-mutation helper for the feedback API (audit/snapshot kept)."""
+        if not isinstance(record, dict):
+            return False
+        if str(record.get("id") or "") != str(event_id or ""):
+            return False
+        action = str(action or "").strip().lower()
+        data = body if isinstance(body, dict) else {}
+        if action not in MEMORY_POINT_FEEDBACK_ACTIONS:
+            return False
+        if action == "restore":
+            prev = record.get("feedback_prev")
+            if not isinstance(prev, dict):
+                return False
+            for key in ("importance", "user_marked", "title", "small_summary"):
+                if key in prev:
+                    record[key] = prev[key]
+            record["last_feedback_action"] = "restore"
+            record["feedback_ts"] = round(time.time(), 3)
+            return True
+        before = self._memory_point_snapshot(record)
+        record["feedback_prev"] = before
+        if action == "important":
+            base = self._worth_num(record.get("importance"), 0.5)
+            record["importance"] = round(min(1.0, base + 0.15), 4)
+            record["user_marked"] = True
+            record["memory_point"] = True
+        elif action == "unimportant":
+            record["importance"] = 0.15
+            record["user_marked"] = False
+        elif action == "edit_label":
+            title = re.sub(r"\s+", " ", str(data.get("title") or "")).strip()
+            small = str(data.get("small_summary") or "").strip()
+            if not title and not small:
+                return False
+            if title:
+                record["title"] = self._mask_if_safety(title)[:80]
+            if small:
+                record["small_summary"] = self._mask_if_safety(small)[:80]
+            elif data.get("small_summary") is not None:
+                record["small_summary"] = ""
+            record["label_edited"] = True
+            record["user_marked"] = True
+        history = record.get("feedback_history")
+        history = history if isinstance(history, list) else []
+        record["feedback_history"] = ([{"action": action,
+                                        "ts": round(time.time(), 3),
+                                        "before": before}]
+                                      + [h for h in history if isinstance(h, dict)])[:20]
+        record["last_feedback_action"] = action
+        record["feedback_ts"] = round(time.time(), 3)
+        return True
+
+    @staticmethod
+    def _parse_memory_point_feedback_request(body):
+        data = body if isinstance(body, dict) else {}
+        event_id = str(data.get("event_id") or "").strip()
+        action = str(data.get("action") or "").strip().lower()
+        if not event_id:
+            return "", "", "缺少 event_id"
+        if action not in MEMORY_POINT_FEEDBACK_ACTIONS:
+            return event_id, action, "未知操作"
+        return event_id, action, ""
+
+    def _memory_point_public(self, record) -> dict:
+        rec = record if isinstance(record, dict) else {}
+        worth = rec.get("worthiness") if isinstance(rec.get("worthiness"), dict) else None
+        return {"event_id": str(rec.get("id") or ""),
+                "title": str(rec.get("title") or "")[:80],
+                "small_summary": str(rec.get("small_summary") or "")[:80],
+                "big_summary": str(rec.get("big_summary") or "")[:EVENT_SUMMARY_HARD_MAX],
+                "importance": round(self._worth_num(rec.get("importance"), 0.5), 4),
+                "user_marked": bool(rec.get("user_marked", False)),
+                "memory_point": bool(rec.get("memory_point", True)),
+                "label_edited": bool(rec.get("label_edited", False)),
+                "last_feedback_action": str(rec.get("last_feedback_action") or "")[:20],
+                "worthiness": dict(worth) if worth is not None else None,
+                "summary_status": str(rec.get("summary_status") or "legacy"),
+                "summary_edited": bool(rec.get("summary_edited", False)),
+                "summary_updated_ts": round(self._worth_num(
+                    rec.get("summary_updated_ts"), 0.0, 0.0, 10 ** 12), 3)}
+
+    async def page_memory_point_feedback(self):
+        """POST memory-point feedback: important/unimportant/edit_label/restore."""
+        from quart import request
+        try:
+            body = await request.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+        event_id, action, error = self._parse_memory_point_feedback_request(body)
+        if error:
+            return {"status": "error", "message": error}
+        record = self._find_event_summary_record(event_id)
+        if record is None:
+            return {"status": "error", "message": "事件不存在"}
+        if action == "edit_label":
+            title = str(body.get("title") or "").strip()
+            small = str(body.get("small_summary") or "").strip()
+            if not title and not small:
+                return {"status": "error", "message": "至少提供标题或小标签"}
+            if len(title) > 80:
+                return {"status": "error", "message": "标题不能超过 80 字"}
+            if len(small) > 80:
+                return {"status": "error", "message": "小标签不能超过 80 字"}
+        if action == "restore" and not isinstance(record.get("feedback_prev"), dict):
+            return {"status": "error", "message": "没有可恢复的反馈前版本"}
+        try:
+            changed = self._rewrite_jsonl_atomic(
+                EVENT_ARCHIVE_PATH,
+                lambda obj: self._apply_memory_point_feedback(obj, event_id, action, body))
+        except Exception as exc:
+            logger.warning("[biocore] memory point feedback rewrite failed: %s", exc)
+            changed = 0
+        if changed <= 0:
+            return {"status": "error", "message": "事件不存在或写入失败"}
+        # Per-session copy stays in sync (best effort; same atomic rewrite).
+        try:
+            session = str(record.get("session") or "")
+            if session:
+                self._rewrite_jsonl_atomic(
+                    self._event_session_file(session),
+                    lambda obj: self._apply_memory_point_feedback(
+                        obj, event_id, action, body))
+        except Exception:
+            pass
+        saved = self._find_event_summary_record(event_id) or {}
+        return {"status": "ok", "data": self._memory_point_public(saved)}
+
     # ---- task-47: regenerate / edit one archived event summary ----
     @staticmethod
     def _parse_event_summary_request(body):
@@ -6726,14 +6971,36 @@ class BioCorePlugin(Star):
                                                "span_seconds": round(max(times) - min(times), 3)}
                 except Exception:
                     pass
+                # task-33: worthiness gate (OFF => legacy: archive everything).
+                _memory_point = True
+                try:
+                    _rel = self._relationship_of(self._user_record(event))
+                except Exception:
+                    _rel = {}
+                try:
+                    _worth = self._event_worthiness_for(
+                        record, core, _rel, text=body, title=title, schema=schema)
+                except Exception as exc:
+                    logger.warning("[biocore] worthiness failed: %s", exc)
+                    _worth = None
+                if _worth is not None:
+                    record["worthiness"] = _worth
+                    _memory_point = _worth.get("decision") == "memory_point"
+                    record["memory_point"] = bool(_memory_point)
+                    if _worth.get("decision") == "skip":
+                        logger.info("[biocore] event below worthiness floor: %s W=%.3f reason=%s",
+                                    title, _worth.get("W", 0.0), _worth.get("reason", ""))
+                        continue
                 self._append_event_archive(record)
-                _digest_event_ids.append(record.get("id"))
-                if core is not None:
-                    try:
-                        core.integrate_noise("event_summary", attention=0.005)
-                    except Exception:
-                        pass
-                logger.info("[biocore] deterministic event archived: %s score=%.2f", title, score)
+                if _memory_point:
+                    _digest_event_ids.append(record.get("id"))
+                    if core is not None:
+                        try:
+                            core.integrate_noise("event_summary", attention=0.005)
+                        except Exception:
+                            pass
+                logger.info("[biocore] deterministic event archived: %s score=%.2f mp=%s",
+                            title, score, _memory_point)
         except Exception as exc:
             logger.warning("[biocore] deterministic event ranking failed: %s", exc)
         try:
@@ -6828,6 +7095,26 @@ class BioCorePlugin(Star):
                 "strength": round(max(0.5, min(1.0, intensity)), 3),
                 "source_texts": [self._mask_if_safety(t) for t in texts[:12]],
             }
+            # task-33: same worthiness gate as the deterministic path.
+            _memory_point = True
+            try:
+                _rel = self._relationship_of(self._user_record(event))
+            except Exception:
+                _rel = {}
+            try:
+                _worth = self._event_worthiness_for(
+                    record, core, _rel, text=ev, title=title)
+            except Exception as exc:
+                logger.warning("[biocore] worthiness failed: %s", exc)
+                _worth = None
+            if _worth is not None:
+                record["worthiness"] = _worth
+                _memory_point = _worth.get("decision") == "memory_point"
+                record["memory_point"] = bool(_memory_point)
+                if _worth.get("decision") == "skip":
+                    logger.info("[biocore] strong event below worthiness floor: %s W=%.3f",
+                                title, _worth.get("W", 0.0))
+                    return
             _dup = self._find_any_duplicate_event(record.get("session") or "", _ekey, ev,
                                                  record.get("ts") or time.time())
             if _dup is not None:
@@ -6849,8 +7136,9 @@ class BioCorePlugin(Star):
                     core.update_daily_digest(event_ids=[record.get("id")])
             except Exception:
                 pass
-            self._update_self_narrative(title, reflection or meaning)
-            logger.info("[biocore] strong event archived: %s", title)
+            if _memory_point:
+                self._update_self_narrative(title, reflection or meaning)
+            logger.info("[biocore] strong event archived: %s mp=%s", title, _memory_point)
         except Exception as exc:
             logger.warning("[biocore] strong event summary failed: %s", exc)
 
@@ -7285,6 +7573,9 @@ class BioCorePlugin(Star):
                 register("/astrbot_plugin_biocore/page/event_summary",
                          self.page_event_summary, ["POST"],
                          "BioCore event summary regenerate/edit")
+                register("/astrbot_plugin_biocore/page/memory_point_feedback",
+                         self.page_memory_point_feedback, ["POST"],
+                         "BioCore memory-point feedback (important/unimportant/edit/restore)")
                 register("/astrbot_plugin_biocore/page/memory/rollback/<path:session>/<entry_id>",
                          self.page_memory_rollback, ["POST"], "BioCore memory rollback")
                 register("/astrbot_plugin_biocore/page/memory/delete/<path:session>/<entry_id>",
@@ -7652,6 +7943,8 @@ class BioCorePlugin(Star):
             "inject_intent": self.inject_intent,
             "proactive_reply": self.proactive_reply,
             "memory_dedup_embedding": self.memory_dedup_embedding,
+            "memory_worthiness_enabled": bool(
+                getattr(self, "memory_worthiness_enabled", True)),
             "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
             "safety_enabled": bool(getattr(self, "safety_enabled", False)),
             "llm_memory_candidates": bool(

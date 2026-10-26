@@ -579,6 +579,17 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .mem-tier{font-size:8px;letter-spacing:.14em;text-transform:uppercase;border:1px solid var(--line);padding:1px 5px;white-space:nowrap;color:var(--muted)}
 .mem-tier-hot{color:#fff;background:var(--accent);border-color:var(--accent)}
 .mem-tier-warm{color:var(--accent2);border-color:var(--accent2)}
+
+/* task-33: memory-point worthiness + 修正记忆点 menu (read-only display) */
+.hero-mem-actions-fix{position:relative;flex-wrap:wrap}
+.hero-mem-fixwrap{position:relative;display:inline-block}
+.hero-mem-fixmenu{position:absolute;right:0;top:calc(100% + 4px);z-index:6;display:flex;flex-direction:column;gap:4px;padding:6px;border:1px solid var(--line2);background:var(--panel2);min-width:110px}
+.hero-mem-fixmenu[hidden]{display:none}
+.hero-mem-badge.is-marked{color:var(--accent2);border-color:var(--accent2)}
+.hero-mem-worth{margin:8px 0 2px;border-top:1px dashed rgba(128,128,128,.22);padding-top:6px}
+.hero-mem-worth summary{font-size:9px;letter-spacing:.04em;color:var(--faint);cursor:pointer}
+.hero-mem-worth-parts{font-size:9px;color:var(--muted);margin:4px 0 0;line-height:1.5}
+
 .mem-tier-cold{color:var(--faint);border-color:var(--line2)}
 .mem-tier-unknown{color:var(--faint);border-style:dashed}
 .mem-source{font-size:9px;color:var(--muted);letter-spacing:.06em;white-space:nowrap}
