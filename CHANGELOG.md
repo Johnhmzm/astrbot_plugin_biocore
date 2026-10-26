@@ -2,6 +2,28 @@
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
 
+## [1.2.98] - 2026-10-26
+
+### Added
+- 补全记忆层闭环：confidence↔召回、importance↔召回、stability↔复习、inhibition↔召回、assoc↔召回；G8 重要度读时 30 天半衰（下限 0.15）、G7 关联 30 天半衰、G11 事件重复计数半衰、G12 working_set 2h TTL、B12 换出、G15 反思树 90 天软遗忘、G9 schema 一致度衰减、G1 calibration→置信（±0.05）。
+- 生物层对偶补齐：敏化 ×1.0–1.25、7 种调节策略（含 label_emotion「命名情绪」）、恢复 speed 0.8–1.2、信息缺口好奇 +0.10·gap。
+- Dashboard 只读投影：稳态/昼夜/allostatic 面板、召回元数据条、calibration chips、有效值/存储值标注、orb 有效 merge_count。
+- 设置 → 球体图层新增「显示图例」小开关（默认开，并入「记忆球 / 记忆节点」行），可隐藏球下方图例。
+
+### Changed
+- 关系→稳态闭环（C6）接线，仍保留一轮延迟。
+- 默认 LLM 调用收敛：llm_only_reply_summary 默认开启，只保留 event_summary / memory_summary 两个摘要调用；event_ranking 改确定性管线（event_ranking_llm 默认关）。需要全部 LLM 能力的用户关闭该项即可恢复。
+- 已废弃配置项不再读取（保留默认回退），旧配置无需手动清理。
+
+### Fixed
+- 清理若干死配置与未使用字段；校准（calibration）从“只记录”改为真正回写置信度。
+
+### 兼容性
+- 配置向后兼容：新增项全部带默认值，旧 config.json 不用改；被移除的死配置项会被忽略。
+- 数据向后兼容：继续使用 data/plugin_data/astrbot_plugin_biocore_standalone/（不修改目录名，避免丢档）；旧记忆/状态 JSON 缺新字段时按默认值读取。
+- 无新增依赖；AstrBot 版本要求不变（>=4.16,<5）。
+- 升级后默认 LLM 行为会变（见 Changed 第 2 条），属预期变更。
+
 ## [1.2.97] - 2026-10-26
 
 ### Changed
