@@ -29,6 +29,60 @@
     "type": "bool",
     "default": false
   },
+  "autonomy_loop_enabled": {
+    "description": "最小自主循环（默认关）",
+    "hint": "默认关闭：不建状态、不计算、不广播 token、不发送，state 文件与 1.2.98 一致。开启后只在私聊后台 tick 做确定性候选→仲裁→单 token 广播（token-only 默认，不发送）；无新增 LLM 调用。",
+    "type": "bool",
+    "default": false
+  },
+  "autonomy_loop_theta_ig": {
+    "description": "自主循环点燃阈值（默认 0.45）",
+    "hint": "候选 value 需 ≥ 该阈值才广播 token；范围 0.35–0.55（工程取值，非论文常数）。",
+    "type": "float",
+    "default": 0.45
+  },
+  "autonomy_loop_margin": {
+    "description": "自主循环领先幅度（默认 0.08）",
+    "hint": "冠军 value 需领先第二名 ≥ 该值才广播；范围 0.05–0.15。",
+    "type": "float",
+    "default": 0.08
+  },
+  "autonomy_loop_k_delay": {
+    "description": "延迟折扣 k（每分钟，默认 0.02）",
+    "hint": "双曲折扣 1/(1+k·D) 的 k；范围 0.001–0.10。工程近似，不声称心理延迟效应。",
+    "type": "float",
+    "default": 0.02
+  },
+  "autonomy_loop_ior_seconds": {
+    "description": "返回抑制恢复时间（秒，默认 600）",
+    "hint": "token 广播后该模式的抑制恢复 tau；范围 300–1800。另有 60s 同模式不应期。",
+    "type": "int",
+    "default": 600
+  },
+  "autonomy_loop_c0": {
+    "description": "努力成本基础项 c0（默认 0.05）",
+    "hint": "cost = c0 + c1·effort + c2·debt；c0 范围 0–1（工程取值）。",
+    "type": "float",
+    "default": 0.05
+  },
+  "autonomy_loop_c1": {
+    "description": "努力成本 effort 系数 c1（默认 0.20）",
+    "hint": "工程取值；effort 按候选模式 0.05–0.60 映射。",
+    "type": "float",
+    "default": 0.20
+  },
+  "autonomy_loop_c2": {
+    "description": "努力成本 debt 系数 c2（默认 0.15）",
+    "hint": "effort_debt 执行 +0.15、每 tick 恢复 -0.02，clamp [0,0.60]。",
+    "type": "float",
+    "default": 0.15
+  },
+  "autonomy_loop_token_only": {
+    "description": "自主循环仅广播 token（默认开）",
+    "hint": "默认开：只写 state.workspace_token，不发送。关闭且 proactive_autonomy+proactive_send 同时开时，同一 tick 仍最多 1 个出口（走 task-15 发送门槛）。",
+    "type": "bool",
+    "default": true
+  },
   "noise_seed": {
     "description": "噪声随机种子（0=随机）",
     "hint": "默认 0 使用系统随机；仅 proactive_autonomy 开启时生效并写入 state.proactive_autonomy.noise_seed，便于 eval 回放。",
