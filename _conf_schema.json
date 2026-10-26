@@ -12,8 +12,20 @@
     "default": true
   },
   "proactive_reply": {
-    "description": "主动回复",
-    "hint": "默认关闭。BioCore 本身不主动发消息；此开关预留给上层调度。",
+    "description": "主动回复（旧预留）",
+    "hint": "默认关闭。旧预留开关，当前不触发发送；新的噪声→自主行为链路见 proactive_autonomy / proactive_send。",
+    "type": "bool",
+    "default": false
+  },
+  "proactive_autonomy": {
+    "description": "噪声→自主行为就绪度（默认关）",
+    "hint": "默认关闭：不计算 readiness、不改变状态轨迹。开启后只在私聊路径计算 threshold/max_chars/impulse，并写入 state.proactive_autonomy 供只读展示；群聊永远不触发。",
+    "type": "bool",
+    "default": false
+  },
+  "proactive_send": {
+    "description": "允许主动发送（默认关）",
+    "hint": "默认关闭。只有 proactive_autonomy 与 proactive_send 同时开启、且为私聊时，满足 cooldown≥30min、每日≤3、0–8 点静默后才发送确定性模板；不新增 LLM 调用。",
     "type": "bool",
     "default": false
   },
