@@ -377,5 +377,29 @@
     "hint": "默认 32；超过按 32 计。",
     "type": "int",
     "default": 32
+  },
+  "salience_boost_enabled": {
+    "description": "显著度增量（默认关）",
+    "hint": "默认关；开启后 score×0.90–1.10（仅检索式，不是 attention），recall trace 增加只读 salience 分量。",
+    "type": "bool",
+    "default": false
+  },
+  "sentence_dedup_enabled": {
+    "description": "句级排重（默认关）",
+    "hint": "默认关；仅注入前去重，不删存储；确定性字符 bigram 0.92（embedding 0.90 版与引号/代码块白名单未实现）。",
+    "type": "bool",
+    "default": false
+  },
+  "embedding_cache_enabled": {
+    "description": "嵌入 LRU512 缓存（默认开）",
+    "hint": "默认开；LRU512 + 可配超时（embedding_timeout_ms，默认 1500ms）+ 2000 字统一截断；关闭后不读也不写缓存。safety 开启时已标记 sensitive 的条目在回滚/恢复/事件/摘要再嵌入路径跳过；写入/查询路径不阻断。",
+    "type": "bool",
+    "default": true
+  },
+  "embedding_timeout_ms": {
+    "description": "嵌入超时（毫秒，默认 1500）",
+    "hint": "默认 1500ms；超时返回 None（等同无 embedding），不阻塞回复。范围 100–15000；仅在实测调用侧 p95<200ms 时才建议降到 300ms。",
+    "type": "int",
+    "default": 1500
   }
 }

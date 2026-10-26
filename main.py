@@ -30,6 +30,7 @@ import time
 import types
 import urllib.request
 import zipfile
+from collections import OrderedDict
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -147,7 +148,21 @@ EVENT_SUMMARY_HISTORY_MAX = 20
 USER_DIR = DATA_DIR / "users"
 SELF_MODEL_PATH = DATA_DIR / "self_model.json"
 INSIGHT_ARCHIVE_PATH = EVENT_ARCHIVE_DIR / "insights.jsonl"
-EMBED_CACHE = {}
+# M3/M4 embedding infrastructure (registered in
+# docs/BIOCORE-ENGINEERING-APPROX-v1.md, "C-S1/C-S2" table): the cache key and
+# the request payload share ONE truncation, the cache is a bounded process-local
+# LRU, and a slow provider degrades to "no embedding" at a configurable timeout
+# (embedding_timeout_ms, default 1500 ms) instead of blocking the reply loop.
+# 300 ms is only appropriate once caller-side latency p95 is measured <200 ms.
+EMBED_TEXT_MAX_CHARS = 2000
+EMBED_CACHE_MAX = 512
+EMBED_TIMEOUT_MS_DEFAULT = 1500
+EMBED_TIMEOUT_S = EMBED_TIMEOUT_MS_DEFAULT / 1000.0  # seconds, legacy convenience
+EMBED_CACHE = OrderedDict()
+# C-S1 sentence dedup: deterministic char-bigram Jaccard threshold. The LIT's
+# embedding-0.90 path and quote/code-block whitelist are NOT implemented (M5);
+# this constant is the only live dedup threshold.
+SENTENCE_DEDUP_THRESHOLD = 0.92
 
 # Memory doc schema version: bumped when entry fields/migrations change.
 # Old docs are upgraded lazily on load (additive defaults only).
@@ -2612,6 +2627,15 @@ class BioCorePlugin(Star):
         # H2-2 budget is independent of the H2-1 edge switch.
         self.chain_budget_enabled = bool(self.config.get("chain_budget_enabled", False))
         self.memory_chain_enabled = bool(self.config.get("memory_chain_enabled", False))
+        self.salience_boost_enabled = bool(self.config.get("salience_boost_enabled", False))
+        self.sentence_dedup_enabled = bool(self.config.get("sentence_dedup_enabled", False))
+        self.embedding_cache_enabled = bool(self.config.get("embedding_cache_enabled", True))
+        try:
+            self.embedding_timeout_ms = max(100, min(15000, int(
+                self.config.get("embedding_timeout_ms", EMBED_TIMEOUT_MS_DEFAULT)
+                or EMBED_TIMEOUT_MS_DEFAULT)))
+        except Exception:
+            self.embedding_timeout_ms = EMBED_TIMEOUT_MS_DEFAULT
         self.memory_chain_multihop = bool(self.config.get("memory_chain_multihop", False))
         try:
             self.chain_hops = max(1, min(2, int(self.config.get("chain_hops", 2) or 2)))
@@ -5971,7 +5995,13 @@ class BioCorePlugin(Star):
                 except Exception:
                     schema = 0.0
                 try:
-                    vec = await self._embedding_for("event_ranking", seg_text[:600])
+                    # M1: an event segment that contains an already-tagged
+                    # sensitive memory is withheld from the provider when safety
+                    # is on (default off => identical to 1.2.98).
+                    _seg_sensitive = any(bool(e.get("sensitive")) for e in seg_entries)
+                    vec = await self._embedding_for(
+                        "event_ranking", seg_text[:600],
+                        sensitive=self._embed_skip_sensitive(_seg_sensitive))
                 except Exception:
                     vec = []
                 if not vec and vecs:
@@ -6795,7 +6825,11 @@ class BioCorePlugin(Star):
             if not memory_meta.rollback_entry(target):
                 return {"status": "error", "message": "no previous version", "data": {}}
             try:
-                _vec = await self._embed_text(str(target.get("text", "")))
+                _text = str(target.get("text", ""))
+                _sens = bool(target.get("sensitive"))
+                if not _sens and getattr(self, "safety_enabled", False):
+                    _sens = bool(memory_meta.classify_sensitivity(_text).get("sensitive"))
+                _vec = await self._embed_text_guarded(_text, _sens)
                 if _vec:
                     target["vector"] = _vec
                     target["needs_reindex"] = False
@@ -6867,7 +6901,11 @@ class BioCorePlugin(Star):
                 entries.append(target)
                 from_tombstone = True
             try:
-                _vec = await self._embed_text(str(target.get("text", "")))
+                _text = str(target.get("text", ""))
+                _sens = bool(target.get("sensitive"))
+                if not _sens and getattr(self, "safety_enabled", False):
+                    _sens = bool(memory_meta.classify_sensitivity(_text).get("sensitive"))
+                _vec = await self._embed_text_guarded(_text, _sens)
                 if _vec:
                     target["vector"] = _vec
                     target["needs_reindex"] = False
@@ -7291,14 +7329,41 @@ class BioCorePlugin(Star):
                     "model": saved.get("model", "")}
         return None
 
-    async def _embedding_for(self, kind: str, text: str):
+    def _embed_skip_sensitive(self, sensitive) -> bool:
+        """Whether a tagged-sensitive payload must be withheld from embedding.
+
+        Privacy filtering belongs to the safety switch (default OFF), so the
+        1.2.98 behaviour stays a bitwise no-op unless ``safety_enabled`` is on.
+        """
+        return bool(sensitive) and bool(getattr(self, "safety_enabled", False))
+
+    async def _embed_text_guarded(self, text: str, sensitive: bool = False):
+        """Embedding for already-stored memory/event text (M1 privacy gate).
+
+        When safety is on and the payload is tagged sensitive the text is NEVER
+        sent to the embedding provider: the caller receives ``None`` and keeps
+        the entry/text untouched (it just has no vector). Default (safety off)
+        is a no-op, identical to ``_embed_text(text)``. The TypeError fallback
+        keeps one-argument ``_embed_text`` overrides used by legacy evals working.
+        """
+        try:
+            return await self._embed_text(
+                text, sensitive=self._embed_skip_sensitive(sensitive))
+        except TypeError:
+            return await self._embed_text(text)
+
+    async def _embedding_for(self, kind: str, text: str, sensitive: bool = False):
         """Embedding for one function; always follows the API 接入 default.
 
         Per-function embedding model selection was removed by user request:
         every function uses the same global embedding configuration. ``kind``
         is kept for call-site clarity and tests.
         """
-        return await self._embed_text(text)
+        try:
+            return await self._embed_text(text, sensitive=sensitive)
+        except TypeError:
+            # Backward-compatible test/legacy override without the sensitive kwarg.
+            return await self._embed_text(text)
 
     async def _rerank_scores(self, kind: str, query: str, documents: list):
         """Optional global rerank scores keyed by candidate index (None = local).
@@ -7331,16 +7396,22 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] global rerank failed; fallback to local ranking: %s", exc)
             return None
 
-    async def _embed_text(self, text: str):
+    async def _embed_text(self, text: str, sensitive: bool = False):
         text = (text or "").strip()
-        if not text:
+        if not text or sensitive:
             return None
         conf = self._embedding_runtime_config()
         if not conf:
             return None
         model = str(conf.get("model") or "").strip()
-        cache_key = (model, text[:1200])
-        if cache_key in EMBED_CACHE:
+        # M4: the cache key hashes exactly the payload that is sent (one
+        # truncation constant for both), so two texts that only differ after the
+        # truncation point can never share a stale vector.
+        payload_text = text[:EMBED_TEXT_MAX_CHARS]
+        cache_key = (model, _sha256(payload_text))
+        _cache_on = bool(getattr(self, "embedding_cache_enabled", True))
+        if _cache_on and cache_key in EMBED_CACHE:
+            EMBED_CACHE.move_to_end(cache_key)
             return EMBED_CACHE[cache_key]
         base = str(conf.get("base_url") or "").rstrip("/")
         if base.endswith("/embeddings"):
@@ -7349,16 +7420,27 @@ class BioCorePlugin(Star):
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if conf.get("api_key"):
             headers["Authorization"] = "Bearer " + str(conf.get("api_key"))
-        payload = {"model": model, "input": [text[:2000]], "encoding_format": "float"}
+        payload = {"model": model, "input": [payload_text], "encoding_format": "float"}
         try:
+            # Embedding timeout is a config key (embedding_timeout_ms, default
+            # 1500 ms) so a remote provider's real p95 can be accommodated;
+            # a timed-out call returns None and never blocks the reply loop.
+            _timeout_ms = getattr(self, "embedding_timeout_ms", EMBED_TIMEOUT_MS_DEFAULT)
+            try:
+                _timeout_s = max(0.1, min(15.0, float(_timeout_ms) / 1000.0))
+            except Exception:
+                _timeout_s = EMBED_TIMEOUT_S
             data = await asyncio.wait_for(
-                asyncio.to_thread(self._ipv4_json, url, headers, payload, 12.0), timeout=15.0)
+                asyncio.to_thread(self._ipv4_json, url, headers, payload, _timeout_s),
+                timeout=_timeout_s)
             vec = data["data"][0]["embedding"]
             if not isinstance(vec, list) or not vec:
                 return None
-            if len(EMBED_CACHE) > 128:
-                EMBED_CACHE.clear()
-            EMBED_CACHE[cache_key] = vec
+            if _cache_on:
+                EMBED_CACHE[cache_key] = vec
+                EMBED_CACHE.move_to_end(cache_key)
+                while len(EMBED_CACHE) > EMBED_CACHE_MAX:
+                    EMBED_CACHE.popitem(last=False)
             return vec
         except Exception as exc:
             logger.warning("[biocore] embedding failed: %s", exc)
@@ -7372,6 +7454,45 @@ class BioCorePlugin(Star):
         na = math.sqrt(sum(x * x for x in a))
         nb = math.sqrt(sum(y * y for y in b))
         return dot / (na * nb) if na and nb else 0.0
+
+    def _dedupe_sentences(self, text: str) -> str:
+        """C-S1 deterministic sentence dedup (char-bigram Jaccard >= 0.92).
+
+        M5: only the deterministic fallback is implemented. The LIT/spec
+        "embedding 0.90" + quote/code-block whitelist variants are NOT
+        implemented and are no longer claimed in ACC/LIT.
+        """
+        if not getattr(self, "sentence_dedup_enabled", False):
+            return text
+        try:
+            import re as _re
+            parts = [p for p in _re.split(r"(?<=[。！？；！？;\n])", str(text or "")) if p.strip()]
+            kept = []
+
+            def _bigrams(s):
+                s = "".join(_re.findall(r"[\u4e00-\u9fffA-Za-z0-9]", s))
+                return {s[i:i + 2] for i in range(max(0, len(s) - 1))} if len(s) >= 2 else {s}
+
+            def _jac(a, b):
+                if not a and not b:
+                    return 1.0
+                return len(a & b) / max(1, len(a | b))
+
+            for sent in parts:
+                must = bool(_re.search(r"[0-9０-９]|不|没|别|未|无", sent))
+                dup = False
+                if not must:
+                    b = _bigrams(sent)
+                    for prev in kept:
+                        if _jac(b, _bigrams(prev)) >= SENTENCE_DEDUP_THRESHOLD:
+                            dup = True
+                            break
+                if not dup:
+                    kept.append(sent)
+            out = "".join(kept).strip()
+            return out or str(text or "")
+        except Exception:
+            return text
 
     @staticmethod
     def _usable_memory_text(text: str) -> bool:
@@ -7574,6 +7695,16 @@ class BioCorePlugin(Star):
                  * regulation_mod
                  * lexical_mod
                  * sensitive_mod)
+        # C-S2: retrieval salience 0.9-1.1 x mask (Seeley 2007 inspired; not attention).
+        _sal_factor = 1.0
+        if getattr(self, "salience_boost_enabled", False):
+            try:
+                _c = max(0.0, min(1.0, float(cosine)))
+                if _c > 0.0:
+                    _sal_factor = 0.90 + 0.20 * _c
+                    score *= _sal_factor
+            except Exception:
+                _sal_factor = 1.0
         # Batch4 L18: Anderson & Reder 1999 (10.1037/0096-3445.128.2.186)
         # fan penalty S=S-ln(fan): score *= 1/(1+g*ln(1+assoc+links)), floor.
         if getattr(self, "fan_penalty_enabled", False):
@@ -7591,6 +7722,7 @@ class BioCorePlugin(Star):
                 pass
         return {
             "score": float(score),
+            "salience": round(_sal_factor, 4),
             "cosine": round(float(cosine), 6),
             "importance": round(importance, 4),
             "recency": round(recency, 4),
@@ -7606,6 +7738,20 @@ class BioCorePlugin(Star):
             "lexical": round(float(lexical_mod), 4),
             "sensitive": round(float(sensitive_mod), 4),
         }
+
+    def _memory_trace_components(self, parts: dict) -> dict:
+        """Read-only ranking factors for the retrieval trace (M6).
+
+        ``salience`` is exposed only when C-S2 is enabled, so the default-off
+        trace stays byte-identical to 1.2.98; the factor itself is always 1.0
+        when the switch is off.
+        """
+        keys = ("recency", "retention", "schema", "inhibition", "regulation",
+                "lexical", "sensitive", "source_weight")
+        out = {k: parts[k] for k in keys if k in parts}
+        if getattr(self, "salience_boost_enabled", False) and "salience" in parts:
+            out["salience"] = parts["salience"]
+        return out
 
     def _memory_score(self, core, entry: dict, cosine: float, *,
                       query_text: str = "", hybrid: bool = False,
@@ -7807,7 +7953,12 @@ class BioCorePlugin(Star):
                     candidates = []
                 if not summary:
                     continue
-                vec = await self._embed_text(summary)
+                # M1: a summary of tagged-sensitive memories is withheld from
+                # the provider when safety is on (default off => unchanged).
+                _summary_sens = memory_meta.classify_sensitivity(summary)
+                _group_sensitive = any(bool(entries[i].get("sensitive")) for i in group)
+                vec = await self._embed_text_guarded(
+                    summary, _group_sensitive or bool(_summary_sens.get("sensitive")))
                 if not vec:
                     continue
                 importance = max(float(entries[i].get("importance", 0.5) or 0.5) for i in group)
@@ -7836,7 +7987,6 @@ class BioCorePlugin(Star):
                 }
                 _summary_source = "inferred"
                 _summary_conf = memory_meta.initial_confidence(_summary_source, importance)
-                _summary_sens = memory_meta.classify_sensitivity(summary)
                 entries.append({"id": _sum_id, "text": self._summary_cap(summary), "role": "summary",
                                 "scope": "session",
                                 "vector": vec, "ts": now, "hits": 1,
@@ -8470,9 +8620,7 @@ class BioCorePlugin(Star):
                     "source": str(_entry.get("memory_source") or "direct")[:12],
                     "tier": str(_entry.get("memory_tier") or "warm")[:8],
                     "conflict": bool(_entry.get("conflict")),
-                    "components": {k: _parts[k] for k in
-                                   ("recency", "retention", "schema", "inhibition",
-                                    "regulation", "lexical", "sensitive", "source_weight")},
+                    "components": self._memory_trace_components(_parts),
                 })
             self._last_cause_trace = _trace
             self._last_memory_entries = [str(e.get("id") or "")
@@ -8704,6 +8852,8 @@ class BioCorePlugin(Star):
                 if who:
                     role = who
             snippet = str(e.get("text", "")).strip().replace("\n", " ")
+            if getattr(self, "sentence_dedup_enabled", False):
+                snippet = self._dedupe_sentences(snippet)
             if getattr(self, "safety_enabled", False) and snippet and e.get("sensitive"):
                 snippet = memory_meta.mask_sensitive(snippet)
             if snippet:
