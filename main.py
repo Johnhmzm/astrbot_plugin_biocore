@@ -6,11 +6,11 @@ First run: read the current AstrBot persona, compile it once with the current
 provider into a numeric profile, store it under this plugin's data dir.
 Then on every LLM request: append a compact intent, on response: feedback.
 
-Noise -> autonomy boundary (task-15): proactive_autonomy defaults to false and
-proactive_send defaults to false. When both are off, this plugin does NOT
-compute readiness, does NOT send anything, and does NOT touch noise channels
-from module hooks (behavior identical to 1.2.98). Even when both are on, only
-private chats can trigger the deterministic template send; group chats never.
+Noise -> autonomy boundary (task-15): proactive_autonomy/proactive_send default
+false. When off, readiness is not computed, no background task starts, no message
+is sent, and the legacy noise/state trajectory is unchanged. All readiness math
+lives in the L1 BioCore (autonomy_state); the plugin only feeds raw module deltas
+and reads the resulting state for the command/UI. Group chats never trigger.
 """
 from __future__ import annotations
 
@@ -173,8 +173,10 @@ DEFAULT_MEMORY_TRACE = {"count": 0, "valence": 0.0, "stress_delta": 0.0, "entry_
 # G15: reflection-tree nodes older than this are hidden on read (soft forget).
 REFLECTION_TREE_TTL_DAYS = 90.0
 
-# Task-15: noise -> autonomy (default OFF, private chat only).
-NOISE_CLAMP = 0.15
+# Task-15: noise -> autonomy (L1 computes; default OFF, private chat only).
+NOISE_CLAMP = 0.30
+AUTONOMY_ENTER = 0.72  # hysteresis: enter ready
+AUTONOMY_EXIT = 0.60  # hysteresis: stay ready until below this
 AUTONOMY_WEIGHTS = {
     "chaos": 0.22, "echo": 0.16, "stress_load": 0.18,
     "drive_dev": 0.16, "distrust": 0.14, "distance": 0.14,
@@ -187,6 +189,13 @@ AUTONOMY_COOLDOWN_SECONDS = 30 * 60
 AUTONOMY_DAILY_CAP = 3
 AUTONOMY_QUIET_START_HOUR = 0
 AUTONOMY_QUIET_END_HOUR = 8
+AUTONOMY_TICK_SECONDS = 300  # P0-1: autonomous generator interval (>=5min)
+
+# Task-20 batch3 L1 learning (Daw 2011 10.1016/j.neuron.2011.02.027;
+# Nassar 2010 10.1523/JNEUROSCI.0822-10.2010; Wixted 1991).
+LEARNING_Q_ALPHA = 0.20
+LEARNING_Q_WEIGHT = 0.05
+LEARNING_RETENTION_MODELS = ("power_law", "multi_scale", "single")
 
 # Per-function LLM routing: each feature has its own enabled switch and a
 # provider choice ("follow_llm" = AstrBot main chat model, or a provider_id).
@@ -677,9 +686,20 @@ class BioCore:
         self.labels = {"emotion": "neutral", "intent": "hold", "expression": "normal",
                        "need": "talk", "energy": "normal", "stress": "calm"}
         self.noise = {"stress": 0.0, "energy": 0.0, "social": 0.0, "attention": 0.0, "valence": 0.0}
-        # Task-15: autonomy is an opt-in view; default OFF must be a pure no-op.
+        # Task-15: autonomy is opt-in; default OFF is a pure no-op.
         self.autonomy_enabled = False
         self._proactive_autonomy = {"enabled": False}
+        self._noise_seed = 0
+        self._noise_accum = {}
+        # Task-20: L1 learning state (deterministic, bounded, auditable).
+        self.bio_learning = True
+        self.retention_model = "single"
+        self._learning = {
+            "version": 1,
+            "params": {"regulation_q": {}, "trust_alpha": 0.30,
+                       "learning_rate": LEARNING_Q_ALPHA},
+            "last_update": 0.0, "updates_count": 0, "log": [],
+        }
         self.echo = 0.0
         self.echo_trace = 0.0
         self.reflection = {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}
@@ -941,17 +961,21 @@ class BioCore:
                     setattr(self, key, _clip(d[key]))
                 except Exception:
                     pass
-        # Task-15: restore only the autonomy counters/state; enabled is owned by
-        # plugin config, not by the persisted file. Old states without this key
-        # keep the default {"enabled": False}.
+        # Task-15: restore autonomy counters/history only; enabled is owned by
+        # plugin config. Old states without the key keep {"enabled": False}.
         _raw_auto = d.get("proactive_autonomy")
         if isinstance(_raw_auto, dict):
             _safe_auto = {"enabled": bool(_raw_auto.get("enabled", False))}
             for _k in ("threshold", "max_chars", "impulse", "chaos",
+                       "impulse_ema", "ready", "gain", "noise_seed",
                        "last_sent_ts", "sent_count", "sent_day", "updated_ts"):
                 if _k in _raw_auto:
                     _safe_auto[_k] = _raw_auto[_k]
             self._proactive_autonomy = _safe_auto
+            try:
+                self._noise_seed = max(0, int(_raw_auto.get("noise_seed", 0) or 0))
+            except Exception:
+                self._noise_seed = 0
 
     def _derive(self) -> None:
         """Derive stress/energy from v, a, dominance, social (they are not independent)."""
@@ -1088,6 +1112,15 @@ class BioCore:
                     + 0.060 * max(0.0, float(v_delta))
                     + 0.040 * max(0.0, float(social_delta))
                     - 0.060 * max(0.0, -float(v_delta)))
+            # Stage-2 C9: appraisal/emotion now feeds goal progress (real loop),
+            # gated by bio_feedback_loops; default OFF keeps 1.2.98 unchanged.
+            if getattr(self, "bio_feedback_loops", False):
+                try:
+                    _coping = float((getattr(self, "appraisal", {}) or {}).get("coping", 0.5) or 0.5)
+                    _goal_rel = float((getattr(self, "appraisal", {}) or {}).get("goal_relevance", 0.5) or 0.5)
+                    gain += 0.02 * ((_coping - 0.5) + (_goal_rel - 0.5))
+                except Exception:
+                    pass
             gain = max(-0.06, min(0.08, gain))
             for g in self.goals:
                 if str(g.get("key") or "") != focus_key:
@@ -1444,14 +1477,51 @@ class BioCore:
         self.social = _clip(self.social + float(getattr(self, "opponent_gain", 0.10)) * self.opponent["social"], 0, 1)
         self._derive()
         self._update_coping(_pre_stress)
+        # Stage-2 C8: goal progress writes back to appraisal/affect (real loop),
+        # gated by bio_feedback_loops; default OFF is a pure 1.2.98 no-op.
+        _progress_before = 0.0
+        if getattr(self, "bio_feedback_loops", False):
+            try:
+                _focus = str(getattr(self, "goal_focus", "") or "")
+                for _g in (getattr(self, "goals", []) or []):
+                    if isinstance(_g, dict) and str(_g.get("name") or "") == _focus:
+                        _progress_before = float(_g.get("progress", 0.0) or 0.0)
+                        break
+            except Exception:
+                _progress_before = 0.0
         self._advance_goals(v_delta, social_delta)
+        if getattr(self, "bio_feedback_loops", False):
+            try:
+                _focus = str(getattr(self, "goal_focus", "") or "")
+                _progress_after = _progress_before
+                for _g in (getattr(self, "goals", []) or []):
+                    if isinstance(_g, dict) and str(_g.get("name") or "") == _focus:
+                        _progress_after = float(_g.get("progress", 0.0) or 0.0)
+                        break
+                _pdelta = _progress_after - _progress_before
+                if abs(_pdelta) > 1e-9:
+                    _apr = self.appraisal if isinstance(self.appraisal, dict) else {}
+                    _apr["coping"] = round(_clip(
+                        float(_apr.get("coping", 0.5) or 0.5) + 0.30 * _pdelta,
+                        0.0, 1.0), 3)
+                    _apr["goal_relevance"] = round(_clip(
+                        float(_apr.get("goal_relevance", 0.5) or 0.5)
+                        + 0.20 * max(0.0, _pdelta), 0.0, 1.0), 3)
+                    self.v = _clip(self.v + 0.20 * _pdelta, -1.0, 1.0)
+                    self.stress = _clip(self.stress - 0.10 * max(0.0, _pdelta), 0.0, 1.0)
+                    self.appraisal = _apr
+            except Exception:
+                pass
         self._update_attention(v_delta, a_delta)
         self._update_sec(v_delta, a_delta)
         self._update_meta_emotion()
-        for k in self.noise:
-            self.noise[k] = _clip(0.82 * self.noise[k] + self._rng.gauss(0, 0.045), -0.3, 0.3)
-        self.noise["valence"] = _clip(0.7 * self.noise["valence"] + 0.3 * v_delta, -0.3, 0.3)
-        self.noise["stress"] = _clip(0.8 * self.noise["stress"] + 0.2 * (self.stress - 0.2), -0.3, 0.3)
+        if not getattr(self, "autonomy_enabled", False):
+            # Legacy noise update (1.2.98). When autonomy is enabled, the only
+            # noise update point is noise_tick() driven by the background tick.
+            for k in self.noise:
+                self.noise[k] = _clip(0.82 * self.noise[k] + self._rng.gauss(0, 0.045), -0.3, 0.3)
+            self.noise["valence"] = _clip(0.7 * self.noise["valence"] + 0.3 * v_delta, -0.3, 0.3)
+            self.noise["stress"] = _clip(0.8 * self.noise["stress"] + 0.2 * (self.stress - 0.2), -0.3, 0.3)
         self.echo_trace = _clip(0.88 * self.echo_trace + 0.12 * (self.v - self.stress * 0.5), -1, 1)
         self.echo = _clip(0.7 * self.echo + 0.3 * self.echo_trace, -1, 1)
         upper = _clip(0.6 * max(0.0, self.v) + 0.2 * self.trust, 0, 1)
@@ -1471,8 +1541,7 @@ class BioCore:
             homeostasis.step(self, relationship=getattr(self, "relationship_context", None))
         except Exception:
             pass
-        # Task-15: emotion tick + homeostasis drive deviation feed the noise
-        # integrator. No-op unless proactive autonomy is enabled.
+        # Task-15: affect tick + homeostasis drive deviation feed L1 noise.
         try:
             self.integrate_noise(
                 "emotion_tick",
@@ -1746,7 +1815,8 @@ class BioCore:
                 _cands = ["label_emotion"] + _cands
         if _cands:
             if getattr(self, "regulation_stats", None):
-                _cands.sort(key=self._regulation_rate, reverse=True)
+                _qs = (getattr(self, "_learning", {}) or {}).get("params", {}).get("regulation_q", {}) if getattr(self, "bio_learning", False) else {}
+                _cands.sort(key=lambda s: self._regulation_rate(s) + (LEARNING_Q_WEIGHT * float((_qs or {}).get(s, 0.0) or 0.0)), reverse=True)
             return _cands[0]
         return "none"
 
@@ -1763,6 +1833,34 @@ class BioCore:
             st["stress_delta"] = round(float(st.get("stress_delta", 0.0) or 0.0) + delta, 5)
             st["cost"] = round(float(st.get("cost", 0.0) or 0.0) + float(REGULATION_COST.get(strategy, 0.003)), 5)
             st["last_update"] = round(time.time(), 3)
+            if getattr(self, "bio_learning", False):
+                try:
+                    # Daw 2011 Q-learning; min-sample N=5 + step cap 0.02 (review BLOCK-05).
+                    r = max(-1.0, min(1.0, (-delta) * 10.0
+                                      - 0.05 * float(REGULATION_COST.get(strategy, 0.003))
+                                      + 0.10 * float(getattr(self, "a", 0.5))))
+                    qs = self._learning.setdefault("params", {}).setdefault("regulation_q", {})
+                    evidence = self._learning.setdefault("evidence", {}).setdefault("regulation_q", {})
+                    ev = evidence.get(strategy) if isinstance(evidence.get(strategy), dict) else {"n": 0, "sum_pe": 0.0}
+                    old_q = float(qs.get(strategy, 0.0) or 0.0)
+                    ev["n"] = int(ev.get("n", 0) or 0) + 1
+                    ev["sum_pe"] = float(ev.get("sum_pe", 0.0) or 0.0) + (r - old_q)
+                    evidence[strategy] = ev
+                    if int(ev.get("n", 0)) >= 5:
+                        alpha = memory_meta.nassar_alpha(float(ev["sum_pe"]) / int(ev["n"]))
+                        delta_q = max(-0.02, min(0.02, alpha * float(ev["sum_pe"]) / int(ev["n"])))
+                        new_q = max(-1.0, min(1.0, old_q + delta_q))
+                        qs[strategy] = round(new_q, 5)
+                        evidence[strategy] = {"n": 0, "sum_pe": 0.0}
+                        self._learning["updates_count"] = int(self._learning.get("updates_count", 0) or 0) + 1
+                        self._learning["last_update"] = round(time.time(), 3)
+                        log = self._learning.get("log") if isinstance(self._learning.get("log"), list) else []
+                        log.append({"ts": round(time.time(), 3), "param": "regulation_q." + str(strategy),
+                                    "old": round(old_q, 5), "new": round(new_q, 5),
+                                    "reason": "delta_stress", "samples": 5})
+                        self._learning["log"] = log[-20:]
+                except Exception:
+                    pass
             if delta <= 0.0005:
                 st["success"] = int(st.get("success", 0) or 0) + 1
         except Exception:
@@ -2164,25 +2262,31 @@ class BioCore:
             return {"roots": [], "count": 0, "hidden_count": 0}
 
     def integrate_noise(self, source: str = "", **deltas) -> dict:
-        """Task-15: decayed addition into the 5-channel noise integrator.
+        """L1 task-15: decayed addition into the 5-channel noise integrator.
 
-        Only active when the plugin explicitly enabled proactive autonomy
-        (core.autonomy_enabled). With the default config this is a pure no-op,
-        so the legacy noise trajectory is byte-identical. Channels decay 0.98
-        per integration and are clamped to ±NOISE_CLAMP (deterministic).
+        Only active when the plugin enabled proactive autonomy
+        (core.autonomy_enabled). Default OFF is a pure no-op, so the legacy
+        noise trajectory is unchanged. Channels decay 0.98 per integration and
+        are clamped to ±NOISE_CLAMP. This is an L1 state update: callers only
+        hand in module deltas; no caller reads it to bypass L1 decisions.
         """
         if not getattr(self, "autonomy_enabled", False):
             return {}
+        # Accumulator only: modules add small deltas; the single tick applies
+        # decay + RNG + the accumulated injections (P0-2 unified noise model).
+        if not isinstance(getattr(self, "_noise_accum", None), dict):
+            self._noise_accum = {}
         out = {}
         try:
             for key in ("stress", "energy", "social", "attention", "valence"):
-                current = float(self.noise.get(key, 0.0) or 0.0) * 0.98
                 try:
                     add = float(deltas.get(key, 0.0) or 0.0)
                 except Exception:
                     add = 0.0
+                add = max(-0.02, min(0.02, add))
+                current = float(self._noise_accum.get(key, 0.0) or 0.0)
                 value = _clip(current + add, -NOISE_CLAMP, NOISE_CLAMP)
-                self.noise[key] = round(value, 4)
+                self._noise_accum[key] = round(value, 4)
                 out[key] = round(value, 4)
             self._last_noise_source = {"source": str(source or "")[:40],
                                        "ts": round(time.time(), 3)}
@@ -2190,14 +2294,46 @@ class BioCore:
             pass
         return out
 
-    def autonomy_state(self, relationship=None, now=None) -> dict:
-        """Task-15: deterministic noise -> autonomy readiness.
+    def noise_tick(self, now=None) -> dict:
+        """L1 task-15 P0-2: single noise update point.
 
-        Inputs: 5 noise channels, echo_trace, stress_load (stress+allostatic),
-        homeostasis drive deviation (L_int), relationship trust/closeness.
+        noise = clip(0.82*noise + gauss(0,0.045) + accumulated module deltas,
+                     ±NOISE_CLAMP). Only called by the autonomy tick; legacy
+        per-observe noise updates are skipped while autonomy is enabled.
+        """
+        if not getattr(self, "autonomy_enabled", False):
+            return {}
+        out = {}
+        try:
+            accum = self._noise_accum if isinstance(getattr(self, "_noise_accum", None), dict) else {}
+            for key in ("stress", "energy", "social", "attention", "valence"):
+                old = float(self.noise.get(key, 0.0) or 0.0)
+                try:
+                    gauss = float(self._rng.gauss(0, 0.045))
+                except Exception:
+                    gauss = 0.0
+                try:
+                    add = float(accum.get(key, 0.0) or 0.0)
+                except Exception:
+                    add = 0.0
+                value = _clip(0.82 * old + gauss + add, -NOISE_CLAMP, NOISE_CLAMP)
+                self.noise[key] = round(value, 4)
+                out[key] = round(value, 4)
+            self._noise_accum = {}
+        except Exception:
+            pass
+        return out
+
+    def autonomy_state(self, relationship=None, now=None, persist: bool = True) -> dict:
+        """L1 task-15: deterministic noise -> autonomy readiness.
+
+        Inputs are all L1 state: 5 noise channels, echo_trace, stress_load
+        (stress + allostatic), homeostasis drive deviation (L_int), persona
+        autonomy_gain, and the relationship record passed in as data.
         Outputs are bounded: threshold ∈ [0.55, 0.90], max_chars ∈ [60, 240],
-        impulse ∈ [0, 1]. When autonomy is off this returns {"enabled": False}
-        and performs no computation.
+        impulse ∈ [0, 1]. P1-G11: threshold follows an EMA of past impulses plus
+        a ready hysteresis band, not the current impulse alone. Default OFF
+        returns {"enabled": False} without computing anything.
         """
         if not getattr(self, "autonomy_enabled", False):
             return {"enabled": False}
@@ -2211,7 +2347,15 @@ class BioCore:
         except Exception:
             noise = {}
         chaos = _clip(sum(abs(v) for v in noise.values()) / (5.0 * NOISE_CLAMP), 0.0, 1.0)
-        echo = _clip(abs(float(getattr(self, "echo_trace", 0.0) or 0.0)), 0.0, 1.0)
+        # Stage-2: echo/ripple/spiking all feed the readiness input, not just
+        # echo_trace. Bounded weighted mix (deterministic).
+        try:
+            _echo_raw = abs(float(getattr(self, "echo_trace", 0.0) or 0.0))
+            _ripple = float((getattr(self, "ripple", {}) or {}).get("energy", 0.0) or 0.0)
+            _spiking = float((getattr(self, "spiking", {}) or {}).get("rate", 0.0) or 0.0)
+            echo = _clip(0.60 * _echo_raw + 0.20 * _ripple + 0.20 * min(1.0, _spiking), 0.0, 1.0)
+        except Exception:
+            echo = 0.0
         try:
             stress_load = _clip(
                 0.6 * float(self.stress)
@@ -2233,23 +2377,53 @@ class BioCore:
             closeness = _clip(float(rel_state.get("closeness", 0.5) or 0.5), 0.0, 1.0)
         except Exception:
             closeness = 0.5
+        # Stage-2: attachment is an L1 input (not dashboard-only anymore).
+        try:
+            _attachment = rel.get("attachment") if isinstance(rel.get("attachment"), dict) else {}
+            attachment_safe = _clip(float(_attachment.get("safe", 0.5) or 0.5), 0.0, 1.0)
+        except Exception:
+            attachment_safe = 0.5
+        closeness_eff = _clip(0.70 * closeness + 0.30 * attachment_safe, 0.0, 1.0)
+        try:
+            gain = _clip(float((getattr(self, "profile", {}) or {}).get(
+                "autonomy_gain", 1.0) or 0.0), 0.0, 1.5)
+        except Exception:
+            gain = 1.0
         w = AUTONOMY_WEIGHTS
         impulse = _clip(
             w["chaos"] * chaos + w["echo"] * echo + w["stress_load"] * stress_load
             + w["drive_dev"] * drive_dev + w["distrust"] * (1.0 - trust)
-            + w["distance"] * (1.0 - closeness), 0.0, 1.0)
-        threshold = _clip(0.88 - 0.30 * impulse,
-                          AUTONOMY_THRESHOLD_MIN, AUTONOMY_THRESHOLD_MAX)
+            + w["distance"] * (1.0 - closeness_eff), 0.0, 1.0)
+        # P1-G10: autonomy_gain (persona profile) is now a real consumer.
+        impulse = _clip(impulse * gain, 0.0, 1.0)
+        prev = self._proactive_autonomy if isinstance(self._proactive_autonomy, dict) else {}
+        try:
+            prev_ema = float(prev.get("impulse_ema", impulse))
+        except Exception:
+            prev_ema = impulse
+        impulse_ema = _clip(0.8 * prev_ema + 0.2 * impulse, 0.0, 1.0)
+        # P1-G11: threshold uses the EMA (history), so it does not collapse to a
+        # function of the current impulse; ready uses a small hysteresis band.
+        target = _clip(0.82 - 0.30 * impulse_ema,
+                       AUTONOMY_THRESHOLD_MIN, AUTONOMY_THRESHOLD_MAX)
+        prev_ready = bool(prev.get("ready", False))
+        # Explicit hysteresis: enter at 0.72, exit only below 0.60.
+        if prev_ready:
+            ready = impulse >= AUTONOMY_EXIT
+        else:
+            ready = impulse >= AUTONOMY_ENTER
         max_chars = int(round(_clip(60.0 + 180.0 * impulse,
                                     AUTONOMY_MAX_CHARS_MIN, AUTONOMY_MAX_CHARS_MAX)))
-        prev = self._proactive_autonomy if isinstance(self._proactive_autonomy, dict) else {}
         result = {
             "enabled": True,
-            "threshold": round(threshold, 4),
+            "threshold": round(target, 4),
             "max_chars": max_chars,
             "impulse": round(impulse, 4),
-            "ready": bool(impulse >= threshold),
+            "impulse_ema": round(impulse_ema, 4),
+            "ready": bool(ready),
             "chaos": round(chaos, 4),
+            "gain": round(gain, 3),
+            "noise_seed": int(getattr(self, "_noise_seed", 0) or 0),
             "sources": {
                 "noise": {k: round(v, 4) for k, v in noise.items()},
                 "echo_trace": round(echo, 4),
@@ -2257,6 +2431,9 @@ class BioCore:
                 "drive_dev": round(drive_dev, 4),
                 "trust": round(trust, 4),
                 "closeness": round(closeness, 4),
+                "attachment_safe": round(attachment_safe, 4),
+                "closeness_effective": round(closeness_eff, 4),
+                "autonomy_gain": round(gain, 3),
             },
             "updated_ts": round(current, 3),
             "last_sent_ts": float(prev.get("last_sent_ts", 0.0) or 0.0),
@@ -2266,7 +2443,8 @@ class BioCore:
             "daily_cap": AUTONOMY_DAILY_CAP,
             "quiet_hours": [AUTONOMY_QUIET_START_HOUR, AUTONOMY_QUIET_END_HOUR],
         }
-        self._proactive_autonomy = result
+        if persist:
+            self._proactive_autonomy = result
         return dict(result)
 
     def snapshot(self) -> dict:
@@ -2328,12 +2506,36 @@ class BioCore:
                 "spectrum": self._spectrum(),
                 "spectrum_calibration": dict(getattr(self, "_spectrum_calibration_meta", {}) or {}),
                 "labels": dict(getattr(self, "labels", {}) or {}),
-                # Task-15: exactly one new read-only field. Default OFF keeps the
-                # minimal marker; no readiness is computed in that mode.
+                # Task-15: exactly one new top-level field; default OFF keeps
+                # the minimal marker and computes no readiness.
+                "learning": dict(self._learning),
                 "proactive_autonomy": (dict(self._proactive_autonomy)
                                        if getattr(self, "autonomy_enabled", False)
                                        and isinstance(getattr(self, "_proactive_autonomy", None), dict)
                                        else {"enabled": False})}
+
+
+class _AutonomySendTarget:
+    """Minimal event-like send target for the P0-1 background generator."""
+
+    def __init__(self, plugin, umo, sender_id="", sender_name="", private=True):
+        self._plugin = plugin
+        self.unified_msg_origin = str(umo or "")
+        self._sender_id = str(sender_id or "")
+        self._sender_name = str(sender_name or "")
+        self._private = bool(private)
+
+    def is_private_chat(self):
+        return self._private
+
+    def get_sender_id(self):
+        return self._sender_id
+
+    def get_sender_name(self):
+        return self._sender_name
+
+    async def send(self, chain):
+        return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
 @register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.2.98")
@@ -2357,9 +2559,82 @@ class BioCorePlugin(Star):
             self.event_summary_delay_hours = 6
         self.proactive_reply = bool(self.config.get("proactive_reply", False))
         # Task-15: noise -> autonomy. Both default false; when off no readiness
-        # is computed and no message can be sent (legacy behavior untouched).
+        # is computed, no background task starts, and no message can be sent.
         self.proactive_autonomy = bool(self.config.get("proactive_autonomy", False))
         self.proactive_send = bool(self.config.get("proactive_send", False))
+        # Stage-2: C8+C9 goal<->appraisal closed loop (default OFF = 1.2.98).
+        self.bio_feedback_loops = bool(self.config.get("bio_feedback_loops", False))
+        # Task-20: L1 learning defaults ON with small steps + hard bounds.
+        self.bio_learning = bool(self.config.get("bio_learning", True))
+        _rm = str(self.config.get("retention_model", "single") or "single")
+        self.retention_model = _rm if _rm in LEARNING_RETENTION_MODELS else "single"
+        # Batch4 attention flags: all default OFF = pure 1.2.98 no-op.
+        self.attention_gate_enabled = bool(self.config.get("attention_gate_enabled", False))
+        try:
+            self.attention_gate_s = max(0.20, min(0.40, float(self.config.get("attention_gate_s", 0.30) or 0.30)))
+        except Exception:
+            self.attention_gate_s = 0.30
+        try:
+            self.attention_gate_shift = max(-0.20, min(0.20, float(self.config.get("attention_gate_shift", 0.0) or 0.0)))
+        except Exception:
+            self.attention_gate_shift = 0.0
+        self.fan_penalty_enabled = bool(self.config.get("fan_penalty_enabled", False))
+        try:
+            self.fan_cap = max(1, min(64, int(self.config.get("fan_cap", 32) or 32)))
+        except Exception:
+            self.fan_cap = 32
+        try:
+            self.fan_gain = max(0.05, min(0.20, float(self.config.get("fan_gain", 0.10) or 0.10)))
+        except Exception:
+            self.fan_gain = 0.10
+        try:
+            self.fan_floor = max(0.50, min(0.85, float(self.config.get("fan_floor", 0.70) or 0.70)))
+        except Exception:
+            self.fan_floor = 0.70
+        self.cowan_capacity_enabled = bool(self.config.get("cowan_capacity_enabled", False))
+        try:
+            self.cowan_capacity = max(3, min(6, int(self.config.get("cowan_capacity", 4) or 4)))
+        except Exception:
+            self.cowan_capacity = 4
+        self.attention_topk_cap_enabled = bool(self.config.get("attention_topk_cap_enabled", False))
+        try:
+            self.attention_topk_cap = max(3, min(6, int(self.config.get("attention_topk_cap", 4) or 4)))
+        except Exception:
+            self.attention_topk_cap = 4
+        # Batch5 H2: event chain (default OFF; H2-3 multi-hop also OFF).
+        self.attention_gate_mode = str(self.config.get("attention_gate_mode", "hard") or "hard").lower()
+        if self.attention_gate_mode not in ("hard", "probabilistic"):
+            self.attention_gate_mode = "hard"
+        try:
+            self.attention_seed = int(self.config.get("attention_seed", 0) or 0)
+        except Exception:
+            self.attention_seed = 0
+        # H2-2 budget is independent of the H2-1 edge switch.
+        self.chain_budget_enabled = bool(self.config.get("chain_budget_enabled", False))
+        self.memory_chain_enabled = bool(self.config.get("memory_chain_enabled", False))
+        self.memory_chain_multihop = bool(self.config.get("memory_chain_multihop", False))
+        try:
+            self.chain_hops = max(1, min(2, int(self.config.get("chain_hops", 2) or 2)))
+        except Exception:
+            self.chain_hops = 2
+        try:
+            self.chain_fan_out = max(1, min(3, int(self.config.get("chain_fan_out", 3) or 3)))
+        except Exception:
+            self.chain_fan_out = 3
+        try:
+            self.chain_decay = max(0.4, min(0.6, float(self.config.get("chain_decay", 0.5) or 0.5)))
+        except Exception:
+            self.chain_decay = 0.5
+        try:
+            self.chain_max_new = max(1, min(6, int(self.config.get("chain_max_new", 6) or 6)))
+        except Exception:
+            self.chain_max_new = 6
+        try:
+            self.noise_seed = int(self.config.get("noise_seed", 0) or 0)
+        except Exception:
+            self.noise_seed = 0
+        self._autonomy_task = None
+        self._autonomy_private_sessions = {}
         # A1: event ranking is deterministic by default; the optional LLM rerank
         # follows the global rerank provider only when this switch is turned on.
         self.event_ranking_llm = bool(self.config.get("event_ranking_llm", False))
@@ -3056,9 +3331,22 @@ class BioCorePlugin(Star):
                     core.load_state(json.loads(f.read_text(encoding="utf-8")))
             except Exception:
                 pass
-            # Task-15: readiness computation is owned by plugin config, never
-            # restored from the state file.
+            # Task-15: readiness is owned by plugin config, never restored from
+            # state; the optional noise seed is applied only when autonomy is on.
             core.autonomy_enabled = bool(getattr(self, "proactive_autonomy", False))
+            core.bio_feedback_loops = bool(
+                getattr(self, "bio_feedback_loops", False))
+            core.bio_learning = bool(getattr(self, "bio_learning", True))
+            core.retention_model = str(
+                getattr(self, "retention_model", "power_law") or "power_law")
+            if core.autonomy_enabled:
+                try:
+                    _seed = int(getattr(self, "noise_seed", 0) or 0)
+                    core._noise_seed = max(0, _seed)
+                    if _seed > 0:
+                        core._rng = __import__("random").Random(_seed)
+                except Exception:
+                    pass
             self.cores[key] = core
         return self.cores[key]
 
@@ -3084,11 +3372,7 @@ class BioCorePlugin(Star):
             pass
 
     def _is_private_event(self, event) -> bool:
-        """Task-15: only private chats can ever trigger autonomy output.
-
-        Group/Guild sessions are rejected by UMO string and by the platform
-        predicate, so even misconfigured proactive_send=true stays silent.
-        """
+        """Task-15: only private chats can ever trigger autonomy output."""
         try:
             umo = str(getattr(event, "unified_msg_origin", "") or "")
             if "GroupMessage" in umo or "GuildMessage" in umo:
@@ -3101,7 +3385,7 @@ class BioCorePlugin(Star):
             return False
 
     def _update_autonomy_readiness(self, core, user_data=None) -> dict:
-        """Task-15: compute and store readiness only when autonomy is enabled."""
+        """Task-15: ask L1 to compute readiness only when autonomy is enabled."""
         if not getattr(self, "proactive_autonomy", False) or core is None:
             return {}
         try:
@@ -3110,41 +3394,83 @@ class BioCorePlugin(Star):
             return {}
 
     def _autonomy_template(self, core) -> str:
-        """Task-15: deterministic proactive text from existing summaries (no LLM)."""
-        title = ""
-        summary = ""
+        """Task-15: state-style deterministic proactive text (no summaries/LLM).
+
+        Uses only need + current emotion + closeness band, so the send cannot
+        leak event titles or stale summaries and stays reproducible.
+        """
+        labels = getattr(core, "labels", {}) or {}
+        need = str(labels.get("need") or "talk")
+        emotion = str(labels.get("emotion") or "neutral")
+        need_txt = {"space": "你先忙，我不打扰。",
+                    "share": "想听听你今天的碎片。",
+                    "vent": "要是想说，我在。",
+                    "be_heard": "我在听。",
+                    "talk": "想和你说两句。"}.get(need, "想和你说两句。")
+        emotion_txt = {"joy": "心情还算轻",
+                       "sadness": "心里有点沉",
+                       "anger": "有点憋着火",
+                       "fear": "有点不安",
+                       "loneliness": "有点想人陪",
+                       "neutral": "情绪平稳"}.get(emotion, "情绪平稳")
         try:
-            events = [e for e in self._event_archive(1) if isinstance(e, dict)]
-            if events:
-                latest = events[0]
-                title = str(latest.get("title") or "").strip()[:40]
-                summary = str(latest.get("small_summary")
-                              or latest.get("big_summary") or "").strip()[:120]
+            rel = getattr(core, "relationship_context", None) or {}
+            closeness = float((rel.get("state") or {}).get("closeness", 0.5) or 0.5)
         except Exception:
-            pass
-        _need = str((getattr(core, "labels", {}) or {}).get("need") or "talk")
-        tail = {"space": "你先忙，我在这儿。",
-                "share": "想听听你今天的碎片。",
-                "vent": "要是想说，我在。",
-                "be_heard": "你上次说的，我还记着。",
-                "talk": "想和你说两句。"}.get(_need, "想和你说两句。")
-        if title and summary:
-            text = "刚想起「%s」。%s %s" % (title, summary, tail)
-        elif title:
-            text = "刚想起「%s」。%s" % (title, tail)
-        elif summary:
-            text = "%s %s" % (summary, tail)
+            closeness = 0.5
+        if closeness >= 0.65:
+            close_txt = "和你还挺亲近"
+        elif closeness <= 0.35:
+            close_txt = "和你有点距离"
         else:
-            text = tail
-        return text[:AUTONOMY_MAX_CHARS_MAX]
+            close_txt = "和你平常"
+        return ("%s%s，%s。" % (need_txt, emotion_txt, close_txt))[:AUTONOMY_MAX_CHARS_MAX]
+
+    def _autonomy_gate(self, core, relationship, now=None):
+        """Task-15: L3 applies send gates to an L1 readiness result."""
+        if core is None:
+            return None, {"enabled": False}
+        try:
+            current = float(now if now is not None else time.time())
+            state = core.autonomy_state(relationship, now=current)
+            if not state.get("enabled") or not state.get("ready"):
+                return None, state or {}
+            # Stage-2: refusal_protocol is now a real gate, not a posture token.
+            rel_state = relationship.get("state") if isinstance(relationship, dict) else {}
+            rel_state = rel_state if isinstance(rel_state, dict) else {}
+            try:
+                protocol = relationship_meta.refusal_protocol({
+                    "boundary_pressure": float(getattr(core, "boundary_pressure", 0.0) or 0.0),
+                    "trust": float(rel_state.get("trust", 0.5) or 0.5),
+                    "conflict": float(rel_state.get("conflict", 0.0) or 0.0),
+                })
+            except Exception:
+                protocol = {"mode": "comply"}
+            if str(protocol.get("mode") or "comply") == "decline":
+                return None, state
+            if str(protocol.get("mode") or "comply") == "negotiate":
+                state = dict(state)
+                state["max_chars"] = min(int(state.get("max_chars") or 120), 90)
+            hour = time.localtime(current).tm_hour
+            if AUTONOMY_QUIET_START_HOUR <= hour < AUTONOMY_QUIET_END_HOUR:
+                return None, state
+            last_ts = float(state.get("last_sent_ts", 0.0) or 0.0)
+            if last_ts > 0 and (current - last_ts) < AUTONOMY_COOLDOWN_SECONDS:
+                return None, state
+            day = time.strftime("%Y-%m-%d", time.localtime(current))
+            sent_count = int(state.get("sent_count", 0) or 0)
+            if str(state.get("sent_day") or "") != day:
+                sent_count = 0
+            if sent_count >= AUTONOMY_DAILY_CAP:
+                return None, state
+            max_chars = int(state.get("max_chars") or 120)
+            text = self._autonomy_template(core)[:max(1, max_chars)].strip()
+            return (text or None), state
+        except Exception:
+            return None, {"enabled": False}
 
     async def _maybe_proactive_send(self, event, core, now=None) -> bool:
-        """Task-15: deterministic, gated private-only proactive send.
-
-        Requires proactive_autonomy AND proactive_send, a ready impulse, quiet
-        hours 0-8 excluded, cooldown >=30min, <=3/day. Default config is false,
-        so this returns False before doing any work.
-        """
+        """Task-15: private-only send of the deterministic template."""
         if not getattr(self, "proactive_autonomy", False):
             return False
         if not getattr(self, "proactive_send", False) or core is None:
@@ -3157,26 +3483,15 @@ class BioCorePlugin(Star):
                 user_data = self._user_record(event)
             except Exception:
                 user_data = {}
-            state = core.autonomy_state(self._relationship_of(user_data), now=current)
-            if not state.get("ready"):
+            text, state = self._autonomy_gate(
+                core, self._relationship_of(user_data), now=current)
+            if not text:
                 return False
-            hour = time.localtime(current).tm_hour
-            if AUTONOMY_QUIET_START_HOUR <= hour < AUTONOMY_QUIET_END_HOUR:
-                return False
-            last_ts = float(state.get("last_sent_ts", 0.0) or 0.0)
-            if last_ts > 0 and (current - last_ts) < AUTONOMY_COOLDOWN_SECONDS:
-                return False
+            await event.send(MessageChain([Plain(text)]))
             day = time.strftime("%Y-%m-%d", time.localtime(current))
             sent_count = int(state.get("sent_count", 0) or 0)
             if str(state.get("sent_day") or "") != day:
                 sent_count = 0
-            if sent_count >= AUTONOMY_DAILY_CAP:
-                return False
-            max_chars = int(state.get("max_chars") or 120)
-            text = self._autonomy_template(core)[:max(1, max_chars)].strip()
-            if not text:
-                return False
-            await event.send(MessageChain([Plain(text)]))
             core._proactive_autonomy.update({
                 "last_sent_ts": round(current, 3),
                 "sent_day": day,
@@ -3188,10 +3503,89 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] proactive send failed: %s", exc)
             return False
 
+    def _register_autonomy_session(self, event) -> None:
+        """Task-15: remember one private session for the background generator."""
+        try:
+            umo = str(getattr(event, "unified_msg_origin", "") or "").strip()
+            if not umo:
+                return
+            sid, sname = self._speaker(event)
+            self._autonomy_private_sessions[umo] = {
+                "umo": umo, "sender_id": sid, "sender_name": sname,
+                "ts": round(time.time(), 3),
+            }
+            if len(self._autonomy_private_sessions) > 20:
+                _items = sorted(self._autonomy_private_sessions.items(),
+                                key=lambda kv: float(kv[1].get("ts", 0.0) or 0.0),
+                                reverse=True)[:20]
+                self._autonomy_private_sessions = dict(_items)
+        except Exception:
+            pass
+
+    def _ensure_autonomy_task(self) -> None:
+        """P0-1: start the autonomous generator only when autonomy is on."""
+        if not getattr(self, "proactive_autonomy", False):
+            return
+        try:
+            task = getattr(self, "_autonomy_task", None)
+            if task is None or task.done():
+                self._autonomy_task = asyncio.create_task(self._autonomy_loop())
+        except Exception:
+            pass
+
+    async def _autonomy_loop(self) -> None:
+        """P0-1: 5-minute deterministic tick; exits immediately when disabled."""
+        try:
+            while getattr(self, "proactive_autonomy", False):
+                await asyncio.sleep(AUTONOMY_TICK_SECONDS)
+                if not getattr(self, "proactive_autonomy", False):
+                    break
+                try:
+                    await self._autonomy_tick()
+                except Exception:
+                    pass
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            return
+
+    async def _autonomy_tick(self, now=None) -> list:
+        """P0-1: one autonomous tick over remembered private sessions."""
+        sent = []
+        if not getattr(self, "proactive_autonomy", False):
+            return sent
+        if not getattr(self, "proactive_send", False):
+            return sent
+        try:
+            current = float(now if now is not None else time.time())
+        except Exception:
+            current = time.time()
+        for umo, info in list(getattr(self, "_autonomy_private_sessions", {}).items()):
+            try:
+                if current - float(info.get("ts", 0.0) or 0.0) > 86400:
+                    continue
+                cores = getattr(self, "cores", None)
+                core = cores.get(umo) if isinstance(cores, dict) else None
+                if core is None or not getattr(core, "autonomy_enabled", False):
+                    continue
+                # Unified noise model: one update point per tick.
+                try:
+                    core.noise_tick(now=current)
+                except Exception:
+                    pass
+                target = _AutonomySendTarget(
+                    self, umo, info.get("sender_id", ""),
+                    info.get("sender_name", ""), private=True)
+                if await self._maybe_proactive_send(target, core, now=current):
+                    sent.append(umo)
+            except Exception:
+                continue
+        return sent
+
     def _readiness_text(self, event) -> str:
         """Task-15: read-only /biocore readiness report (no side effects when off)."""
         if not getattr(self, "proactive_autonomy", False):
-            return ("[BioCore] readiness: disabled（proactive_autonomy=false）\n"
+            return ("[BioCore] readiness: disabled (proactive_autonomy=false)\n"
                     "proactive_send=%s" % bool(getattr(self, "proactive_send", False)))
         try:
             core = self._core(event)
@@ -3199,16 +3593,18 @@ class BioCorePlugin(Star):
                 user_data = self._user_record(event)
             except Exception:
                 user_data = {}
-            state = core.autonomy_state(self._relationship_of(user_data))
+            state = core.autonomy_state(self._relationship_of(user_data), persist=False)
             sources = state.get("sources") or {}
             noise = sources.get("noise") or {}
             return ("[BioCore] readiness: threshold=%.3f max_chars=%d impulse=%.3f "
-                    "ready=%s enabled=true send=%s\n来源: chaos=%.3f echo=%.3f "
-                    "stress_load=%.3f drive_dev=%.3f trust=%.3f closeness=%.3f "
+                    "ema=%.3f ready=%s enabled=true send=%s\n"
+                    "sources: chaos=%.3f echo=%.3f stress_load=%.3f drive_dev=%.3f "
+                    "trust=%.3f closeness=%.3f gain=%.3f noise_seed=%s "
                     "noise(st=%s en=%s so=%s at=%s va=%s)" % (
                         float(state.get("threshold", 0.0)),
                         int(state.get("max_chars", 0)),
                         float(state.get("impulse", 0.0)),
+                        float(state.get("impulse_ema", 0.0)),
                         bool(state.get("ready")),
                         bool(getattr(self, "proactive_send", False)),
                         float(state.get("chaos", 0.0)),
@@ -3217,6 +3613,8 @@ class BioCorePlugin(Star):
                         float(sources.get("drive_dev", 0.0)),
                         float(sources.get("trust", 0.5)),
                         float(sources.get("closeness", 0.5)),
+                        float(sources.get("autonomy_gain", 1.0)),
+                        state.get("noise_seed", 0),
                         noise.get("stress", 0.0), noise.get("energy", 0.0),
                         noise.get("social", 0.0), noise.get("attention", 0.0),
                         noise.get("valence", 0.0)))
@@ -3237,8 +3635,31 @@ class BioCorePlugin(Star):
             event.set_result(MessageEventResult().message(
                 self._readiness_text(event)).use_t2i(False))
             return
+        if sub == "learning" or sub.startswith("learning "):
+            core = self._core(event)
+            if sub == "learning reset":
+                try:
+                    core._learning = {"version": 1,
+                                      "params": {"regulation_q": {}, "trust_alpha": 0.30,
+                                                 "learning_rate": LEARNING_Q_ALPHA},
+                                      "last_update": 0.0, "updates_count": 0, "log": []}
+                    event.set_result(MessageEventResult().message(
+                        "[BioCore] learning reset done").use_t2i(False))
+                except Exception:
+                    event.set_result(MessageEventResult().message(
+                        "[BioCore] learning reset failed").use_t2i(False))
+                return
+            try:
+                state = json.dumps(core._learning, ensure_ascii=False)[:1500]
+            except Exception:
+                state = "{}"
+            event.set_result(MessageEventResult().message(
+                "[BioCore] learning enabled=%s retention=%s\n%s" % (
+                    bool(getattr(core, "bio_learning", False)),
+                    str(getattr(core, "retention_model", "power_law")), state)).use_t2i(False))
+            return
         event.set_result(MessageEventResult().message(
-            "用法：/biocore readiness").use_t2i(False))
+            "用法：/biocore readiness | /biocore learning | /biocore learning reset").use_t2i(False))
 
     async def _ensure_profile(self, event):
         if not self.profile and self.first_run_persona_compile:
@@ -3908,7 +4329,13 @@ class BioCorePlugin(Star):
                 d["sessions"] = (_sessions[-19:] + [_session_key])[-20:]
             try:
                 _ct = float(getattr(core, "trust", 0.5)) if core is not None else 0.5
-                d["trust"] = round(0.7 * float(d.get("trust", 0.5) or 0.5) + 0.3 * _ct, 3)
+                _old_trust = float(d.get("trust", 0.5) or 0.5)
+                if core is not None and getattr(core, "bio_learning", False):
+                    # Nassar 2010 adaptive alpha for the trust EMA.
+                    _alpha = memory_meta.nassar_alpha(_ct - _old_trust)
+                else:
+                    _alpha = 0.30
+                d["trust"] = round(_old_trust + _alpha * (_ct - _old_trust), 3)
             except Exception:
                 d["trust"] = d.get("trust", 0.5)
             try:
@@ -3966,7 +4393,7 @@ class BioCorePlugin(Star):
                         core.set_relationship_context(d.get("relationship"))
                     except Exception:
                         pass
-                    # Task-15: relationship deltas feed social/valence noise.
+                    # Task-15: relationship delta feeds L1 social/valence noise.
                     try:
                         _rel_now = d.get("relationship") if isinstance(d.get("relationship"), dict) else {}
                         _rel_st = _rel_now.get("state") if isinstance(_rel_now.get("state"), dict) else {}
@@ -5037,6 +5464,33 @@ class BioCorePlugin(Star):
                 _norm_key = self._normalize_event_key(_raw_key, str(record.get("title") or ""))
                 if _norm_key:
                     record["event_key"] = _norm_key
+                # Batch5 H2-1: <=3 event-event edges (time proximity 1800s +
+                # causal words), Radvansky & Zacks 2014; Trabasso 1985.
+                if getattr(self, "memory_chain_enabled", False):
+                    try:
+                        _sess = str(record.get("session") or "default")
+                        _recent = self._recent_session_events(_sess, 3)
+                        _text = " ".join(str(record.get(k) or "") for k in
+                                         ("title", "event", "big_summary"))
+                        _causal = any(w in _text for w in
+                                      ("因为", "所以", "导致", "于是", "结果", "因此", "然后", "后来"))
+                        _rts = float(record.get("ts", 0) or 0)
+                        _links = []
+                        for _prev in _recent[-3:]:
+                            if not isinstance(_prev, dict) or not _prev.get("id"):
+                                continue
+                            _gap = abs(_rts - float(_prev.get("ts", 0) or 0))
+                            if _gap > 1800.0:
+                                continue
+                            _w = 1.0 if _causal else max(0.5, 1.0 - 0.5 * _gap / 1800.0)
+                            _links.append({"id": str(_prev["id"]), "weight": round(_w, 3),
+                                           "ts": _rts, "kind": "causal" if _causal else "temporal"})
+                            if len(_links) >= 3:
+                                break
+                        if _links:
+                            record["chain_links"] = _links
+                    except Exception:
+                        pass
             line = json.dumps(record, ensure_ascii=False)
             with open(EVENT_ARCHIVE_PATH, "a", encoding="utf-8") as f:
                 f.write(line + "\n")
@@ -5048,6 +5502,47 @@ class BioCorePlugin(Star):
                 f.write(line + "\n")
         except Exception as exc:
             logger.warning("[biocore] event archive failed: %s", exc)
+
+    def _chain_event_lines(self, session: str, query: str, limit: int = 2) -> list:
+        """H2-1 read path: decayed event-chain expansion (default OFF).
+
+        Only called when memory_chain_enabled. Seeds = same-session event with
+        the highest character overlap with the query; follows its chain_links
+        (hop<=1), applies 30-day decay, returns <=limit lines (no avalanche).
+        """
+        if not getattr(self, "memory_chain_enabled", False):
+            return []
+        try:
+            events = [e for e in self._event_archive(100) if isinstance(e, dict)]
+            sess = str(session or "")
+            same = [e for e in events if str(e.get("session") or "default") == sess]
+            if not same:
+                return []
+            q = set(str(query or ""))
+            def _overlap(e):
+                txt = str(e.get("title") or "") + " " + str(e.get("big_summary") or "")
+                return len(q & set(txt))
+            same.sort(key=lambda e: (-_overlap(e), -float(e.get("ts", 0) or 0)))
+            seed = same[0]
+            out = []
+            for link in (seed.get("chain_links") or [])[:3]:
+                if not isinstance(link, dict):
+                    continue
+                lid = str(link.get("id") or "")
+                target = next((e for e in same if str(e.get("id") or "") == lid), None)
+                if not target:
+                    continue
+                w = memory_meta.decayed_chain_weight(link.get("weight", 1.0), link.get("ts", 0))
+                if w < 0.1:
+                    continue
+                text = str(target.get("title") or target.get("big_summary") or "").strip().replace("\n", " ")
+                if text:
+                    out.append("- 关联事件(链 %.2f)：%s" % (w, text[:160]))
+                if len(out) >= limit:
+                    break
+            return out
+        except Exception:
+            return []
 
     def _attachments_from_messages(self, event) -> list:
         out = []
@@ -5585,7 +6080,6 @@ class BioCorePlugin(Star):
                     pass
                 self._append_event_archive(record)
                 _digest_event_ids.append(record.get("id"))
-                # Task-15: summary/archive completion feeds attention noise.
                 if core is not None:
                     try:
                         core.integrate_noise("event_summary", attention=0.005)
@@ -7018,7 +7512,12 @@ class BioCorePlugin(Star):
         importance = memory_meta.effective_importance(entry)
         age = max(0.0, time.time() - float(entry.get("ts", 0) or 0))
         age_days = age / 86400.0
-        recency = 1.0 / math.pow(1.0 + max(0.0, age_days) * 0.35, 0.55)
+        _retention_model = getattr(core, "retention_model", "power_law") if core is not None else "power_law"
+        # Task-20 P0-3: power law / multi-scale retention (both kept; single=legacy).
+        if _retention_model in ("power_law", "multi_scale"):
+            recency = memory_meta.retention_weight(age_days, _retention_model)
+        else:
+            recency = 1.0 / math.pow(1.0 + max(0.0, age_days) * 0.35, 0.55)
         try:
             recall_count = int(entry.get("recall_count", 0) or 0)
         except Exception:
@@ -7075,6 +7574,21 @@ class BioCorePlugin(Star):
                  * regulation_mod
                  * lexical_mod
                  * sensitive_mod)
+        # Batch4 L18: Anderson & Reder 1999 (10.1037/0096-3445.128.2.186)
+        # fan penalty S=S-ln(fan): score *= 1/(1+g*ln(1+assoc+links)), floor.
+        if getattr(self, "fan_penalty_enabled", False):
+            try:
+                _links = entry.get("links") if isinstance(entry.get("links"), list) else []
+                try:
+                    _raw_assoc = sum(int(v) for v in (entry.get("assoc") or {}).values())
+                except Exception:
+                    _raw_assoc = 0
+                _fan = min(int(getattr(self, "fan_cap", 32) or 32), _raw_assoc + len(_links))
+                _pen = max(float(getattr(self, "fan_floor", 0.70)),
+                           1.0 / (1.0 + float(getattr(self, "fan_gain", 0.10)) * math.log1p(max(0, _fan))))
+                score *= _pen
+            except Exception:
+                pass
         return {
             "score": float(score),
             "cosine": round(float(cosine), 6),
@@ -7111,6 +7625,33 @@ class BioCorePlugin(Star):
             pass
         return max(0.0, score)
 
+    def _attention_gate_admit(self, score: float, entry_id: str = "") -> bool:
+        """L17 hard/probabilistic gate (Anderson et al. 2004, 10.1037/0033-295X.111.4.1036)."""
+        try:
+            _a = math.log(max(1e-9, float(score)))
+            _tau = math.log(RETRIEVAL_THRESHOLD) + float(getattr(self, "attention_gate_shift", 0.0) or 0.0)
+            _s = max(1e-6, float(getattr(self, "attention_gate_s", 0.30) or 0.30))
+            _p = 1.0 / (1.0 + math.exp(-((_a - _tau) / _s)))
+            if str(getattr(self, "attention_gate_mode", "hard")) == "probabilistic":
+                _seed = int(getattr(self, "attention_seed", 0) or 0)
+                if _seed > 0:
+                    _h = 0
+                    for _ch in str(entry_id):
+                        _h = (_h * 131 + ord(_ch)) % 2147483647
+                    _rng = __import__("random").Random(_seed * 1000003 + _h)
+                else:
+                    _rng = __import__("random").Random()
+                return float(_rng.random()) < _p
+            return _p >= 0.5
+        except Exception:
+            return float(score) >= RETRIEVAL_THRESHOLD
+
+    def _working_set_capacity(self, core) -> int:
+        """Batch4 L19: Cowan 2001 capacity (default 8 legacy; flag -> cowan)."""
+        if getattr(self, "cowan_capacity_enabled", False):
+            return max(3, min(6, int(getattr(self, "cowan_capacity", 4) or 4)))
+        return max(4, self._memory_top_k(core) * 2)
+
     def _memory_top_k(self, core) -> int:
         k = 4
         if core is not None:
@@ -7124,7 +7665,10 @@ class BioCorePlugin(Star):
                 k += 1
             elif float(getattr(core, "attention", 0.5)) < 0.3:
                 k -= 1
-        return max(2, min(6, k))
+        k = max(2, min(6, k))
+        if getattr(self, "attention_topk_cap_enabled", False):
+            k = min(k, int(getattr(self, "attention_topk_cap", 4) or 4))
+        return k
 
     def _memory_thresholds(self, core):
         compression = self.api_config.get("compression") if isinstance(self.api_config.get("compression"), dict) else {}
@@ -7355,7 +7899,6 @@ class BioCorePlugin(Star):
                 except Exception:
                     pass
                 self._trim_memory(doc, core)
-                # Task-15: memory summary completion feeds attention noise.
                 if core is not None:
                     try:
                         core.integrate_noise("memory_summary", attention=0.004,
@@ -7737,8 +8280,12 @@ class BioCorePlugin(Star):
             if cosine >= 0.93:
                 duplicate = e
             # ACT-R partial matching + retrieval threshold (named constants).
-            if cosine >= PARTIAL_MATCH_THRESHOLD and score >= RETRIEVAL_THRESHOLD:
-                scored.append((score, e))
+            if cosine >= PARTIAL_MATCH_THRESHOLD:
+                _admit = score >= RETRIEVAL_THRESHOLD
+                if getattr(self, "attention_gate_enabled", False):
+                    _admit = self._attention_gate_admit(score, str(e.get("id") or ""))
+                if _admit:
+                    scored.append((score, e))
         _sid, _sname = self._speaker(event)
         _source = memory_meta.source_for_input(text=text, extra=extra, voice=voice)
         # Mem0 UPDATE path: an explicit correction is an update request even
@@ -7870,7 +8417,7 @@ class BioCorePlugin(Star):
             memory_meta.append_write_log(doc, op="ADD", entry_id=_new_entry["id"],
                                          reason="new", ts=now)
             self._trim_memory(doc, core)
-        # Task-15: memory write fill feeds energy/social noise (no-op when off).
+        # Task-15: memory write fill feeds L1 energy/social noise.
         if core is not None:
             try:
                 core.integrate_noise("memory_write", energy=0.003, social=0.002)
@@ -7882,7 +8429,7 @@ class BioCorePlugin(Star):
                            if isinstance(_e, dict)]
             doc["working_set"] = memory_meta.update_working_set(
                 doc.get("working_set") if isinstance(doc.get("working_set"), list) else [],
-                _recent_ids, capacity=max(4, self._memory_top_k(core) * 2),
+                _recent_ids, capacity=self._working_set_capacity(core),
                 priorities={str(_e.get("id") or ""): float(_e.get("importance", 0.5) or 0.5)
                             for _e in entries
                             if isinstance(_e, dict) and str(_e.get("id") or "")})
@@ -7994,7 +8541,7 @@ class BioCorePlugin(Star):
             _ws_current = doc.get("working_set") if isinstance(doc.get("working_set"), list) else _working_set
             doc["working_set"] = memory_meta.update_working_set(
                 _ws_current, [str(e.get("id") or "") for _score, e in top],
-                capacity=max(4, self._memory_top_k(core) * 2),
+                capacity=self._working_set_capacity(core),
                 priorities={str(_e.get("id") or ""): float(_e.get("importance", 0.5) or 0.5)
                             for _e in entries
                             if isinstance(_e, dict) and str(_e.get("id") or "")})
@@ -8002,7 +8549,10 @@ class BioCorePlugin(Star):
             _by_id = {str(e.get("id") or ""): e for e in entries
                       if isinstance(e, dict) and str(e.get("id") or "")}
             for _score, e in top:
-                for _lid in memory_meta.linked_ids(e, limit=2, now=now):
+                _chain_budget = bool(getattr(self, "chain_budget_enabled", False))
+                for _lid in memory_meta.linked_ids(
+                        e, limit=2, now=now,
+                        min_weight=(0.5 if _chain_budget else 1.0)):
                     _nb = _by_id.get(_lid)
                     if _nb is None or id(_nb) in _top_ids:
                         continue
@@ -8016,6 +8566,13 @@ class BioCorePlugin(Star):
                     if getattr(self, "safety_enabled", False) and _nb.get("sensitive"):
                         _nb_text = memory_meta.mask_sensitive(_nb_text)
                     _link_lines.append("- 关联记忆：%s" % _nb_text[:200])
+            try:
+                _umo = str(getattr(event, "unified_msg_origin", "") or "")
+                _chain_lines = self._chain_event_lines(_umo, text, limit=2)
+                if _chain_lines:
+                    _link_lines.extend(_chain_lines)
+            except Exception:
+                pass
             self._save_memory(event, doc)
         except Exception:
             _link_lines = []
@@ -8126,7 +8683,7 @@ class BioCorePlugin(Star):
             _meta_top, now, consistency=_consistency)
         if _calibration_meta:
             self._last_memory_meta.update(_calibration_meta)
-        # Task-15: recall hit/confidence feeds the noise integrator (no-op when off).
+        # Task-15: recall hit/confidence feeds L1 noise (no-op when off).
         if core is not None:
             try:
                 _cnt = int(self._last_memory_meta.get("count", 0) or 0)
@@ -8408,11 +8965,14 @@ class BioCorePlugin(Star):
         if text:
             core.observe(text, embedding=_query_vec)
         _user_data = self._touch_user(event, core)
-        # Task-15: compute readiness only when autonomy is explicitly enabled;
-        # default OFF means no computation and no state change.
+        # Task-15: readiness is computed by L1 only when autonomy is enabled;
+        # remember private sessions and start the P0-1 generator lazily.
         if getattr(self, "proactive_autonomy", False):
             try:
                 self._update_autonomy_readiness(core, _user_data)
+                if self._is_private_event(event):
+                    self._register_autonomy_session(event)
+                    self._ensure_autonomy_task()
             except Exception:
                 pass
         _continuity = {}
@@ -8532,13 +9092,6 @@ class BioCorePlugin(Star):
                 asyncio.create_task(self._remember(event, _reply, "assistant", core))
         except Exception:
             pass
-        # Task-15: private-only, doubly-gated deterministic send. Default OFF
-        # returns before computing anything; counters update before persistence.
-        if getattr(self, "proactive_autonomy", False):
-            try:
-                await self._maybe_proactive_send(event, core)
-            except Exception:
-                pass
         try:
             STATE_DIR.mkdir(parents=True, exist_ok=True)
             key = str(getattr(event, "unified_msg_origin", "default") or "default")

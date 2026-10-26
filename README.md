@@ -4,7 +4,7 @@
 
 这里的“拟态”指**行为层模拟**：模仿生物情绪系统的功能结构，不声称复刻神经元、内分泌或意识。
 
-它不生成回复、不替换人设、不改写聊天历史，也不代表临床诊断、真实意识或现实因果；它只是一个可观察、可调整的本地状态与表达提示层。
+它默认不主动生成回复、不替换人设、不改写聊天历史，也不代表临床诊断、真实意识或现实因果；它只是一个可观察、可调整的本地状态与表达提示层。
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
@@ -138,7 +138,7 @@ AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
 
 - AstrBot `>=4.16,<5`
 - 平台适配器：`aiocqhttp`
-- 使用 AstrBot 的 `on_llm_request` / `on_llm_response` 钩子；不接管消息事件、不生成回复、不替换人设、不接管其他插件记忆
+- 使用 AstrBot 的 `on_llm_request` / `on_llm_response` 钩子；默认不主动接管消息事件、默认不主动生成回复、不替换人设、不接管其他插件记忆
 - 不依赖数据库迁移脚本；旧数据按字段缺失回退
 
 ## FAQ
@@ -182,3 +182,9 @@ Copyright (C) 2026 Johnhmzm
 - GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
 - Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
 - 问题反馈：<https://github.com/Johnhmzm/astrbot_plugin_biocore/issues>
+
+## 主动行为与学习默认（review BLOCK-04/09）
+
+- 默认不主动发送；只有 proactive_autonomy=true + proactive_send=true 且私聊才可能发送，受 30min 冷却/每日3条/0–8点静默限制。
+- bio_learning 默认 true（小步长、硬边界）；需要完全冻结学习时设 bio_learning=false；/biocore learning reset 可恢复默认。
+- retention_model 默认 single（1.2.98 旧指数）；power_law/multi_scale 为实验模型，A/B 后再切换。

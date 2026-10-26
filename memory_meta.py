@@ -1566,6 +1566,64 @@ def update_goal_priority(goal: Any, *, hit: bool = True, relevance: Any = 0.5,
 
 
 # ---------------------------------------------------------------------------
+# L1 learning helpers (task-20 batch3)
+# ---------------------------------------------------------------------------
+LEARNING_ALPHA_MIN = 0.02
+LEARNING_ALPHA_MAX = 0.60
+LEARNING_KAPPA = 1.0
+
+
+def nassar_alpha(pe: float, alpha_min: float = LEARNING_ALPHA_MIN,
+                 alpha_max: float = LEARNING_ALPHA_MAX,
+                 kappa: float = LEARNING_KAPPA) -> float:
+    """Volatility-modulated learning rate.
+
+    Nassar et al. 2010 (10.1523/JNEUROSCI.0822-10.2010), monotone approximation:
+    alpha_t = clip(alpha_min + (alpha_max-alpha_min)*|PE|/(|PE|+kappa)).
+    """
+    try:
+        pe_abs = abs(float(pe))
+        lo, hi = float(alpha_min), float(alpha_max)
+        k = max(1e-9, float(kappa))
+        return round(max(lo, min(hi, lo + (hi - lo) * pe_abs / (pe_abs + k))), 6)
+    except Exception:
+        return float(alpha_min)
+
+
+def retention_weight(age_days: float, model: str = "power_law") -> float:
+    """Memory retention R(t), 0..1 (normalized at t=0).
+
+    power_law: Wixted & Ebbesen 1991 (10.1111/j.1467-9280.1991.tb00175.x)
+               R(t)=a*(t+delta)^-b with b=0.4, delta=0.5.
+    multi_scale: Bernacchia 2011 (10.1038/nn.2752) / Drew & Abbott 2006
+               (10.1152/jn.00134.2006): sum c_i*2^(-t/tau_i), tau_i=tau0*s^i.
+    single: legacy exponential used by 1.2.98 (fallback).
+    """
+    try:
+        age = max(0.0, float(age_days))
+    except Exception:
+        age = 0.0
+    name = str(model or "power_law")
+    try:
+        if name == "single":
+            return max(0.0, min(1.0, math.exp(-age / 1.0)))
+        if name == "multi_scale":
+            tau0, scale, count, alpha_c = 0.5, 5.0, 4, 0.8
+            numer = 0.0
+            denom = 0.0
+            for i in range(count):
+                tau = tau0 * (scale ** i)
+                c = tau ** (-alpha_c)
+                numer += c * (2.0 ** (-age / tau))
+                denom += c
+            return max(0.0, min(1.0, numer / denom if denom else 0.0))
+        delta, b = 0.5, 0.4
+        return max(0.0, min(1.0, ((age + delta) / delta) ** (-b)))
+    except Exception:
+        return max(0.0, min(1.0, math.exp(-age)))
+
+
+# ---------------------------------------------------------------------------
 # G7/G8: read-time temporal decay (raw counters stay stored; consumers compute
 # an effective value so old associations/importance cannot stay boosted forever)
 # ---------------------------------------------------------------------------
@@ -1654,6 +1712,61 @@ def effective_schema_congruence(
     except Exception:
         raw = 0.0
     return round(max(0.0, min(1.0, raw * time_decay(_entry_age_days(entry, now), half_life_days))), 4)
+
+
+# ---------------------------------------------------------------------------
+# Batch5 H2: event/association chain helpers (Collins & Loftus 1975,
+# 10.1037/0033-295X.82.6.407; Anderson 1983, The Architecture of Cognition,
+# Harvard University Press (book, no DOI))
+# ---------------------------------------------------------------------------
+CHAIN_LINK_HALF_LIFE_DAYS = 30.0
+
+
+def decayed_chain_weight(weight: float, ts: float, now: float | None = None,
+                         half_life_days: float = CHAIN_LINK_HALF_LIFE_DAYS) -> float:
+    """H2-1: event/association link weight decays with a 30-day half-life."""
+    try:
+        age = max(0.0, float(now if now is not None else time.time()) - float(ts))
+        return round(max(0.0, min(1.0, float(weight) * (0.5 ** (age / 86400.0 / half_life_days)))), 4)
+    except Exception:
+        return 0.0
+
+
+def chain_expand(entries: Any, seed_ids: Any, *, hop_limit: int = 2,
+                 fan_out: int = 3, decay: float = 0.5,
+                 min_weight: float = 0.5, max_new: int = 6) -> list:
+    """H2-3: bounded multi-hop expansion over entry links (default OFF caller)."""
+    rows = [e for e in (entries or []) if isinstance(e, dict)]
+    by_id = {str(e.get("id") or ""): e for e in rows if str(e.get("id") or "")}
+    seeds = [str(x) for x in (seed_ids or []) if str(x)]
+    seen = set(seeds)
+    frontier = [(sid, 1.0) for sid in seeds]
+    added = []
+    hop = 0
+    while frontier and hop < max(0, int(hop_limit)) and len(added) < max_new:
+        hop += 1
+        nxt = []
+        for sid, act in frontier:
+            entry = by_id.get(sid)
+            if not isinstance(entry, dict):
+                continue
+            links = [x for x in (entry.get("links") or []) if isinstance(x, dict)]
+            links.sort(key=lambda x: (-float(x.get("weight", 0) or 0), str(x.get("id") or "")))
+            for link in links[:max(0, int(fan_out))]:
+                lid = str(link.get("id") or "")
+                if not lid or lid in seen:
+                    continue
+                w = decayed_chain_weight(link.get("weight", 1.0), link.get("ts", 0))
+                a = act * float(decay) * (w ** 0.5 if w > 0 else 0.0)
+                if a < float(min_weight):
+                    continue
+                seen.add(lid)
+                nxt.append((lid, a))
+                target = by_id.get(lid)
+                if isinstance(target, dict) and len(added) < max_new:
+                    added.append({"id": lid, "activation": round(a, 4), "text": str(target.get("text") or "")[:80]})
+        frontier = nxt
+    return added
 
 
 # ---------------------------------------------------------------------------
