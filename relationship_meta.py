@@ -199,7 +199,11 @@ def update_repair_state(
 
 
 def calibration_update(state: Any, source: Any, predicted: Any, correct: Any) -> dict[str, Any]:
-    """EWMA/Brier calibration record per evidence source; record-only, no trust writeback."""
+    """EWMA/Brier calibration record per evidence source; record-only, no trust writeback.
+
+    Runtime call site: BioCorePlugin._record_calibration (memory-conflict branch,
+    main.py); the record is persisted in the user doc relationship.calibration.
+    """
     prev = state if isinstance(state, dict) else {}
     sources = {}
     raw_sources = prev.get("sources") if isinstance(prev.get("sources"), dict) else {}
@@ -295,7 +299,12 @@ def attachment_profile(trajectory: Any) -> dict[str, float]:
 
 
 def refusal_protocol(state: Any) -> dict[str, Any]:
-    """Coarse refusal mode from boundary pressure; behavior strategy stays elsewhere."""
+    """Coarse refusal mode from boundary pressure; behavior strategy stays elsewhere.
+
+    Test-only / no runtime wiring (BIO §4 item 2): no plugin caller reads this;
+    boundary_pressure and refusal_readiness remain snapshot state with no
+    behavior outlet.
+    """
     d = state if isinstance(state, dict) else {}
     pressure = _clamp(d.get("boundary_pressure", 0.0))
     trust = _clamp(d.get("trust", 0.5))
