@@ -547,7 +547,6 @@ PROFILE_RANGES = {
     "curiosity_baseline": (0.0, 1.0), "safety_baseline": (0.0, 1.0),
     "da_baseline": (0.0, 1.0), "oa_baseline": (0.0, 1.0), "ht_baseline": (0.0, 1.0),
     "autonomy_gain": (0.0, 1.5), "baseline_v": (-1.0, 1.0), "baseline_a": (0.0, 1.0),
-    "learning_rate": (0.01, 0.12),
 }
 
 
@@ -658,7 +657,6 @@ def persona_compile_prompt(persona_text: str) -> str:
         ' "curiosity_baseline":0-1,"safety_baseline":0-1,\n'
         ' "da_baseline":0-1,"oa_baseline":0-1,"ht_baseline":0-1,\n'
         ' "autonomy_gain":0-1.5,"baseline_v":-1..1,"baseline_a":0-1,\n'
-        ' "learning_rate":0.01-0.12,\n'
         ' "schema":["最多6条，每条不超过40字的自我/关系先验（如：难过时更需要被听见）"],\n'
         ' "style":{"intimacy_style":"neutral|playful|gentle|reserved",\n'
         '          "address_terms":["最多3个称呼，每个≤12字"]}}\n'

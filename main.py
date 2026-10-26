@@ -154,7 +154,6 @@ DEFAULT_PROFILE = {
     "curiosity_baseline": 0.60, "safety_baseline": 0.55,
     "da_baseline": 0.55, "oa_baseline": 0.40, "ht_baseline": 0.35,
     "autonomy_gain": 1.0, "contagion_gain": 0.10, "baseline_v": 0.05, "baseline_a": 0.40,
-    "learning_rate": 0.06,
 }
 
 # Per-function LLM routing: each feature has its own enabled switch and a
@@ -687,6 +686,14 @@ class BioCore:
         self.ripple = {"upper": 0.0, "lower": 0.0, "overlap": 0.0, "energy": 0.0}
         self.spiking = {"rate": 0.0, "variance": 0.0, "ei": 0.0}
         self._rng = __import__("random").Random()
+
+    def set_relationship_context(self, relationship=None) -> None:
+        """Attach the last per-user relationship record for the slow C6 loop.
+
+        The plugin refreshes this hook after persisting the user doc each turn;
+        only conflict/closeness are consumed by homeostasis._drives.
+        """
+        self.relationship_context = relationship if isinstance(relationship, dict) else None
 
     def load_state(self, d: dict) -> None:
         if not isinstance(d, dict):
@@ -1330,7 +1337,7 @@ class BioCore:
         self.ticks += 1
         self.infer_labels(force=True)
         try:
-            homeostasis.step(self)
+            homeostasis.step(self, relationship=getattr(self, "relationship_context", None))
         except Exception:
             pass
 
@@ -1942,7 +1949,6 @@ class BioCorePlugin(Star):
         self.config = config or {}
         self.enabled = bool(self.config.get("enabled", True))
         self.inject_intent = bool(self.config.get("inject_intent", True))
-        self.compact_prompt = bool(self.config.get("compact_prompt", True))
         try:
             self.summary_max_chars = max(0, int(self.config.get("summary_max_chars", 0) or 0))
         except Exception:
@@ -1986,9 +1992,6 @@ class BioCorePlugin(Star):
             for _name in LLM_FUNCTIONS
         }
         self.first_run_persona_compile = bool(self.config.get("first_run_persona_compile", True))
-        # Deprecated: [BC] sizing is owned by the interpretation layer now.
-        # Kept only so existing config files do not break on load.
-        self.max_intent_chars = int(self.config.get("max_intent_chars", 180) or 180)
         self.kb_enabled = bool(self.config.get("kb_enabled", False))
         _names = self.config.get("kb_names", [])
         self.kb_names = [str(x).strip() for x in _names] if isinstance(_names, (list, tuple)) else []
@@ -2297,6 +2300,28 @@ class BioCorePlugin(Star):
             path.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception as exc:
             logger.warning("[biocore] user record save failed: %s", exc)
+
+    def _record_calibration(self, event, source, predicted, correct) -> None:
+        """Persist one calibration sample in the user relationship doc.
+
+        Record-only: writes relationship.calibration (EWMA/Brier per evidence
+        source) via the single user-file writer; it never rewrites trust or any
+        other biological field. Called from the memory-conflict branch.
+        """
+        path = self._user_path(event)
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(data, dict):
+            return
+        rel = dict(data.get("relationship")) if isinstance(data.get("relationship"), dict) else {}
+        rel["calibration"] = relationship_meta.calibration_update(
+            rel.get("calibration"), source, predicted, correct)
+        data["relationship"] = rel
+        self._save_user_record(event, data)
 
     def _relationship_of(self, user_data):
         rel = (user_data or {}).get("relationship") if isinstance(user_data, dict) else None
@@ -3324,6 +3349,11 @@ class BioCorePlugin(Star):
                     annotations=(_prev_rel.get("annotations")
                                  if isinstance(_prev_rel.get("annotations"), list) else None),
                 )
+                if core is not None:
+                    try:
+                        core.set_relationship_context(d.get("relationship"))
+                    except Exception:
+                        pass
             except Exception:
                 pass
             path.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -200,22 +200,10 @@
     "default": "telemetry",
     "options": ["telemetry", "semantic"]
   },
-  "compact_prompt": {
-    "description": "紧凑解释层",
-    "hint": "只注入一行 [BC] 状态，由 biocore-interpretation skill 解释；关闭后使用旧的多段 prompt。",
-    "type": "bool",
-    "default": true
-  },
   "first_run_persona_compile": {
     "description": "首次人设编译",
     "hint": "第一次启动读取 AstrBot 人设并用 LLM 转成数值 profile；之后只读缓存。",
     "type": "bool",
     "default": true
-  },
-  "max_intent_chars": {
-    "description": "意图最大长度（已废弃）",
-    "hint": "已废弃：当前 [BC] 长度由解释层固定长度控制，该配置不再生效，保留仅为旧配置兼容。",
-    "type": "int",
-    "default": 180
   }
 }
