@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261026-2015" />
+<link rel="stylesheet" href="./styles.css?v=20261026-2315" />
 </head>
 <body>
 <div class="shell">
@@ -105,6 +105,32 @@
           <div><small>refusal_readiness / 拒绝就绪</small><b id="sRefusalLevel">--</b></div>
         </div>
         <p class="api-note" id="steadyNote">只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。</p>
+      </div>
+      <div class="panel" id="panelAutonomy">
+        <div class="panel-head"><h3>自主行为就绪度</h3><span class="hint">AUTONOMY READINESS · 只读 · 默认关</span></div>
+        <div class="signal-grid" id="autonomyGrid">
+          <div><small>enabled / 启用</small><b id="autoEnabled">--</b></div>
+          <div><small>ready / 就绪</small><b id="autoReady">--</b></div>
+          <div><small>threshold / 阈值</small><b id="autoThreshold">--</b></div>
+          <div><small>max_chars / 最大字数</small><b id="autoMaxChars">--</b></div>
+          <div><small>impulse / 冲动</small><b id="autoImpulse">--</b></div>
+          <div><small>sent / 已发送</small><b id="autoSent">--</b></div>
+        </div>
+        <div class="chips" id="autonomySources"></div>
+        <p class="api-note" id="autonomyNote">只读投影：默认关闭，仅私聊路径计算；开关在 AstrBot 插件配置（proactive_autonomy / proactive_send）。</p>
+      </div>
+      <div class="panel" id="panelLearning">
+        <div class="panel-head"><h3>学习状态</h3><span class="hint">L1 LEARNING · 只读</span></div>
+        <div class="signal-grid" id="learningGrid">
+          <div><small>version / 版本</small><b id="learnVersion">--</b></div>
+          <div><small>updates / 更新次数</small><b id="learnUpdates">--</b></div>
+          <div><small>last_update / 最近更新</small><b id="learnLast">--</b></div>
+          <div><small>trust_alpha</small><b id="learnTrustAlpha">--</b></div>
+          <div><small>learning_rate</small><b id="learnRate">--</b></div>
+          <div><small>Q / top 项</small><b id="learnQTop">--</b></div>
+        </div>
+        <div class="chips" id="learningLog"></div>
+        <p class="api-note" id="learningNote">只读投影：Q 值与参数由后端确定性更新（最小样本 5、单步 ≤0.02）；开关在 AstrBot 插件配置（bio_learning）。</p>
       </div>
       <div class="panel signal-panel">
         <div class="panel-head"><h3>实时生物信号</h3><span class="hint">COMPOSITE · INTERFERENCE · DECAY</span></div>
@@ -336,6 +362,11 @@
         </div>
         <p class="api-note" id="memHintNote">策略提示：--</p>
         <p class="api-note" id="memRecallNote">召回元数据是只读投影：校准偏移只作用于本轮召回的置信度（≤±0.05，不写存储）；工作集 TTL 2 小时在召回时过滤，这里显示后端已给的原始列表。</p>
+        <div class="hist-block" id="chainBlock">
+          <small>CHAIN LINKS / 事件链（只读 · 默认关）</small>
+          <div id="chainList"></div>
+          <p class="api-note" id="chainNote">事件链默认关闭（memory_chain_enabled）；开启后在 AstrBot 插件配置里改。这里只读展示已归档事件的 chain_links，链接权重在读取时按 30 天半衰。</p>
+        </div>
         <p class="api-note" id="memEmpty">还没有可展示的记忆条目。</p>
         <div id="memEntryList"></div>
         <div class="mem-tombstones">
@@ -503,6 +534,7 @@
         <div class="setting-row"><div><b>情绪影响线</b><small>情绪节点之间的淡线，默认关闭。</small></div><label class="switch"><input type="checkbox" id="swShowNodeLinks" checked><span></span></label></div>
         <div class="setting-row"><div><b>记忆球 / 记忆节点</b><small>默认只显示“事件总结球”：已归档的重要事件，通常只有一个；记忆经过巩固/总结后才会追加记忆球（最多 10 个）；普通每轮闲聊不成球。</small></div><div class="setting-legend"><small>显示图例</small><label class="switch switch-mini" title="球体下方图例显示/隐藏"><input type="checkbox" id="swOrbLegend" checked><span></span></label><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div></div>
         <div class="setting-row"><div><b>只显示重要记忆球</b><small>默认开启：只有重要度≥0.60 或“自指记忆”才成球（普通闲聊/低重要度记忆不成球）；关闭后最多显示 10 条记忆球。</small></div><label class="switch"><input type="checkbox" id="swMemoryBallsImportant" checked><span></span></label></div>
+        <div class="setting-row"><div><b>面板显示</b><small>只控制 Dashboard 上哪些只读面板可见，不改后端配置；proactive_autonomy / proactive_send / bio_learning / memory_chain_enabled 请到 AstrBot 插件配置里改。</small></div><div class="setting-legend"><small>自主行为</small><label class="switch switch-mini" title="显示「自主行为就绪度」面板"><input type="checkbox" id="swShowAutonomyPanel" checked><span></span></label><small>学习状态</small><label class="switch switch-mini" title="显示「学习状态」面板"><input type="checkbox" id="swShowLearningPanel" checked><span></span></label><small>事件链</small><label class="switch switch-mini" title="显示「事件链」列表"><input type="checkbox" id="swShowChainList" checked><span></span></label></div></div>
         <div class="setting-row"><div><b>情绪强度环</b><small>球体外的虚线环数量随情绪强度（arousal + |valence| + 控制感偏离）变化，1–4 圈；越强圈越多。</small></div><label class="switch"><input type="checkbox" id="swShowEmotionRings" checked><span></span></label></div>
         <div class="setting-row"><div><b>恢复默认显示</b><small>清除本地可视化开关缓存并刷新页面（不影响后端数据）。</small></div><button type="button" class="btn mini" id="resetVisualBtn">恢复默认显示</button></div>
         <div class="setting-row"><div><b>外层环</b><small>围绕球体自主运转的环，速度来自 echo / echo_trace。</small></div><label class="switch"><input type="checkbox" id="swShowEcho" checked><span></span></label></div>
@@ -535,5 +567,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261026-2015"></script><script src="./app.js?v=20261026-2015"></script><script src="./orb.js?v=20261026-2015"></script>
+<script src="./orb_math.js?v=20261026-2315"></script><script src="./app.js?v=20261026-2315"></script><script src="./orb.js?v=20261026-2315"></script>
 </body></html>
