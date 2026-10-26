@@ -275,7 +275,12 @@
       small_summary: _tipClean(String(e.small_summary || ""), 80),
       big_summary: String(e.big_summary || ""),
       event: String(e.event || ""),
-      central_details: String(e.central_details || "")
+      central_details: String(e.central_details || ""),
+      // task-33: read-only worthiness + user feedback markers for the panel.
+      worthiness: (e.worthiness && typeof e.worthiness === "object") ? e.worthiness : null,
+      user_marked: e.user_marked === true,
+      memory_point: e.memory_point !== false,
+      label_edited: e.label_edited === true
     };
   }
   function _dispatchFocusEvent(name, ev) {

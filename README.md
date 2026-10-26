@@ -8,7 +8,7 @@
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
-- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.98`）
+- 当前版本：以 `metadata.yaml` 为准（当前 `1.2.99`）
 - 作者：`Johnhmzm`
 - GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
 - Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
@@ -163,7 +163,7 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 
 ## 更新日志
 
-- 当前版本：`1.2.98`（以 `metadata.yaml` 为准）
+- 当前版本：`1.2.99`（以 `metadata.yaml` 为准）
 - 详细历史见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)
 - 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
 
