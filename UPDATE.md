@@ -1,6 +1,6 @@
 # BioCore 插件更新说明
 
-当前版本：以 `metadata.yaml` 为准（当前 **1.2.96**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：以 `metadata.yaml` 为准（当前 **1.2.97**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 数据位置
 
