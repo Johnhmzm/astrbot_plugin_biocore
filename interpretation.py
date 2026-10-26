@@ -1046,6 +1046,19 @@ def repair_strategy_block(repair_state, conflict_event=None) -> str:
     return _hint("repair=%s/%s %s" % (phase, tag, note), 90)
 
 
+def refusal_strategy_block(protocol) -> str:
+    """G2/L9: bounded refusal-posture token from refusal_protocol (no LLM).
+
+    Emits only the posture label; it never decides whether to reply, never
+    carries a policy sentence, and renders nothing below the pressure
+    threshold (protocol mode "comply"). Callers pass the raw protocol dict.
+    """
+    mode = str(_dict(protocol).get("mode") or "comply")
+    if mode not in ("negotiate", "decline"):
+        return ""
+    return _hint("refuse=" + mode, 40)
+
+
 def event_polarity(event) -> str:
     """L-T04 deterministic event polarity from stored labels (no LLM)."""
     data = _dict(event)
@@ -1254,6 +1267,51 @@ def parse_relationship_impression(raw, allowed_refs=None) -> dict:
             "confidence": round(confidence, 3), "evidence_refs": refs}
 
 
+def relationship_impression_template(relationship, evidence_count: int = 0) -> dict:
+    """A3: deterministic relationship-impression proposal (no LLM, bounded).
+
+    Used when the relationship_impression LLM function is off (the default).
+    Maps relation numbers to at most three short enum-style traits; the caller
+    adds evidence refs and validates through relationship_meta before storage.
+    """
+    rel = _dict(relationship)
+    state = _dict(rel.get("state"))
+    repair = _dict(rel.get("repair_state"))
+    absence = _dict(rel.get("absence"))
+
+    def _num(key, default=0.5):
+        try:
+            return max(0.0, min(1.0, float(state.get(key, default) or default)))
+        except Exception:
+            return default
+
+    traits = []
+    closeness = _num("closeness")
+    conflict = _num("conflict")
+    trust = _num("trust")
+    phase = str(repair.get("phase") or "stable")
+    bucket = str(absence.get("bucket") or "")
+    if closeness >= 0.62:
+        traits.append("关系偏亲近，愿意主动分享近况")
+    elif closeness <= 0.35:
+        traits.append("关系偏疏远，互动需要更主动")
+    if conflict >= 0.50:
+        traits.append("近期有未解决的冲突，先确认再推进")
+    elif phase in ("repairing", "repaired"):
+        traits.append("冲突后有修复动作，不反复追问")
+    if bucket in ("medium", "long"):
+        traits.append("有间隔后重逢，先接住近况")
+    if not traits and trust >= 0.55:
+        traits.append("信任在累积，保持稳定回应")
+    try:
+        refs = max(0, int(evidence_count))
+    except Exception:
+        refs = 0
+    confidence = round(min(0.72, 0.50 + 0.05 * len(traits) + 0.02 * min(3, refs)), 3)
+    return {"traits": traits[:3], "relation_events": [],
+            "we_memory_candidates": [], "confidence": confidence}
+
+
 def repair_hint_prompt(repair_state, conflict_event=None) -> str:
     state = _dict(repair_state)
     return ("根据冲突后的修复状态，只输出一个 JSON 对象：\n"
@@ -1291,6 +1349,28 @@ def parse_empathy_hint(raw) -> str:
         return ""
     tag = str(data.get("strategy") or "").strip()
     return tag if tag in _EMPATHY_TAGS else ""
+
+
+def empathy_strategy_block(core) -> str:
+    """A4: deterministic empathy strategy token from core affect (no LLM).
+
+    Only strong, bounded conditions emit a token; neutral state stays silent so
+    the default hint path does not add noise. Mirrors the optional LLM labels
+    (active_constructive/supportive/validate) without a model call.
+    """
+    try:
+        v = float(getattr(core, "v", 0.0))
+        a = float(getattr(core, "a", 0.5))
+        stress = float(getattr(core, "stress", 0.0))
+    except Exception:
+        return ""
+    if v <= -0.25 and a >= 0.55:
+        return "empathy=supportive"
+    if v >= 0.30 and a >= 0.50:
+        return "empathy=active_constructive"
+    if stress >= 0.60:
+        return "empathy=validate"
+    return ""
 
 
 def pragmatics_hint_prompt(memory_meta) -> str:

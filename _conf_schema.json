@@ -200,6 +200,12 @@
     "default": "telemetry",
     "options": ["telemetry", "semantic"]
   },
+  "event_ranking_llm": {
+    "description": "事件排序 LLM 重排（默认关）",
+    "hint": "默认走确定性打分（importance/recency/salience）；仅开启且全局配置了 rerank provider 时才调用 LLM 重排。",
+    "type": "bool",
+    "default": false
+  },
   "first_run_persona_compile": {
     "description": "首次人设编译",
     "hint": "第一次启动读取 AstrBot 人设并用 LLM 转成数值 profile；之后只读缓存。",
