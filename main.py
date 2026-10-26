@@ -206,6 +206,50 @@ AUTONOMY_QUIET_START_HOUR = 0
 AUTONOMY_QUIET_END_HOUR = 8
 AUTONOMY_TICK_SECONDS = 300  # P0-1: autonomous generator interval (>=5min)
 
+# Task-28: minimal autonomy loop (default OFF, private-only, token-only).
+# Deterministic arbiter INSPIRED BY (not an implementation of) the papers below;
+# it is NOT a global-workspace/consciousness implementation.
+#   competition: Desimone & Duncan 1995 10.1146/annurev.ne.18.030195.001205;
+#                Itti & Koch 2001 10.1038/35058500; Itti et al. 1998 10.1109/34.730558 (WTA+IOR)
+#   goal gradient: Hull 1932 10.1037/h0072640; Kivetz 2006 10.1509/jmkr.43.1.39;
+#                Koo & Fishbach 2010 10.1037/a0019443
+#   delay discount: Mazur 1987 (book chapter, no DOI) + Green & Myerson 2004
+#                10.1037/0033-2909.130.5.769
+#   effort cost: Shenhav 2013 10.1016/j.neuron.2013.07.007; Kool & Botvinick 2014
+#                10.1037/a0031048; Westbrook & Braver 2013 10.1017/s0140525x13001179
+#   broadcast: Baars 1988 (book, no DOI); Dehaene & Naccache 2001
+#                10.1016/S0010-0277(00)00123-2; Dehaene et al. 1998 10.1073/pnas.95.24.14529;
+#                Mashour et al. 2020 10.1016/j.neuron.2020.01.026
+AUTONOMY_LOOP_MODES = ("reach_out", "explore", "engage", "wait", "share", "withdraw")
+AUTONOMY_LOOP_WEIGHTS = {"novelty": 0.20, "goal": 0.25, "relation": 0.20,
+                         "affect": 0.20, "noise": 0.15}
+AUTONOMY_LOOP_CANDIDATE_MAX = 6
+AUTONOMY_LOOP_THETA_MIN = 0.35
+AUTONOMY_LOOP_THETA_MAX = 0.55
+AUTONOMY_LOOP_THETA_IG = 0.45
+AUTONOMY_LOOP_MARGIN_MIN = 0.05
+AUTONOMY_LOOP_MARGIN_MAX = 0.15
+AUTONOMY_LOOP_MARGIN = 0.08
+AUTONOMY_LOOP_K_MIN = 0.001
+AUTONOMY_LOOP_K_MAX = 0.10
+AUTONOMY_LOOP_K_DELAY = 0.02       # hyperbolic discount k per minute
+AUTONOMY_LOOP_IOR_MIN = 300.0
+AUTONOMY_LOOP_IOR_MAX = 1800.0
+AUTONOMY_LOOP_IOR_SECONDS = 600.0  # return-inhibition recovery tau
+AUTONOMY_LOOP_REFRACTORY_SECONDS = 60.0
+AUTONOMY_LOOP_C0 = 0.05
+AUTONOMY_LOOP_C1 = 0.20
+AUTONOMY_LOOP_C2 = 0.15
+AUTONOMY_LOOP_DEBT_STEP = 0.15
+AUTONOMY_LOOP_DEBT_RECOVERY = 0.02
+AUTONOMY_LOOP_DEBT_MAX = 0.60
+AUTONOMY_LOOP_VALUE_MIN = -0.5
+AUTONOMY_LOOP_VALUE_MAX = 1.0
+AUTONOMY_LOOP_EMA_KEEP = 0.7
+AUTONOMY_LOOP_WORKSPACE_MAX = 16
+AUTONOMY_LOOP_EFFORT = {"reach_out": 0.5, "explore": 0.4, "engage": 0.6,
+                        "share": 0.3, "withdraw": 0.3, "wait": 0.05}
+
 # Task-20 batch3 L1 learning (Daw 2011 10.1016/j.neuron.2011.02.027;
 # Nassar 2010 10.1523/JNEUROSCI.0822-10.2010; Wixted 1991).
 LEARNING_Q_ALPHA = 0.20
@@ -704,6 +748,19 @@ class BioCore:
         # Task-15: autonomy is opt-in; default OFF is a pure no-op.
         self.autonomy_enabled = False
         self._proactive_autonomy = {"enabled": False}
+        # Task-28: minimal autonomy loop. Config owns "enabled"; the loop state
+        # dict is created lazily and only persisted while enabled (default OFF
+        # leaves the state file byte-identical to 1.2.98).
+        self.autonomy_loop_enabled = False
+        self.autonomy_loop = None
+        self.autonomy_loop_theta_ig = AUTONOMY_LOOP_THETA_IG
+        self.autonomy_loop_margin = AUTONOMY_LOOP_MARGIN
+        self.autonomy_loop_k_delay = AUTONOMY_LOOP_K_DELAY
+        self.autonomy_loop_ior_seconds = AUTONOMY_LOOP_IOR_SECONDS
+        self.autonomy_loop_c0 = AUTONOMY_LOOP_C0
+        self.autonomy_loop_c1 = AUTONOMY_LOOP_C1
+        self.autonomy_loop_c2 = AUTONOMY_LOOP_C2
+        self.autonomy_loop_token_only = True
         self._noise_seed = 0
         self._noise_accum = {}
         # Task-20: L1 learning state (deterministic, bounded, auditable).
@@ -991,6 +1048,11 @@ class BioCore:
                 self._noise_seed = max(0, int(_raw_auto.get("noise_seed", 0) or 0))
             except Exception:
                 self._noise_seed = 0
+        # Task-28: restore the autonomy-loop state if present; "enabled" is
+        # owned by plugin config and unknown/extra keys are ignored.
+        _raw_loop = d.get("autonomy_loop")
+        if isinstance(_raw_loop, dict):
+            self.autonomy_loop = self._autonomy_loop_restore(_raw_loop)
 
     def _derive(self) -> None:
         """Derive stress/energy from v, a, dominance, social (they are not independent)."""
@@ -2316,7 +2378,8 @@ class BioCore:
                      ±NOISE_CLAMP). Only called by the autonomy tick; legacy
         per-observe noise updates are skipped while autonomy is enabled.
         """
-        if not getattr(self, "autonomy_enabled", False):
+        if not (getattr(self, "autonomy_enabled", False)
+                or getattr(self, "autonomy_loop_enabled", False)):
             return {}
         out = {}
         try:
@@ -2338,6 +2401,457 @@ class BioCore:
         except Exception:
             pass
         return out
+
+    # ------------------------------------------------------------------
+    # Task-28: minimal autonomy loop (L1, deterministic, default OFF)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _loop_num(value, default: float = 0.0, lo: float = 0.0,
+                  hi: float = 1.0) -> float:
+        """Finite, bounded float for loop inputs (NaN/Inf -> default)."""
+        try:
+            num = float(value)
+        except Exception:
+            return default
+        if num != num or num in (float("inf"), float("-inf")):
+            return default
+        return max(lo, min(hi, num))
+
+    @staticmethod
+    def _autonomy_loop_default_state(now: float = 0.0) -> dict:
+        """Bounded loop state shape (spec §7.2); created only while enabled."""
+        try:
+            stamp = float(now or time.time())
+        except Exception:
+            stamp = time.time()
+        return {
+            "enabled": True,
+            "tick": 0,
+            "candidates": [],
+            "winner": None,
+            "ignition": False,
+            "workspace_token": "",
+            "inhibition": {},
+            "value_ema": {},
+            "effort_debt": 0.0,
+            "budget": {"day": time.strftime("%Y-%m-%d", time.localtime(stamp)),
+                       "used": 0, "last_action_ts": 0.0},
+            "stats": {"ticks": 0, "no_ignition": 0, "ignitions": 0, "executed": 0,
+                      "blocked_group": 0, "blocked_quiet": 0,
+                      "blocked_cooldown": 0, "blocked_cap": 0},
+            "updated_ts": 0.0,
+        }
+
+    def _autonomy_loop_restore(self, raw: dict) -> dict:
+        """Restore persisted loop state; unknown keys dropped, values bounded."""
+        base = self._autonomy_loop_default_state()
+        if not isinstance(raw, dict):
+            return base
+        try:
+            base["tick"] = max(0, min(10 ** 9, int(raw.get("tick", 0) or 0)))
+        except Exception:
+            base["tick"] = 0
+        cands = raw.get("candidates") if isinstance(raw.get("candidates"), list) else []
+        safe_cands = []
+        for row in cands[:AUTONOMY_LOOP_CANDIDATE_MAX]:
+            if not isinstance(row, dict):
+                continue
+            mode = str(row.get("mode") or "")[:AUTONOMY_LOOP_WORKSPACE_MAX]
+            if mode not in AUTONOMY_LOOP_MODES:
+                continue
+            safe_cands.append({
+                "mode": mode,
+                "source": str(row.get("source") or "")[:16],
+                "salience": round(self._loop_num(row.get("salience"), 0.0, 0.0, 1.0), 4),
+                "goal_gain": round(self._loop_num(row.get("goal_gain"), 1.0, 0.8, 1.4), 4),
+                "discount": round(self._loop_num(row.get("discount"), 1.0, 0.05, 1.0), 4),
+                "effort": round(self._loop_num(row.get("effort"), 0.5, 0.0, 1.0), 4),
+                "cost": round(self._loop_num(row.get("cost"), 0.0, 0.0, 1.0), 4),
+                "value": round(self._loop_num(row.get("value"), 0.0,
+                                              AUTONOMY_LOOP_VALUE_MIN,
+                                              AUTONOMY_LOOP_VALUE_MAX), 4),
+            })
+        base["candidates"] = safe_cands
+        winner = raw.get("winner")
+        if isinstance(winner, dict) and str(winner.get("mode") or "") in AUTONOMY_LOOP_MODES:
+            base["winner"] = {
+                "mode": str(winner.get("mode"))[:AUTONOMY_LOOP_WORKSPACE_MAX],
+                "value": round(self._loop_num(winner.get("value"), 0.0,
+                                              AUTONOMY_LOOP_VALUE_MIN,
+                                              AUTONOMY_LOOP_VALUE_MAX), 4),
+                "ts": round(self._loop_num(winner.get("ts"), 0.0, 0.0, 10 ** 12), 3),
+            }
+        base["ignition"] = bool(raw.get("ignition", False))
+        token = str(raw.get("workspace_token") or "")[:AUTONOMY_LOOP_WORKSPACE_MAX]
+        base["workspace_token"] = token if token in AUTONOMY_LOOP_MODES else ""
+        inhibition = raw.get("inhibition") if isinstance(raw.get("inhibition"), dict) else {}
+        safe_inh = {}
+        for mode, ts in list(inhibition.items())[:AUTONOMY_LOOP_CANDIDATE_MAX]:
+            mode = str(mode or "")[:AUTONOMY_LOOP_WORKSPACE_MAX]
+            if mode not in AUTONOMY_LOOP_MODES:
+                continue
+            safe_inh[mode] = round(self._loop_num(ts, 0.0, 0.0, 10 ** 12), 3)
+        base["inhibition"] = dict(sorted(safe_inh.items(),
+                                         key=lambda kv: kv[1], reverse=True)
+                                 [:AUTONOMY_LOOP_CANDIDATE_MAX])
+        ema = raw.get("value_ema") if isinstance(raw.get("value_ema"), dict) else {}
+        base["value_ema"] = {
+            str(k)[:AUTONOMY_LOOP_WORKSPACE_MAX]:
+                round(self._loop_num(v, 0.0, AUTONOMY_LOOP_VALUE_MIN,
+                                     AUTONOMY_LOOP_VALUE_MAX), 6)
+            for k, v in list(ema.items())[:AUTONOMY_LOOP_CANDIDATE_MAX]
+            if str(k)[:AUTONOMY_LOOP_WORKSPACE_MAX] in AUTONOMY_LOOP_MODES}
+        base["effort_debt"] = round(self._loop_num(
+            raw.get("effort_debt"), 0.0, 0.0, AUTONOMY_LOOP_DEBT_MAX), 6)
+        budget = raw.get("budget") if isinstance(raw.get("budget"), dict) else {}
+        base["budget"] = {
+            "day": str(budget.get("day") or "")[:10],
+            "used": max(0, min(int(self._loop_num(budget.get("used"), 0.0, 0.0, 10 ** 6)),
+                               AUTONOMY_DAILY_CAP)),
+            "last_action_ts": round(self._loop_num(
+                budget.get("last_action_ts"), 0.0, 0.0, 10 ** 12), 3),
+        }
+        stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+        base["stats"] = {key: max(0, min(
+            int(self._loop_num(stats.get(key), 0.0, 0.0, 10 ** 9)), 10 ** 9))
+            for key in base["stats"]}
+        base["updated_ts"] = round(self._loop_num(
+            raw.get("updated_ts"), 0.0, 0.0, 10 ** 12), 3)
+        return base
+
+    def _autonomy_loop_param(self, name: str, default: float,
+                             lo: float, hi: float) -> float:
+        """Read one loop tuning parameter, defensively clamped to its range."""
+        try:
+            value = float(getattr(self, name, default))
+        except Exception:
+            return float(default)
+        if value != value or value in (float("inf"), float("-inf")):
+            return float(default)
+        return max(float(lo), min(float(hi), value))
+
+    def _autonomy_loop_ior_factor(self, state: dict, mode: str, now: float) -> float:
+        """Return-inhibition recovery factor (Itti & Koch 1998 WTA + IOR).
+
+        A just-broadcast mode is fully suppressed (0) and recovers towards 1 as
+        exp(-Δ/τ). Note: spec §2's literal exp(-Δ/τ) points the opposite way
+        (no suppression right after selection); the implemented direction is the
+        IOR semantics the spec's S9 scenario requires.
+        """
+        try:
+            inhibition = state.get("inhibition") if isinstance(state.get("inhibition"), dict) else {}
+            stamp = float(inhibition.get(mode, 0.0) or 0.0)
+        except Exception:
+            stamp = 0.0
+        if stamp <= 0:
+            return 1.0
+        tau = self._autonomy_loop_param(
+            "autonomy_loop_ior_seconds", AUTONOMY_LOOP_IOR_SECONDS,
+            AUTONOMY_LOOP_IOR_MIN, AUTONOMY_LOOP_IOR_MAX)
+        delta = max(0.0, float(now) - stamp)
+        return _clip(1.0 - math.exp(-delta / max(1.0, tau)), 0.0, 1.0)
+
+    def _autonomy_loop_goal_progress(self) -> float:
+        """Progress proxy for the engaged goal (0 when there is no goal)."""
+        try:
+            goals = [g for g in (getattr(self, "goals", []) or [])
+                     if isinstance(g, dict)]
+            if not goals:
+                return 0.0
+            focus = str(getattr(self, "goal_focus", "") or "")
+            chosen = next((g for g in goals
+                           if str(g.get("key") or "") == focus), None)
+            if chosen is None:
+                chosen = max(goals, key=lambda g: self._loop_num(
+                    g.get("priority"), 0.5, 0.0, 1.0))
+            return self._loop_num(chosen.get("progress"), 0.0, 0.0, 1.0)
+        except Exception:
+            return 0.0
+
+    def _autonomy_loop_noise_chaos(self) -> float:
+        """Normalized 5-channel noise chaos (same scale as task-15)."""
+        try:
+            total = sum(abs(self._loop_num((getattr(self, "noise", {}) or {}).get(k),
+                                           0.0, -NOISE_CLAMP, NOISE_CLAMP))
+                        for k in ("stress", "energy", "social", "attention", "valence"))
+            return _clip(total / (5.0 * NOISE_CLAMP), 0.0, 1.0)
+        except Exception:
+            return 0.0
+
+    def _autonomy_loop_open_loops(self) -> tuple:
+        """(due_count, delay_min proxy) for the open-loop candidate."""
+        due = 0
+        delay_min = 0.0
+        try:
+            for loop in (getattr(self, "open_loops", []) or []):
+                if not isinstance(loop, dict):
+                    continue
+                if str(loop.get("status") or "open") != "open":
+                    continue
+                hint = str(loop.get("due_hint") or "")
+                if hint == "soon":
+                    due += 1
+                    delay_min = max(delay_min, 60.0)
+                elif hint == "tomorrow":
+                    due += 1
+                    delay_min = max(delay_min, 1440.0)
+        except Exception:
+            return 0, 0.0
+        return due, delay_min
+
+    def _autonomy_loop_candidates(self, relationship, now: float, state: dict) -> list:
+        """Build ≤6 deterministic candidates (spec §7.3); values per §2–§6."""
+        rel = relationship if isinstance(relationship, dict) else {}
+        rel_state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+        attachment = rel.get("attachment") if isinstance(rel.get("attachment"), dict) else {}
+        absence = rel.get("absence") if isinstance(rel.get("absence"), dict) else {}
+        closeness = self._loop_num(rel_state.get("closeness"), 0.5)
+        conflict = self._loop_num(rel_state.get("conflict"), 0.0)
+        attachment_safe = self._loop_num(attachment.get("safe"), 0.5)
+        closeness_eff = _clip(0.70 * closeness + 0.30 * attachment_safe, 0.0, 1.0)
+        gap_days = self._loop_num(absence.get("gap_days"), 0.0, 0.0, 365.0)
+        appraisal = getattr(self, "appraisal", {}) if isinstance(getattr(self, "appraisal", None), dict) else {}
+        novelty = self._loop_num(appraisal.get("novelty"), 0.0)
+        goal_rel = self._loop_num(appraisal.get("goal_relevance"), 0.0)
+        intensity = self._loop_num(self._intensity(), 0.0)
+        stress = self._loop_num(getattr(self, "stress", 0.0), 0.0)
+        boredom = self._loop_num(getattr(self, "boredom", 0.0), 0.0)
+        novelty_need = self._loop_num(getattr(self, "novelty_need", 0.5), 0.5)
+        chaos = self._autonomy_loop_noise_chaos()
+        due_count, loop_delay = self._autonomy_loop_open_loops()
+        loop_progress = 0.5 if due_count else 0.0
+        goal_progress = self._autonomy_loop_goal_progress()
+        debt = self._loop_num(state.get("effort_debt"), 0.0, 0.0,
+                              AUTONOMY_LOOP_DEBT_MAX)
+        k = self._autonomy_loop_param("autonomy_loop_k_delay", AUTONOMY_LOOP_K_DELAY,
+                                      AUTONOMY_LOOP_K_MIN, AUTONOMY_LOOP_K_MAX)
+        c0 = self._autonomy_loop_param("autonomy_loop_c0", AUTONOMY_LOOP_C0, 0.0, 1.0)
+        c1 = self._autonomy_loop_param("autonomy_loop_c1", AUTONOMY_LOOP_C1, 0.0, 1.0)
+        c2 = self._autonomy_loop_param("autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
+        w = AUTONOMY_LOOP_WEIGHTS
+        # (mode, features, goal_progress|None, delay_min)
+        rows = [
+            ("reach_out",
+             {"novelty": 0.0, "goal": 0.0, "relation": closeness_eff,
+              "affect": intensity, "noise": chaos}, None, gap_days * 1440.0),
+            ("explore",
+             {"novelty": max(novelty_need, boredom), "goal": 0.0, "relation": 0.0,
+              "affect": 0.5 * intensity, "noise": 0.5 * chaos}, None, 0.0),
+            ("engage",
+             {"novelty": novelty, "goal": goal_rel,
+              "relation": 0.5 * closeness_eff, "affect": intensity,
+              "noise": 0.3 * chaos}, goal_progress, 0.0),
+            ("wait",
+             {"novelty": 0.0, "goal": 0.0, "relation": 0.0,
+              "affect": 0.0, "noise": 0.0}, None, 0.0),
+            ("share",
+             {"novelty": 0.0, "goal": loop_progress, "relation": closeness_eff,
+              "affect": 0.3 * intensity, "noise": 0.2 * chaos},
+             loop_progress, loop_delay),
+            ("withdraw",
+             {"novelty": 0.0, "goal": 0.0,
+              "relation": _clip(max(conflict, 1.0 - closeness_eff), 0.0, 1.0),
+              "affect": stress, "noise": chaos}, None, 0.0),
+        ]
+        out = []
+        for mode, features, progress, delay_min in rows[:AUTONOMY_LOOP_CANDIDATE_MAX]:
+            salience = sum(w[key] * self._loop_num(features.get(key), 0.0)
+                           for key in w)
+            salience = _clip(salience, 0.0, 1.0)
+            ior = self._autonomy_loop_ior_factor(state, mode, now)
+            salience = _clip(salience * ior, 0.0, 1.0)
+            if progress is None:
+                goal_gain = 1.0
+            else:
+                goal_gain = _clip(0.8 + 0.4 * self._loop_num(progress, 0.0),
+                                  0.8, 1.4)
+            discount = _clip(1.0 / (1.0 + k * max(0.0, self._loop_num(
+                delay_min, 0.0, 0.0, 1440.0))), 0.05, 1.0)
+            effort = AUTONOMY_LOOP_EFFORT.get(mode, 0.5)
+            cost = c0 + c1 * effort + c2 * debt
+            value = _clip(salience * goal_gain * discount - cost,
+                          AUTONOMY_LOOP_VALUE_MIN, AUTONOMY_LOOP_VALUE_MAX)
+            out.append({
+                "mode": mode,
+                "source": ("readiness" if mode == "reach_out" else
+                           "curiosity" if mode == "explore" else
+                           "context" if mode == "engage" else
+                           "fallback" if mode == "wait" else
+                           "open_loop" if mode == "share" else "stress"),
+                "salience": round(salience, 4),
+                "goal_gain": round(goal_gain, 4),
+                "discount": round(discount, 4),
+                "effort": round(effort, 4),
+                "cost": round(cost, 4),
+                "value": round(value, 4),
+            })
+        return out
+
+    def autonomy_loop_tick(self, relationship=None, now=None,
+                           private_chat: bool = True) -> dict:
+        """One deterministic minimal-autonomy-loop tick (L1, spec §7.1).
+
+        Deterministic arbitration inspired by biased competition / saliency
+        WTA+IOR / goal gradient / hyperbolic delay discounting / effort cost /
+        global-workspace-style single-token broadcast. This is an engineering
+        control loop, NOT an implementation of consciousness or a GWT.
+
+        Default OFF returns {"enabled": False} without creating state or
+        touching any other field. Only one token is broadcast per tick; the
+        caller decides whether anything is sent (token-only default).
+        """
+        if not getattr(self, "autonomy_loop_enabled", False):
+            return {"enabled": False}
+        try:
+            current = float(now if now is not None else time.time())
+        except Exception:
+            current = time.time()
+        state = self.autonomy_loop if isinstance(
+            getattr(self, "autonomy_loop", None), dict) else None
+        if state is None:
+            state = self._autonomy_loop_default_state(current)
+            self.autonomy_loop = state
+        base = self._autonomy_loop_default_state(current)
+        for key, value in base.items():
+            if key not in state or not isinstance(state.get(key), type(value)):
+                state[key] = value
+        for key in base["stats"]:
+            if key not in state["stats"]:
+                state["stats"][key] = 0
+        state["enabled"] = True
+        try:
+            state["tick"] = int(state.get("tick", 0) or 0) + 1
+        except Exception:
+            state["tick"] = 1
+        stats = state["stats"]
+        stats["ticks"] = int(stats.get("ticks", 0) or 0) + 1
+        budget = state["budget"]
+        day = time.strftime("%Y-%m-%d", time.localtime(current))
+        if str(budget.get("day") or "") != day:
+            budget["day"] = day
+            budget["used"] = 0
+        # --- gates (spec §7.1 order: group -> quiet -> cooldown -> daily cap)
+        blocked = ""
+        if not private_chat:
+            blocked = "group"
+            stats["blocked_group"] = int(stats.get("blocked_group", 0) or 0) + 1
+        else:
+            hour = time.localtime(current).tm_hour
+            if AUTONOMY_QUIET_START_HOUR <= hour < AUTONOMY_QUIET_END_HOUR:
+                blocked = "quiet"
+                stats["blocked_quiet"] = int(stats.get("blocked_quiet", 0) or 0) + 1
+            else:
+                last_ts = self._loop_num(budget.get("last_action_ts"), 0.0,
+                                         0.0, 10 ** 12)
+                if last_ts > 0 and (current - last_ts) < AUTONOMY_COOLDOWN_SECONDS:
+                    blocked = "cooldown"
+                    stats["blocked_cooldown"] = int(
+                        stats.get("blocked_cooldown", 0) or 0) + 1
+                elif int(budget.get("used", 0) or 0) >= AUTONOMY_DAILY_CAP:
+                    blocked = "cap"
+                    stats["blocked_cap"] = int(stats.get("blocked_cap", 0) or 0) + 1
+        if blocked:
+            state["ignition"] = False
+            state["winner"] = None
+            state["workspace_token"] = ""
+            state["candidates"] = []
+            state["updated_ts"] = round(current, 3)
+            return {"enabled": True, "blocked": blocked, "ignition": False,
+                    "tick": state["tick"], "candidates": [], "stats": dict(stats)}
+        # --- effort-debt recovery on every active tick (bounded)
+        state["effort_debt"] = round(_clip(
+            self._loop_num(state.get("effort_debt"), 0.0, 0.0,
+                           AUTONOMY_LOOP_DEBT_MAX) - AUTONOMY_LOOP_DEBT_RECOVERY,
+            0.0, AUTONOMY_LOOP_DEBT_MAX), 6)
+        # --- candidates + values
+        candidates = self._autonomy_loop_candidates(relationship, current, state)
+        state["candidates"] = [dict(row) for row in candidates]
+        if not candidates:
+            stats["no_ignition"] = int(stats.get("no_ignition", 0) or 0) + 1
+            state["ignition"] = False
+            state["winner"] = None
+            state["workspace_token"] = ""
+            state["updated_ts"] = round(current, 3)
+            return {"enabled": True, "blocked": "", "ignition": False,
+                    "tick": state["tick"], "candidates": [], "stats": dict(stats)}
+        theta = self._autonomy_loop_param(
+            "autonomy_loop_theta_ig", AUTONOMY_LOOP_THETA_IG,
+            AUTONOMY_LOOP_THETA_MIN, AUTONOMY_LOOP_THETA_MAX)
+        margin_min = self._autonomy_loop_param(
+            "autonomy_loop_margin", AUTONOMY_LOOP_MARGIN,
+            AUTONOMY_LOOP_MARGIN_MIN, AUTONOMY_LOOP_MARGIN_MAX)
+        inhibition = state["inhibition"] if isinstance(
+            state.get("inhibition"), dict) else {}
+        # Refractory: a mode broadcast within the last 60 s cannot win again.
+        eligible = []
+        for row in candidates:
+            stamp = self._loop_num(inhibition.get(row["mode"]), 0.0, 0.0, 10 ** 12)
+            if stamp > 0 and (current - stamp) < AUTONOMY_LOOP_REFRACTORY_SECONDS:
+                continue
+            eligible.append(row)
+        margin = 0.0
+        ignition = False
+        winner = None
+        if eligible:
+            ranked = sorted(
+                eligible, key=lambda row: (-float(row["value"]),
+                                           AUTONOMY_LOOP_MODES.index(row["mode"])))
+            winner = ranked[0]
+            second = float(ranked[1]["value"]) if len(ranked) > 1 else \
+                AUTONOMY_LOOP_VALUE_MIN
+            margin = float(winner["value"]) - second
+            ignition = bool(float(winner["value"]) >= theta
+                            and margin >= margin_min)
+        if not ignition:
+            stats["no_ignition"] = int(stats.get("no_ignition", 0) or 0) + 1
+            state["ignition"] = False
+            state["winner"] = None
+            state["workspace_token"] = ""
+            state["updated_ts"] = round(current, 3)
+            return {"enabled": True, "blocked": "", "ignition": False,
+                    "tick": state["tick"], "candidates": [dict(r) for r in candidates],
+                    "theta_ig": round(theta, 4), "margin": round(margin, 4),
+                    "stats": dict(stats)}
+        # --- broadcast exactly one workspace token (token-only; no send here)
+        mode = str(winner["mode"])[:AUTONOMY_LOOP_WORKSPACE_MAX]
+        state["workspace_token"] = mode
+        state["winner"] = {"mode": mode, "value": round(float(winner["value"]), 4),
+                           "ts": round(current, 3)}
+        state["ignition"] = True
+        inhibition[mode] = round(current, 3)
+        state["inhibition"] = dict(sorted(
+            inhibition.items(), key=lambda kv: self._loop_num(
+                kv[1], 0.0, 0.0, 10 ** 12), reverse=True
+        )[:AUTONOMY_LOOP_CANDIDATE_MAX])
+        # --- feedback EMA (record-only; no learning gradient / no next-tick use)
+        ema = state["value_ema"] if isinstance(state.get("value_ema"), dict) else {}
+        prev = self._loop_num(ema.get(mode), 0.0, AUTONOMY_LOOP_VALUE_MIN,
+                              AUTONOMY_LOOP_VALUE_MAX)
+        outcome = _clip(float(winner["value"]), AUTONOMY_LOOP_VALUE_MIN,
+                        AUTONOMY_LOOP_VALUE_MAX)
+        ema[mode] = round(_clip(
+            AUTONOMY_LOOP_EMA_KEEP * prev
+            + (1.0 - AUTONOMY_LOOP_EMA_KEEP) * outcome,
+            AUTONOMY_LOOP_VALUE_MIN, AUTONOMY_LOOP_VALUE_MAX), 6)
+        state["value_ema"] = {str(k)[:AUTONOMY_LOOP_WORKSPACE_MAX]: v
+                              for k, v in list(ema.items())[
+                                  :AUTONOMY_LOOP_CANDIDATE_MAX]}
+        state["effort_debt"] = round(_clip(
+            self._loop_num(state.get("effort_debt"), 0.0, 0.0,
+                           AUTONOMY_LOOP_DEBT_MAX) + AUTONOMY_LOOP_DEBT_STEP,
+            0.0, AUTONOMY_LOOP_DEBT_MAX), 6)
+        budget["last_action_ts"] = round(current, 3)
+        budget["used"] = int(budget.get("used", 0) or 0) + 1
+        stats["ignitions"] = int(stats.get("ignitions", 0) or 0) + 1
+        stats["executed"] = int(stats.get("executed", 0) or 0) + 1
+        state["updated_ts"] = round(current, 3)
+        return {"enabled": True, "blocked": "", "ignition": True,
+                "tick": state["tick"], "workspace_token": mode,
+                "winner": dict(state["winner"]),
+                "candidates": [dict(r) for r in candidates],
+                "theta_ig": round(theta, 4), "margin": round(margin, 4),
+                "effort_debt": state["effort_debt"],
+                "value_ema": dict(state["value_ema"]), "stats": dict(stats)}
 
     def autonomy_state(self, relationship=None, now=None, persist: bool = True) -> dict:
         """L1 task-15: deterministic noise -> autonomy readiness.
@@ -2464,7 +2978,7 @@ class BioCore:
 
     def snapshot(self) -> dict:
         self._decay_to_now()
-        return {"v": round(self.v, 4), "a": round(self.a, 4),
+        out = {"v": round(self.v, 4), "a": round(self.a, 4),
                 "d": round(self.d, 4), "social": round(self.social, 4),
                 "stress": round(self.stress, 4), "energy": round(self.energy, 4),
                 "trust": round(self.trust, 4), "ticks": self.ticks,
@@ -2528,6 +3042,12 @@ class BioCore:
                                        if getattr(self, "autonomy_enabled", False)
                                        and isinstance(getattr(self, "_proactive_autonomy", None), dict)
                                        else {"enabled": False})}
+        # Task-28: persisted ONLY while the loop is enabled. Default OFF is a
+        # true no-op: the state file stays byte-identical (key absent entirely).
+        if (getattr(self, "autonomy_loop_enabled", False)
+                and isinstance(getattr(self, "autonomy_loop", None), dict)):
+            out["autonomy_loop"] = dict(self.autonomy_loop)
+        return out
 
 
 class _AutonomySendTarget:
@@ -2577,6 +3097,28 @@ class BioCorePlugin(Star):
         # is computed, no background task starts, and no message can be sent.
         self.proactive_autonomy = bool(self.config.get("proactive_autonomy", False))
         self.proactive_send = bool(self.config.get("proactive_send", False))
+        # Task-28: minimal autonomy loop (default OFF; private-only; token-only).
+        self.autonomy_loop_enabled = bool(self.config.get("autonomy_loop_enabled", False))
+        self.autonomy_loop_theta_ig = self._loop_cfg_float(
+            "autonomy_loop_theta_ig", AUTONOMY_LOOP_THETA_IG,
+            AUTONOMY_LOOP_THETA_MIN, AUTONOMY_LOOP_THETA_MAX)
+        self.autonomy_loop_margin = self._loop_cfg_float(
+            "autonomy_loop_margin", AUTONOMY_LOOP_MARGIN,
+            AUTONOMY_LOOP_MARGIN_MIN, AUTONOMY_LOOP_MARGIN_MAX)
+        self.autonomy_loop_k_delay = self._loop_cfg_float(
+            "autonomy_loop_k_delay", AUTONOMY_LOOP_K_DELAY,
+            AUTONOMY_LOOP_K_MIN, AUTONOMY_LOOP_K_MAX)
+        self.autonomy_loop_ior_seconds = self._loop_cfg_float(
+            "autonomy_loop_ior_seconds", AUTONOMY_LOOP_IOR_SECONDS,
+            AUTONOMY_LOOP_IOR_MIN, AUTONOMY_LOOP_IOR_MAX)
+        self.autonomy_loop_c0 = self._loop_cfg_float(
+            "autonomy_loop_c0", AUTONOMY_LOOP_C0, 0.0, 1.0)
+        self.autonomy_loop_c1 = self._loop_cfg_float(
+            "autonomy_loop_c1", AUTONOMY_LOOP_C1, 0.0, 1.0)
+        self.autonomy_loop_c2 = self._loop_cfg_float(
+            "autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
+        self.autonomy_loop_token_only = bool(
+            self.config.get("autonomy_loop_token_only", True))
         # Stage-2: C8+C9 goal<->appraisal closed loop (default OFF = 1.2.98).
         self.bio_feedback_loops = bool(self.config.get("bio_feedback_loops", False))
         # Task-20: L1 learning defaults ON with small steps + hard bounds.
@@ -3358,12 +3900,36 @@ class BioCorePlugin(Star):
             # Task-15: readiness is owned by plugin config, never restored from
             # state; the optional noise seed is applied only when autonomy is on.
             core.autonomy_enabled = bool(getattr(self, "proactive_autonomy", False))
+            # Task-28: loop switch + tuning are config-owned, never restored from
+            # the state file; re-applied on every core build/config reload.
+            core.autonomy_loop_enabled = bool(
+                getattr(self, "autonomy_loop_enabled", False))
+            core.autonomy_loop_theta_ig = self._loop_cfg_float(
+                "autonomy_loop_theta_ig", AUTONOMY_LOOP_THETA_IG,
+                AUTONOMY_LOOP_THETA_MIN, AUTONOMY_LOOP_THETA_MAX)
+            core.autonomy_loop_margin = self._loop_cfg_float(
+                "autonomy_loop_margin", AUTONOMY_LOOP_MARGIN,
+                AUTONOMY_LOOP_MARGIN_MIN, AUTONOMY_LOOP_MARGIN_MAX)
+            core.autonomy_loop_k_delay = self._loop_cfg_float(
+                "autonomy_loop_k_delay", AUTONOMY_LOOP_K_DELAY,
+                AUTONOMY_LOOP_K_MIN, AUTONOMY_LOOP_K_MAX)
+            core.autonomy_loop_ior_seconds = self._loop_cfg_float(
+                "autonomy_loop_ior_seconds", AUTONOMY_LOOP_IOR_SECONDS,
+                AUTONOMY_LOOP_IOR_MIN, AUTONOMY_LOOP_IOR_MAX)
+            core.autonomy_loop_c0 = self._loop_cfg_float(
+                "autonomy_loop_c0", AUTONOMY_LOOP_C0, 0.0, 1.0)
+            core.autonomy_loop_c1 = self._loop_cfg_float(
+                "autonomy_loop_c1", AUTONOMY_LOOP_C1, 0.0, 1.0)
+            core.autonomy_loop_c2 = self._loop_cfg_float(
+                "autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
+            core.autonomy_loop_token_only = bool(
+                getattr(self, "autonomy_loop_token_only", True))
             core.bio_feedback_loops = bool(
                 getattr(self, "bio_feedback_loops", False))
             core.bio_learning = bool(getattr(self, "bio_learning", True))
             core.retention_model = str(
                 getattr(self, "retention_model", "power_law") or "power_law")
-            if core.autonomy_enabled:
+            if core.autonomy_enabled or core.autonomy_loop_enabled:
                 try:
                     _seed = int(getattr(self, "noise_seed", 0) or 0)
                     core._noise_seed = max(0, _seed)
@@ -3407,6 +3973,17 @@ class BioCorePlugin(Star):
             return False
         except Exception:
             return False
+
+    def _loop_cfg_float(self, key: str, default: float,
+                        lo: float, hi: float) -> float:
+        """Read one numeric autonomy-loop config value (finite + clamped)."""
+        try:
+            value = float(self.config.get(key, default))
+        except Exception:
+            return float(default)
+        if value != value or value in (float("inf"), float("-inf")):
+            return float(default)
+        return max(float(lo), min(float(hi), value))
 
     def _update_autonomy_readiness(self, core, user_data=None) -> dict:
         """Task-15: ask L1 to compute readiness only when autonomy is enabled."""
@@ -3547,8 +4124,9 @@ class BioCorePlugin(Star):
             pass
 
     def _ensure_autonomy_task(self) -> None:
-        """P0-1: start the autonomous generator only when autonomy is on."""
-        if not getattr(self, "proactive_autonomy", False):
+        """P0-1: start the generator only when task-15 or task-28 is on."""
+        if not (getattr(self, "proactive_autonomy", False)
+                or getattr(self, "autonomy_loop_enabled", False)):
             return
         try:
             task = getattr(self, "_autonomy_task", None)
@@ -3560,9 +4138,11 @@ class BioCorePlugin(Star):
     async def _autonomy_loop(self) -> None:
         """P0-1: 5-minute deterministic tick; exits immediately when disabled."""
         try:
-            while getattr(self, "proactive_autonomy", False):
+            while (getattr(self, "proactive_autonomy", False)
+                   or getattr(self, "autonomy_loop_enabled", False)):
                 await asyncio.sleep(AUTONOMY_TICK_SECONDS)
-                if not getattr(self, "proactive_autonomy", False):
+                if not (getattr(self, "proactive_autonomy", False)
+                        or getattr(self, "autonomy_loop_enabled", False)):
                     break
                 try:
                     await self._autonomy_tick()
@@ -3573,12 +4153,33 @@ class BioCorePlugin(Star):
         except Exception:
             return
 
+    @staticmethod
+    def _autonomy_exit_plan(acted: bool, loop_on: bool, proactive_on: bool,
+                            proactive_send: bool, token_only: bool) -> str:
+        """Single-exit decision for one autonomy tick (spec §7.1 / S20).
+
+        Returns "token" (loop broadcast only; nothing is sent), "send" (the
+        existing task-15 send gate may run) or "none". It can never return two
+        exits for the same session/tick.
+        """
+        if not proactive_on or not proactive_send:
+            return "token" if acted else "none"
+        if acted and loop_on and token_only:
+            return "token"
+        return "send"
+
     async def _autonomy_tick(self, now=None) -> list:
-        """P0-1: one autonomous tick over remembered private sessions."""
+        """One autonomous tick over remembered PRIVATE sessions (task-15+task-28).
+
+        Task-28 adds the candidate/arbitration token broadcast. Exit mutual
+        exclusion (S20): per session per tick, either the loop broadcasts one
+        token (token-only => nothing sent) or the existing task-15 send gate may
+        send at most once -- never both.
+        """
         sent = []
-        if not getattr(self, "proactive_autonomy", False):
-            return sent
-        if not getattr(self, "proactive_send", False):
+        loop_on = bool(getattr(self, "autonomy_loop_enabled", False))
+        proactive_on = bool(getattr(self, "proactive_autonomy", False))
+        if not (loop_on or proactive_on):
             return sent
         try:
             current = float(now if now is not None else time.time())
@@ -3590,7 +4191,8 @@ class BioCorePlugin(Star):
                     continue
                 cores = getattr(self, "cores", None)
                 core = cores.get(umo) if isinstance(cores, dict) else None
-                if core is None or not getattr(core, "autonomy_enabled", False):
+                if core is None or not (getattr(core, "autonomy_enabled", False)
+                                        or getattr(core, "autonomy_loop_enabled", False)):
                     continue
                 # Unified noise model: one update point per tick.
                 try:
@@ -3600,8 +4202,24 @@ class BioCorePlugin(Star):
                 target = _AutonomySendTarget(
                     self, umo, info.get("sender_id", ""),
                     info.get("sender_name", ""), private=True)
-                if await self._maybe_proactive_send(target, core, now=current):
-                    sent.append(umo)
+                acted = False
+                if loop_on and getattr(core, "autonomy_loop_enabled", False):
+                    try:
+                        user_data = self._user_record(target)
+                        loop_result = core.autonomy_loop_tick(
+                            self._relationship_of(user_data), now=current,
+                            private_chat=True)
+                        acted = bool(loop_result.get("ignition"))
+                    except Exception as exc:
+                        logger.warning("[biocore] autonomy loop tick failed: %s", exc)
+                        acted = False
+                plan = self._autonomy_exit_plan(
+                    acted, loop_on, proactive_on,
+                    bool(getattr(self, "proactive_send", False)),
+                    bool(getattr(self, "autonomy_loop_token_only", True)))
+                if plan == "send":
+                    if await self._maybe_proactive_send(target, core, now=current):
+                        sent.append(umo)
             except Exception:
                 continue
         return sent
@@ -9117,7 +9735,8 @@ class BioCorePlugin(Star):
         _user_data = self._touch_user(event, core)
         # Task-15: readiness is computed by L1 only when autonomy is enabled;
         # remember private sessions and start the P0-1 generator lazily.
-        if getattr(self, "proactive_autonomy", False):
+        if (getattr(self, "proactive_autonomy", False)
+                or getattr(self, "autonomy_loop_enabled", False)):
             try:
                 self._update_autonomy_readiness(core, _user_data)
                 if self._is_private_event(event):
