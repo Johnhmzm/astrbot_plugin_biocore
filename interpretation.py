@@ -2076,3 +2076,92 @@ def sycophancy_check(reply, core_state=None, *, risky=False) -> dict:
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# task-54/55: expression chain (cap_t / politeness / citation / Big5 effect).
+# Deterministic prompt-side helpers only; default-off callers ignore them.
+# ---------------------------------------------------------------------------
+def _unit(value, lo=0.0, hi=1.0):
+    try:
+        return max(lo, min(hi, float(value or 0.0)))
+    except Exception:
+        return lo
+
+
+def expression_length_cap(elaboration=0.5, suppression=0.0, stress=0.0,
+                          cap_base=30.0, lo=40, hi=240) -> int:
+    """cap_t = clamp(cap_base + 90*elaboration - 60*suppression - 40*stress)."""
+    value = (float(cap_base) + 90.0 * _unit(elaboration)
+             - 60.0 * _unit(suppression) - 40.0 * _unit(stress))
+    return int(round(max(float(lo), min(float(hi), value))))
+
+
+def expression_prompt_hint(cap_t, politeness="direct", citation="") -> str:
+    """<=140 chars, one sentence; length/tone suggestion only (no hard cut)."""
+    text = "建议长度≤%d字；情绪词≤1；感叹≤1；连续附和≤2；礼貌=%s" % (
+        int(cap_t), str(politeness or "direct")[:12])
+    if citation:
+        text += "；引用=%s" % str(citation)[:20]
+    return text[:140]
+
+
+def politeness_risk(distance=0.5, trust=0.5, imposition=0.5) -> float:
+    """risk = 0.4*distance + 0.3*(1-trust) + 0.3*imposition."""
+    return round(max(0.0, min(1.0,
+                             0.4 * _unit(distance)
+                             + 0.3 * (1.0 - _unit(trust))
+                             + 0.3 * _unit(imposition))), 4)
+
+
+def politeness_strategy(risk) -> str:
+    """>=0.8 implicit; 0.6-0.8 negative+hedge; 0.3-0.6 positive; <0.3 direct."""
+    value = _unit(risk)
+    if value > 0.8:
+        return "implicit"
+    if value > 0.6:
+        return "negative_hedge"
+    if value >= 0.3:
+        return "positive"
+    return "direct"
+
+
+def politeness_hint(risk) -> str:
+    tags = {"direct": "直接说", "positive": "先肯定再提",
+            "negative_hedge": "用委婉+hedge", "implicit": "含蓄暗示"}
+    return ("礼貌策略：%s" % tags.get(politeness_strategy(risk), "直接说"))[:140]
+
+
+def memory_citation_allowed(mode="none", continuity_seconds=0, open_loop=False,
+                            milestone=False, confidence=0.0,
+                            already_cited=0) -> bool:
+    """Only explicit / continuity>600s / open_loop / milestone may be spoken.
+
+    At most 1 citation per round and confidence >= 0.55; otherwise the memory
+    only affects tone (never named).
+    """
+    try:
+        count = int(already_cited or 0)
+    except Exception:
+        count = 0
+    if count >= 1:
+        return False
+    try:
+        if float(confidence) < 0.55:
+            return False
+    except Exception:
+        return False
+    if str(mode or "") == "explicit":
+        return True
+    try:
+        if float(continuity_seconds or 0) > 600.0:
+            return True
+    except Exception:
+        pass
+    return bool(open_loop or milestone)
+
+
+def big5_trait_effect(trait=0.5, cue=0.5, k=0.3) -> float:
+    """trait_effect = clamp(t*(1 + k*(cue-0.5)*2), 0, 1.5); never writes profile."""
+    value = float(trait) * (1.0 + float(k) * (_unit(cue) - 0.5) * 2.0)
+    return round(max(0.0, min(1.5, value)), 4)

@@ -772,3 +772,71 @@ def summarize_relationship(relationship: Any) -> str:
         if key in state:
             parts.append(f"{label}={_clamp(state.get(key)):.2f}")
     return " ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# task-55 relationship chain (deterministic, default OFF; caller-gated).
+# ---------------------------------------------------------------------------
+def attachment_dynamics(trust=0.5, conflict=0.5, closeness=0.5) -> dict:
+    """anxiety=.5(1-trust)+.5*conflict; avoid=1-closeness; repair_speed."""
+    t = max(0.0, min(1.0, float(trust)))
+    c = max(0.0, min(1.0, float(conflict)))
+    cl = max(0.0, min(1.0, float(closeness)))
+    anxiety = max(0.0, min(1.0, 0.5 * (1.0 - t) + 0.5 * c))
+    avoid = max(0.0, min(1.0, 1.0 - cl))
+    repair_speed = max(0.5, min(1.0, 1.0 - 0.3 * anxiety - 0.2 * avoid))
+    return {"anxiety": round(anxiety, 4), "avoid": round(avoid, 4),
+            "repair_speed": round(repair_speed, 4)}
+
+
+def closeness_step(disclosure=0.0, response=0.0, overreach=0.0,
+                   k1=1.0, k3=1.0) -> float:
+    """d_closeness = clamp(k1*disclosure*response - k3*overreach, -0.02, 0.03)."""
+    try:
+        d = float(disclosure) * float(response)
+        o = float(overreach)
+        k1v = float(k1)
+        k3v = float(k3)
+    except Exception:
+        return 0.0
+    return round(max(-0.02, min(0.03, k1v * d - k3v * o)), 4)
+
+
+GOTTMAN_FOUR_HORSEMEN = {
+    "criticism": ("你总是", "你从来不", "你每次都", "你根本就不"),
+    "contempt": ("废物", "没用", "可笑", "恶心", "你算什么东西", "不配"),
+    "defensiveness": ("不是我的错", "都是你", "你怎么不说", "关我什么事"),
+    "stonewalling": ("随便你", "不想说", "无所谓", "别烦我", "沉默"),
+}
+
+
+def gottman_hits(text) -> dict:
+    value = str(text or "")
+    hits = {}
+    for name, words in GOTTMAN_FOUR_HORSEMEN.items():
+        found = [w for w in words if w in value]
+        if found:
+            hits[name] = found[:3]
+    return hits
+
+
+def gottman_conflict_step(text) -> tuple:
+    """conflict_step = min(0.15, 0.05*hits) — bounded, never deletes."""
+    hits = gottman_hits(text)
+    n = sum(len(v) for v in hits.values())
+    return hits, round(min(0.15, 0.05 * n), 4)
+
+
+REPAIR_ACTS = ("对不起", "我错了", "抱歉", "我理解", "你说得对", "我们聊聊",
+               "别生气", "我改", "补偿", "重新来")
+
+
+def repair_step(text, repair_speed=1.0) -> tuple:
+    """repair_step = min(0.10, 0.05*acts) * repair_speed (bounded)."""
+    value = str(text or "")
+    acts = [w for w in REPAIR_ACTS if w in value]
+    try:
+        speed = max(0.0, min(1.0, float(repair_speed)))
+    except Exception:
+        speed = 1.0
+    return acts, round(min(0.10, 0.05 * len(acts)) * speed, 4)

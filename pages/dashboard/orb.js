@@ -280,7 +280,16 @@
       worthiness: (e.worthiness && typeof e.worthiness === "object") ? e.worthiness : null,
       user_marked: e.user_marked === true,
       memory_point: e.memory_point !== false,
-      label_edited: e.label_edited === true
+      label_edited: e.label_edited === true,
+      // task-44/45: ball identity + pinned/downgraded markers must reach the
+      // focus panel (this whitelist used to drop them).
+      _kind: String(e._kind || ""),
+      session: String(e.session || ""),
+      pinned: e.pinned === true,
+      downgraded: e.downgraded === true,
+      downgraded_by_reevaluate: e.downgraded_by_reevaluate === true,
+      reevaluate_verdict: (e.reevaluate_verdict && typeof e.reevaluate_verdict === "object")
+        ? e.reevaluate_verdict : null
     };
   }
   function _dispatchFocusEvent(name, ev) {
@@ -501,7 +510,8 @@
     const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
       " · 年龄 " + Math.round(hit.ageDays) + "d" +
       (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
-      _mergeTip(ev) + (ev.pinned === true ? " · 已钉住" : "");
+      _mergeTip(ev) + (ev.pinned === true ? " · 已钉住" : "") +
+      (ev.downgraded === true ? " · 已降级（可恢复）" : "");
     const _secKey = String(ev.emotion_secondary || "").trim();
     const _status = String((ev.source_check && ev.source_check.status) || "ok");
     const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
@@ -1693,7 +1703,8 @@
         const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
           " · 年龄 " + Math.round(hit.ageDays) + "d" +
           (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
-          _mergeTip(ev) + (ev.pinned === true ? " · 已钉住" : "");
+          _mergeTip(ev) + (ev.pinned === true ? " · 已钉住" : "") +
+          (ev.downgraded === true ? " · 已降级（可恢复）" : "");
         const small = String(ev.small_summary || "").trim();
         const fallbackText = small ? "小总结：" + small
           : String(ev.event || ev.central_details || ev.meaning_to_her || "");

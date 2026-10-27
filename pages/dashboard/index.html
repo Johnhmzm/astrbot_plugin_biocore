@@ -3,9 +3,11 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261027-1325" />
+<link rel="stylesheet" href="./styles.css?v=20261027-1605" />
 </head>
 <body>
+  <div id="secBanner" class="notice" hidden></div>
+  <div id="migBanner" class="notice" hidden></div>
 <div class="shell">
   <aside class="sidebar">
     <div class="brand"><div class="mark"><span></span><span></span><span></span></div><div><b>BioCore</b><small>EMOTION CORE</small></div></div>
@@ -580,7 +582,7 @@
       <div class="section-title mt" data-settings-title="settingsBackup"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
       <div class="panel settings settings-panel" id="settingsBackup">
         <div class="setting-row"><div><b>下载核心备份</b><small>插件代码 + data/ 打包成 zip，可用于迁移或恢复。</small></div><button type="button" class="btn" id="backupBtn">下载备份</button></div>
-        <p class="api-note" id="backupState">备份包含 API Key、persona、memory、states，不要外发。</p>
+        <p class="api-note" id="backupState">⚠ 安全备份：不含 API Key（api_config/密钥文件被排除，JSON 密钥字段脱敏）；点击后需确认，生成一次性下载链接。</p>
         <div class="setting-row"><div><b>加载核心备份</b><small>选择备份 zip；连续点击两次确认，会覆盖当前 data/。</small></div></div>
         <input type="file" id="restoreFile" accept=".zip,application/zip" style="margin:8px 0">
         <button type="button" class="btn danger" id="restoreBtn">加载备份（需点两次）</button>
@@ -590,5 +592,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261027-1325"></script><script src="./app.js?v=20261027-1325"></script><script src="./orb.js?v=20261027-1325"></script>
+<script src="./orb_math.js?v=20261027-1605"></script><script src="./app.js?v=20261027-1605"></script><script src="./orb.js?v=20261027-1605"></script>
 </body></html>
