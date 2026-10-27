@@ -70,6 +70,19 @@ try:
 except Exception:
     import homeostasis
 
+try:
+    from .biocore_model import render as _bc_render
+    from .biocore_model import services as _bc_services
+except Exception:
+    try:
+        from biocore_model import render as _bc_render
+        from biocore_model import services as _bc_services
+    except Exception:  # pragma: no cover - package ships with the plugin
+        _bc_render = None
+        _bc_services = None
+
+_SERVICES = getattr(_bc_services, "SERVICES", None) if _bc_services is not None else None
+
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
 _BASE_DATA_DIR = PLUGIN_DIR.parents[1] if len(PLUGIN_DIR.parents) > 1 else PLUGIN_DIR
@@ -3419,8 +3432,10 @@ class BioCorePlugin(Star):
         except Exception:
             self.summary_max_chars = 0
         self.bc_prompt_mode = str(self.config.get("bc_prompt_mode", "telemetry") or "telemetry").strip().lower()
-        if self.bc_prompt_mode not in ("telemetry", "semantic"):
+        if self.bc_prompt_mode not in ("telemetry", "semantic", "text"):
             self.bc_prompt_mode = "telemetry"
+        self.bc_text_legend_enabled = bool(
+            self.config.get("bc_text_legend_enabled", True))
         self.voice_transcription_enabled = bool(self.config.get("voice_transcription_enabled", True))
         try:
             self.event_summary_delay_hours = max(0, int(self.config.get("event_summary_delay_hours", 6) or 6))
@@ -4781,8 +4796,11 @@ class BioCorePlugin(Star):
         try:
             _tmo = max(2.0, min(20.0, float(
                 timeout_ms or getattr(self, "summary_llm_timeout_ms", 8000)) / 1000.0))
-            resp = await asyncio.wait_for(provider.text_chat(prompt=prompt),
-                                          timeout=_tmo)
+            _call = provider.text_chat(prompt=prompt)
+            if _SERVICES is not None:
+                resp = await _SERVICES.llm(_call, _tmo)
+            else:
+                resp = await asyncio.wait_for(_call, timeout=_tmo)
         except asyncio.TimeoutError:
             self._record_llm_telemetry(kind, "timeout")
             return None
@@ -4818,13 +4836,12 @@ class BioCorePlugin(Star):
                 pass
         try:
             _tmo = float(getattr(self, "outbound_timeout_ms", 3000)) / 1000.0
-            if system_prompt:
-                resp = await asyncio.wait_for(
-                    provider.text_chat(prompt=prompt, system_prompt=system_prompt),
-                    timeout=_tmo)
+            _call = (provider.text_chat(prompt=prompt, system_prompt=system_prompt)
+                     if system_prompt else provider.text_chat(prompt=prompt))
+            if _SERVICES is not None:
+                resp = await _SERVICES.llm(_call, _tmo)
             else:
-                resp = await asyncio.wait_for(
-                    provider.text_chat(prompt=prompt), timeout=_tmo)
+                resp = await asyncio.wait_for(_call, timeout=_tmo)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             if str(kind) in LLM_BACKGROUND_KINDS:
                 try:
@@ -10485,10 +10502,13 @@ class BioCorePlugin(Star):
             # P1-2: safety on => no rerank payload leaves the process.
             return None
         try:
-            _results = await asyncio.wait_for(
-                _target.rerank(query, [str(d) for d in documents],
-                               top_n=len(documents)),
-                timeout=float(getattr(self, "outbound_timeout_ms", 3000)) / 1000.0)
+            _call = _target.rerank(query, [str(d) for d in documents],
+                                   top_n=len(documents))
+            _rto = float(getattr(self, "outbound_timeout_ms", 3000)) / 1000.0
+            if _SERVICES is not None:
+                _results = await _SERVICES.rerank(_call, _rto)
+            else:
+                _results = await asyncio.wait_for(_call, timeout=_rto)
             out = {}
             for _r in (_results or []):
                 try:
@@ -10550,9 +10570,11 @@ class BioCorePlugin(Star):
                 _timeout_s = max(0.1, min(15.0, float(_timeout_ms) / 1000.0))
             except Exception:
                 _timeout_s = EMBED_TIMEOUT_S
-            data = await asyncio.wait_for(
-                asyncio.to_thread(self._ipv4_json, url, headers, payload, _timeout_s),
-                timeout=_timeout_s)
+            _call = asyncio.to_thread(self._ipv4_json, url, headers, payload, _timeout_s)
+            if _SERVICES is not None:
+                data = await _SERVICES.embed(_call, _timeout_s)
+            else:
+                data = await asyncio.wait_for(_call, timeout=_timeout_s)
             vec = data["data"][0]["embedding"]
             if not isinstance(vec, list) or not vec:
                 return None
@@ -12436,6 +12458,15 @@ class BioCorePlugin(Star):
         # L-T02..L-T12: one bounded strategy/cause/receipt token, plus optional
         # proposal-only LLM refinements (each function default OFF).
         _events_raw = self._event_archive(9)
+        # Phase-1 text mode: 1-2 strongest event links (no-op for other modes).
+        _event_links = []
+        if (str(getattr(self, "bc_prompt_mode", "telemetry")).lower() == "text"
+                and _bc_render is not None):
+            try:
+                _event_links = _bc_render.derive_event_links(
+                    _events_raw, now=time.time())
+            except Exception:
+                _event_links = []
         _strategy_hint = ""
         try:
             _strategy_hint = await self._maybe_llm_hints(
@@ -12546,9 +12577,24 @@ class BioCorePlugin(Star):
             except Exception as exc:
                 logger.warning("[biocore] kb retrieve failed: %s", exc)
         _base = str(getattr(req, "system_prompt", "") or "")
+        # Fixed legend: once per system prompt, never inside the per-turn [BC].
+        if (str(getattr(self, "bc_prompt_mode", "telemetry")).lower() == "text"
+                and getattr(self, "bc_text_legend_enabled", True)
+                and _bc_render is not None):
+            try:
+                _legend = _bc_render.text_legend()
+                if _legend and _legend.split("\n")[0] not in _base:
+                    _base = (_base + "\n\n" + _legend).strip()
+            except Exception:
+                pass
         _sid, _sname = self._speaker(event)
         _speaker = (("%s（%s）" % (_sname or "未知", _sid)) if _sid else (_sname or ""))
-        _compact = interpretation.render_compact(
+        _open_loops_due = sum(
+            1 for _loop in (getattr(core, "open_loops", None) or [])
+            if isinstance(_loop, dict)
+            and str(_loop.get("status") or "open") == "open"
+            and str(_loop.get("due_hint") or "") in ("soon", "tomorrow"))
+        _render_args = (
             core,
             _mem.replace("[BioCore Memory]", "").strip(),
             _events.replace("[BioCore Events]", "").strip(),
@@ -12558,20 +12604,26 @@ class BioCorePlugin(Star):
             _kb,
             _speaker,
             _voice,
+        )
+        _render_kwargs = dict(
             memory_meta=getattr(self, "_last_memory_meta", {}) or {},
             open_loops=getattr(core, "open_loops", None),
-            open_loops_due=sum(
-                1 for _loop in (getattr(core, "open_loops", None) or [])
-                if isinstance(_loop, dict)
-                and str(_loop.get("status") or "open") == "open"
-                and str(_loop.get("due_hint") or "") in ("soon", "tomorrow")),
+            open_loops_due=_open_loops_due,
             answer_confidence=(getattr(self, "_last_memory_meta", {}) or {}).get("answer_confidence"),
             strategy_hint=_strategy_hint,
             continuity=_continuity,
             prompt_mode=getattr(self, "bc_prompt_mode", "telemetry"),
             workspace_token=_ws_token,
             brevity=_brevity,
-        ).strip()
+        )
+        # Phase-1 modularisation: render lives in biocore_model.render; the
+        # interpretation wrapper stays for old imports/eval.
+        if _bc_render is not None:
+            _compact = _bc_render.render_compact(
+                *_render_args, event_links=_event_links, **_render_kwargs).strip()
+        else:
+            _compact = interpretation.render_compact(
+                *_render_args, **_render_kwargs).strip()
         # 1.3.1: deterministic [BC] budget + duplicate-line removal.
         _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
         _budget_chars = (int(getattr(self, "bc_budget_chars", 700) or 700)

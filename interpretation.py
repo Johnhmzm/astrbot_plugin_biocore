@@ -13,6 +13,14 @@ import json
 import math
 import re
 
+try:
+    from .biocore_model import render as _bc_render
+except Exception:
+    try:
+        from biocore_model import render as _bc_render
+    except Exception:  # pragma: no cover - package ships with the plugin
+        _bc_render = None
+
 
 def _one_line(text: str, limit: int = 160) -> str:
     for line in reversed(str(text or "").splitlines()):
@@ -283,124 +291,15 @@ def insight_prompt(events) -> str:
             '{"insight":"从这些事件之间提炼出的一条长期模式洞察（跨事件，80字以内，不要复述事件）"}\n\n' + joined)
 
 
-def _brief_clean(text, limit=30):
-    value = str(text or "").strip()
-    value = value.lstrip("- ")
-    for prefix in ("用户：", "用户:", "你(已总结)：", "你："):
-        if value.startswith(prefix):
-            value = value[len(prefix):]
-    value = __import__("re").sub(r"\d+\.\d+", "", value)
-    value = __import__("re").sub(r"\s+", " ", value).strip("；;，。 ")
-    return value[:limit]
 
 
 def render_semantic(core, memory="", events="", user=None, continuity=None,
                     memory_meta=None, open_loops=None) -> str:
-    """Prototype 60-150 char natural-language brief; no raw telemetry/field names."""
-    if core is None:
-        return ""
-    parts = []
-    try:
-        v = float(getattr(core, "v", 0.0) or 0.0)
-        stress = float(getattr(core, "stress", 0.2) or 0.2)
-        energy = float(getattr(core, "energy", 0.55) or 0.55)
-        social = float(getattr(core, "social", 0.5) or 0.5)
-        if v <= -0.35:
-            mood = "心里有点沉"
-        elif v <= -0.12:
-            mood = "心里有点发紧"
-        elif v >= 0.40:
-            mood = "心情不错"
-        else:
-            mood = "整体偏平静"
-        if energy <= 0.35:
-            body = "身体有点累"
-        elif stress >= 0.60:
-            body = "还带着点压力"
-        else:
-            body = "状态还算稳"
-        if social <= 0.35:
-            soc = "不太想说话"
-        elif social >= 0.65:
-            soc = "愿意靠近人"
-        else:
-            soc = "社交一般"
-        parts.append("%s，%s，%s" % (mood, body, soc))
-    except Exception:
-        parts.append("现在整体偏平静，状态还算稳，社交一般")
-    # Relationship stance.
-    stance = "关系一般，先按平常方式接"
-    try:
-        rel = (user or {}).get("relationship") if isinstance(user, dict) else None
-        state = rel.get("state") if isinstance(rel, dict) else {}
-        repair = rel.get("repair_state") if isinstance(rel, dict) else {}
-        absence = (user or {}).get("absence") if isinstance(user, dict) else {}
-        if not isinstance(absence, dict) and isinstance(rel, dict):
-            absence = rel.get("absence") if isinstance(rel.get("absence"), dict) else {}
-        phase = str((repair or {}).get("phase") or "stable")
-        bucket = str((absence or {}).get("bucket") or "same_day")
-        trust = float((state or {}).get("trust", 0.5) or 0.5)
-        closeness = float((state or {}).get("closeness", 0.5) or 0.5)
-        conflict = float((state or {}).get("conflict", 0.0) or 0.0)
-        if phase != "stable":
-            stance = "关系还在修复中，先别急着讲道理"
-        elif bucket in ("long", "medium"):
-            stance = "很久没聊了，先从近况接上"
-        elif conflict >= 0.45:
-            stance = "关系有点紧，先轻轻接"
-        elif trust >= 0.60 and closeness >= 0.60:
-            stance = "关系挺稳，信任还在慢慢长"
-        elif trust >= 0.55:
-            stance = "关系还算稳，别太用力"
-    except Exception:
-        pass
-    parts.append(stance)
-    # One high-confidence memory, else one recent event.
-    try:
-        conf = 0.0
-        if isinstance(memory_meta, dict):
-            conf = float(memory_meta.get("confidence", 0.0) or 0.0)
-        snippet = ""
-        if conf >= 0.60:
-            for line in str(memory or "").splitlines():
-                cleaned = _brief_clean(line, 26)
-                if cleaned:
-                    snippet = cleaned
-                    break
-            if snippet:
-                parts.append("记得：" + snippet)
-        if not snippet:
-            for line in str(events or "").splitlines():
-                cleaned = _brief_clean(line, 24)
-                if cleaned:
-                    parts.append("最近：" + cleaned)
-                    break
-    except Exception:
-        pass
-    # Continuity.
-    try:
-        if isinstance(continuity, dict):
-            summary = _brief_clean(continuity.get("summary"), 24)
-            if summary:
-                for _prefix in ("上次：", "上次:", "上次"):
-                    if summary.startswith(_prefix):
-                        summary = summary[len(_prefix):].lstrip("：:，, ")
-                        break
-                if summary:
-                    parts.append("上次：" + summary)
-    except Exception:
-        pass
-    parts.append("回复自然一点，别解释内部状态，也别报数值")
-    brief = "；".join(part for part in parts if part)
-    brief = __import__("re").sub(r"\s+", " ", brief).strip()
-    if len(brief) > 150:
-        cut = brief[:150]
-        if "；" in cut:
-            cut = cut[:cut.rfind("；")]
-        brief = cut.strip("； ")
-    if len(brief) < 60:
-        brief = (brief + "；像平常聊天那样接就好").strip("； ")
-    return brief[:150]
+    """Compatibility wrapper: the implementation lives in biocore_model.render."""
+    return _bc_render.render_semantic(
+        core, memory=memory, events=events, user=user, continuity=continuity,
+        memory_meta=memory_meta, open_loops=open_loops)
+
 
 
 def semantic_brief(*args, **kwargs):
@@ -408,193 +307,26 @@ def semantic_brief(*args, **kwargs):
     return render_semantic(*args, **kwargs)
 
 
-def _return_contract(memory_meta) -> str:
-    """Shared [BC-Return]/[BC-Note] suffix for telemetry and semantic modes."""
-    mm = memory_meta if isinstance(memory_meta, dict) else {}
-    suffix = ("\n[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；"
-              "不解释、不输出任何数值 delta。")
-    try:
-        _count = int(mm.get("count", 0) or 0)
-    except Exception:
-        _count = 0
-    if _count > 0 and mm.get("abstain"):
-        suffix += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
-    return suffix
 
 
 def render_compact(core, memory="", events="", self_model=None, user=None,
                    image="", kb="", speaker="", voice="", memory_meta=None,
                    open_loops=None, open_loops_due=0, answer_confidence=None,
                    strategy_hint="", continuity=None, prompt_mode="telemetry",
-                   workspace_token="", brevity="normal") -> str:
-    """Render biological state into the single compact block the LLM sees.
+                   workspace_token="", brevity="normal", event_links=None) -> str:
+    """Compatibility wrapper: the implementation lives in biocore_model.render.
 
-    The interpretation layer owns this string; callers pass raw state/data and
-    never build prompt text themselves. Optional fields are rendered only when
-    present so the block stays short (prefix-cache friendly).
+    Kept so existing imports/eval keep working; the plugin call site uses the
+    module directly. ``event_links`` is only consumed by text mode.
     """
-    if str(prompt_mode or "telemetry").lower() == "semantic":
-        try:
-            _sem = render_semantic(core, memory=memory, events=events, user=user,
-                                    continuity=continuity, memory_meta=memory_meta,
-                                    open_loops=open_loops)
-            if 40 <= len(_sem) <= 300:
-                return _sem + _return_contract(memory_meta)
-        except Exception:
-            pass
-    it = core.intent()
-    cp = ("[BC] v=%.2f a=%.2f d=%.2f s=%.2f t=%.2f e=%s c=%s n=%s plan=%s reg=%s" % (
-        float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
-        it.get("emotion") or "neutral", it.get("compound") or "-",
-        it.get("need") or "talk", plan(core), it.get("regulation") or "none"))
-    try:
-        # task-35: workspace token from the minimal autonomy loop. Only the
-        # caller passes it when autonomy_loop_enabled (default OFF => "").
-        _ws = str(workspace_token or "").strip()[:16]
-        if _ws and all(ch.isalnum() or ch == "_" for ch in _ws):
-            cp += " ws=" + _ws
-    except Exception:
-        pass
-    try:
-        if float(getattr(core, "boredom", 0.0) or 0.0) >= 0.7:
-            cp += " bored"
-    except Exception:
-        pass
-    try:
-        _alert = float(getattr(core, "circadian_alertness", 0.5) or 0.5)
-        if _alert <= 0.33:
-            cp += " alert=low"
-        elif _alert >= 0.80:
-            cp += " alert=high"
-    except Exception:
-        pass
-    try:
-        if float(getattr(core, "allostatic_load", 0.0) or 0.0) >= 0.6:
-            cp += " load=high"
-    except Exception:
-        pass
-    try:
-        _h = getattr(core, "homeostasis", None)
-        if isinstance(_h, dict):
-            _ready = float(_h.get("readiness", 0.6) or 0.6)
-            if _ready <= 0.35:
-                cp += " ready=low"
-            elif _ready >= 0.75:
-                cp += " ready=high"
-            _intero = _h.get("interoception") if isinstance(_h.get("interoception"), dict) else {}
-            _ilabel = str(_intero.get("label") or "")
-            if _ilabel in ("low", "high"):
-                cp += " intero=" + _ilabel
-            _need = _h.get("need_pyramid") if isinstance(_h.get("need_pyramid"), dict) else {}
-            _dom = str(_need.get("dominant") or "")
-            if _dom:
-                cp += " need=" + _dom[:20]
-            _action = _h.get("action") if isinstance(_h.get("action"), dict) else {}
-            _amode = str(_action.get("mode") or "")
-            if _amode:
-                cp += " action=" + _amode[:16]
-    except Exception:
-        pass
-    try:
-        _trace = getattr(core, "_last_memory_trace", None)
-        if isinstance(_trace, dict):
-            _tv = float(_trace.get("valence", 0.0) or 0.0)
-            if _tv >= 0.3:
-                cp += " mtrace=warm"
-            elif _tv <= -0.3:
-                cp += " mtrace=heavy"
-    except Exception:
-        pass
-    mb = memory_block(memory) if isinstance(memory, (list, tuple)) else str(memory or "")[:220]
-    eb = event_block(events) if isinstance(events, (list, tuple)) else str(events or "")[:220]
-    sb = self_block(self_model)
-    ub = user_block(user)
-    ib = image_block(image)
-    if mb:
-        cp += " | mem=" + mb
-    mm = memory_meta if isinstance(memory_meta, dict) else {}
-    _mm_count = int(mm.get("count", 0) or 0) if mm else 0
-    if _mm_count > 0:
-        cp += " | memn=%d memc=%.2f" % (
-            _mm_count,
-            float(mm.get("confidence", 0.0) or 0.0))
-        # Only surface the source when it is actually uncertain; direct input is
-        # assumed and does not need extra tokens every turn.
-        _msrc = str(mm.get("source", "unknown") or "unknown")[:12]
-        if _msrc in ("inferred", "unknown"):
-            cp += " memsrc=" + _msrc
-        if mm.get("abstain"):
-            cp += " mem=uncertain"
-        _ansc = answer_confidence
-        if _ansc is None:
-            _ansc = mm.get("answer_confidence")
-        if _ansc is not None:
-            try:
-                _aconf = max(0.0, min(1.0, float(_ansc)))
-                # High confidence is the default; only low values change behavior.
-                if _aconf < 0.65:
-                    cp += " ansc=%.2f" % _aconf
-            except Exception:
-                pass
-        _dests = mm.get("destinations")
-        if isinstance(_dests, dict) and len(_dests) >= 2:
-            cp += " memwho=" + ",".join("%s×%s" % (str(k)[:20], int(v)) for k, v in list(_dests.items())[:3])
-    # Prospective memory: open-loop count plus the nearest due item (bounded).
-    _loops = [x for x in (open_loops or []) if isinstance(x, dict)] if isinstance(open_loops, (list, tuple)) else []
-    _open_loops = [x for x in _loops if str(x.get("status") or "open") == "open"]
-    if _open_loops:
-        cp += " | loops=%d" % len(_open_loops)
-        try:
-            _due = int(open_loops_due or 0)
-        except Exception:
-            _due = 0
-        if _due:
-            cp += " due=%d" % _due
-        for _loop in _open_loops:
-            if str(_loop.get("due_hint") or "") in ("soon", "tomorrow"):
-                _text = str(_loop.get("text") or "").strip()[:40]
-                if _text:
-                    cp += " soon=" + _text
-                break
-    if eb:
-        cp += " | ev=" + eb
-    if sb:
-        cp += " | self=" + sb[:120]
-    if ub:
-        cp += " | u=" + ub[:80]
-    if ib:
-        cp += " | img=" + ib
-    if kb:
-        cp += " | kb=" + str(kb)[:140].replace("\n", "；")
-    if speaker:
-        cp += " | spk=" + str(speaker)[:60]
-    if voice:
-        cp += " | voice=" + str(voice)[:120]
-    _brevity = str(brevity or "normal").strip().lower()
-    _hint_cap = 120
-    if _brevity == "short":
-        _hint_cap = 60
-    elif _brevity == "medium":
-        _hint_cap = 90
-    if strategy_hint:
-        # L-T02..L-T12: one bounded strategy/cause/receipt token (never a
-        # second line; the interpretation layer owns the text). task-35:
-        # refusal posture may shorten the hint cap (default "normal" = 120).
-        cp += " | hint=" + _hint(strategy_hint, _hint_cap)
-    _btok = brevity_token(_brevity)
-    if _btok:
-        cp += " | " + _btok
-    if continuity:
-        # A4 continuity opener: at most one bounded "last talk" fragment on
-        # the same [BC] line. No line is added and no empty placeholder is
-        # emitted when there is no history data.
-        _cont = continuity if isinstance(continuity, str) else continuity_block(continuity)
-        if _cont:
-            cp += " | cont=" + _hint(_cont, CONTINUITY_LIMIT)
-    # Minimal fallback instruction only; full format lives in the
-    # biocore-interpretation skill (loaded on demand) to save per-turn tokens.
-    cp += _return_contract(mm)
-    return cp
+    return _bc_render.render_compact(
+        core, memory, events, self_model, user, image, kb, speaker, voice,
+        memory_meta=memory_meta, open_loops=open_loops,
+        open_loops_due=open_loops_due, answer_confidence=answer_confidence,
+        strategy_hint=strategy_hint, continuity=continuity,
+        prompt_mode=prompt_mode, workspace_token=workspace_token,
+        brevity=brevity, event_links=event_links)
+
 
 
 def event_ranking_prompt(texts) -> str:

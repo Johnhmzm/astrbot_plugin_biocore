@@ -396,13 +396,20 @@
   },
   "bc_prompt_mode": {
     "description": "提示词模式（原型）",
-    "hint": "telemetry=现有 [BC] 数值 telemetry（默认）；semantic=60–150 字自然语言 brief 原型。异常自动回退 telemetry。",
+    "hint": "telemetry=现有 [BC] 数值 telemetry（默认）；semantic=60–150 字自然语言 brief；text=数值转档位词、标签保留、固定顺序（她此刻→对你→这一轮）≤150 字。异常自动回退 telemetry。",
     "type": "string",
     "default": "telemetry",
     "options": [
       "telemetry",
-      "semantic"
+      "semantic",
+      "text"
     ]
+  },
+  "bc_text_legend_enabled": {
+    "description": "text 模式固定图例（默认开）",
+    "hint": "text 模式下在 system 固定位置注入 ≤2 行档位/阈值图例（不进每轮 [BC]）；关闭则不注入。",
+    "type": "bool",
+    "default": true
   },
   "event_ranking_llm": {
     "description": "事件排序 LLM 重排（默认关）",
