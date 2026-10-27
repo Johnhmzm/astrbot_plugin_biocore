@@ -154,6 +154,23 @@ def event_effective_time(record) -> float:
 
 EVENT_SUMMARY_ACTIONS = ("regenerate", "update")
 MEMORY_POINT_FEEDBACK_ACTIONS = ("important", "unimportant", "edit_label", "restore", "reevaluate")
+
+
+def savings_overrides(base) -> dict:
+    """task-37: optional 省钱模式 preset over effective caps (default OFF).
+
+    Pure function so the preset can be eval-tested without building a plugin.
+    It never changes accuracy-first defaults unless the user opts in.
+    """
+    out = dict(base or {})
+    out["bc_budget_tokens"] = min(int(out.get("bc_budget_tokens", 400) or 400), 300)
+    out["bc_budget_chars"] = min(int(out.get("bc_budget_chars", 700) or 700), 300)
+    out["memory_recall_budget_enabled"] = True
+    out["recall_top_k"] = min(int(out.get("recall_top_k", 3) or 3), 3)
+    out["recall_single_chars"] = min(int(out.get("recall_single_chars", 100) or 100), 100)
+    out["sentence_dedup_enabled"] = True
+    out["bc_hints_enabled"] = False
+    return out
 EVENT_SUMMARY_HARD_MAX = 20000
 EVENT_SUMMARY_SMALL_MAX = 80
 EVENT_SUMMARY_HISTORY_MAX = 20
@@ -776,6 +793,35 @@ class BioCore:
         # task-36: reply consistency is an opt-in read-only projection.
         self.reply_consistency_enabled = False
         self.reply_consistency = None
+        # 1.3.1 model-layer flags / read-only projections (set by plugin config).
+        self.think_selfcheck_enabled = False
+        self.soft_bound_enabled = False
+        self.soft_bound_k = 0.10
+        self.soft_bound_m_frac = 0.08
+        self.soft_bound_lam = 0.10
+        self.token_budget_enabled = False
+        self.token_usage = None
+        self.reverse_check = None
+        self.thought_note = None
+        self.injection_trace = None
+        self.path_monitor = None
+        self.sycophancy_check = None
+        self.sycophancy_check_enabled = False
+        self.rumination_suppress = False
+        self.temporal_validity_enabled = False
+        self.mood_congruence_enabled = False
+        self.emotion_gating_enabled = False
+        # task-43: L1 "thinking physiology" scalars (read-only state; behaviour
+        # effects are separately gated and default OFF).
+        self.conflict_ema = 0.0
+        self.rumination_ema = 0.0
+        self.anchor_weight = 0.25
+        self._neg_repeat = 0
+        self._last_neg_topic = ""
+        self.conflict_gate_enabled = False
+        self.rumination_effect_enabled = False
+        self.anchor_update_enabled = False
+        self.identity_threat_stress_enabled = False
         self._noise_seed = 0
         self._noise_accum = {}
         # Task-20: L1 learning state (deterministic, bounded, auditable).
@@ -1068,6 +1114,15 @@ class BioCore:
         _raw_loop = d.get("autonomy_loop")
         if isinstance(_raw_loop, dict):
             self.autonomy_loop = self._autonomy_loop_restore(_raw_loop)
+        # task-43 L1 scalars (bounded restore; unknown/NaN -> defaults).
+        self.conflict_ema = _clip(d.get("conflict_ema", 0.0) or 0.0, 0.0, 1.0)
+        self.rumination_ema = _clip(d.get("rumination_ema", 0.0) or 0.0, 0.0, 1.0)
+        self.anchor_weight = _clip(d.get("anchor_weight", 0.25) or 0.25, 0.0, 0.9)
+        try:
+            self._neg_repeat = max(0, int(d.get("_neg_repeat", 0) or 0))
+        except Exception:
+            self._neg_repeat = 0
+        self._last_neg_topic = str(d.get("_last_neg_topic") or "")[:80]
 
     def _derive(self) -> None:
         """Derive stress/energy from v, a, dominance, social (they are not independent)."""
@@ -2107,6 +2162,23 @@ class BioCore:
             value = str(meta.get(key) or "").strip()
             if value in values:
                 self.labels[key] = value
+        # task-39 §9.3: optional soft-bounded negative feedback replacing the
+        # final hard clamp. Default OFF => bit-identical to the legacy _clip path.
+        if getattr(self, "soft_bound_enabled", False):
+            try:
+                _prof = self.profile if isinstance(self.profile, dict) else {}
+                _k = float(getattr(self, "soft_bound_k", 0.10) or 0.10)
+                _mf = float(getattr(self, "soft_bound_m_frac", 0.08) or 0.08)
+                _lam = float(getattr(self, "soft_bound_lam", 0.10) or 0.10)
+                _bv = float(_prof.get("baseline_v", 0.05) or 0.05)
+                _ba = float(_prof.get("baseline_a", 0.40) or 0.40)
+                self.v = memory_meta.soft_bounded(self.v, _bv, -1.0, 1.0, _k, _mf, _lam)
+                self.a = memory_meta.soft_bounded(self.a, _ba, 0.0, 1.0, _k, _mf, _lam)
+                self.d = memory_meta.soft_bounded(self.d, 0.5, -1.0, 1.0, _k, _mf, _lam)
+                self.social = memory_meta.soft_bounded(self.social, 0.5, 0.0, 1.0, _k, _mf, _lam)
+                self.trust = memory_meta.soft_bounded(self.trust, 0.5, 0.0, 1.0, _k, _mf, _lam)
+            except Exception:
+                pass
         self._derive()
         self.infer_labels(force=False)
         self.ticks += 1
@@ -2933,6 +3005,99 @@ class BioCore:
                 "length": len(value), "checks": checks[:6],
                 "ts": round(stamp, 3)}
 
+    # ---- task-43: L1 deterministic "thinking physiology" scalars ----
+    def blend_prior(self, new_value, prior, anchor=None) -> float:
+        """Tversky 1974 / Nickerson 1998 anchor-weighted update."""
+        try:
+            new = float(new_value)
+            old = float(prior)
+        except Exception:
+            return _clip(new_value)
+        try:
+            a = float(anchor if anchor is not None else self.anchor_weight)
+        except Exception:
+            a = 0.25
+        a = max(0.0, min(0.9, a))
+        return _clip((1.0 - a) * new + a * old, -1.0, 1.0)
+
+    def update_conflict_ema(self, text, *, novelty=0.0, correction=False,
+                            contradiction=False) -> dict:
+        """Botvinick 2001 proxy: contradiction/correction/instruction conflict EMA."""
+        value = str(text or "")
+        cues = ("不对", "不是", "你错了", "矛盾", "但是", "可是", "然而",
+                "说错", "纠正", "改口", "冲突", "说反")
+        hits = sum(1 for cue in cues if cue in value)
+        corr = 1.0 if (correction or any(w in value for w in ("不对", "你错了", "纠正", "改口"))) else 0.0
+        contrad = 1.0 if (contradiction or any(w in value for w in ("矛盾", "不是这样", "说错了"))) else 0.0
+        nov = _clip(novelty, 0.0, 1.0)
+        delta = _clip(0.45 * min(1.0, hits / 2.0) + 0.30 * corr
+                      + 0.15 * contrad + 0.10 * nov, 0.0, 1.0)
+        self.conflict_ema = _clip(0.80 * float(getattr(self, "conflict_ema", 0.0)) + 0.20 * delta,
+                                  0.0, 1.0)
+        high = self.conflict_ema >= 0.60
+        if high and getattr(self, "conflict_gate_enabled", False):
+            state = getattr(self, "autonomy_loop", None)
+            if isinstance(state, dict):
+                try:
+                    debt = float(state.get("effort_debt", 0.0) or 0.0)
+                    state["effort_debt"] = round(_clip(debt + 0.02, 0.0, 0.60), 4)
+                except Exception:
+                    pass
+        return {"conflict_ema": round(self.conflict_ema, 4),
+                "delta": round(delta, 4), "high": bool(high)}
+
+    def update_rumination_ema(self, text, *, emotion="neutral", intensity=0.0,
+                              novelty=0.0) -> dict:
+        """Nolen-Hoeksema 1991 proxy: repeated negative topic EMA (bounded)."""
+        value = str(text or "")
+        negative = (str(emotion or "") in ("sadness", "anger", "fear", "loneliness")
+                    or any(w in value for w in ("难受", "难过", "烦", "焦虑", "委屈",
+                                                "不想", "讨厌", "崩溃", "累")))
+        topic = value[:40] if negative else ""
+        repeat = False
+        if negative and topic and self._last_neg_topic:
+            repeat = memory_meta.text_similarity(topic, self._last_neg_topic) >= 0.5
+        if negative:
+            self._neg_repeat = (int(getattr(self, "_neg_repeat", 0) or 0) + 1
+                                if repeat else 1)
+            self._last_neg_topic = topic
+            inc = 0.20 if repeat else 0.10
+            add = inc * (0.5 + 0.5 * _clip(intensity, 0.0, 1.0))
+            self.rumination_ema = _clip(float(getattr(self, "rumination_ema", 0.0)) + add,
+                                        0.0, 1.0)
+            # §6/LIT: 3 consecutive same-topic negative rounds -> suppression mark.
+            if int(getattr(self, "_neg_repeat", 0) or 0) >= 3:
+                self.rumination_suppress = True
+        else:
+            decay = 0.70 if _clip(novelty, 0.0, 1.0) >= 0.50 else 0.85
+            self.rumination_ema = _clip(
+                float(getattr(self, "rumination_ema", 0.0)) * decay, 0.0, 1.0)
+            self._neg_repeat = 0
+            self.rumination_suppress = False
+        if (getattr(self, "rumination_effect_enabled", False)
+                and self.rumination_ema > 0.0):
+            shift = min(0.12, 0.12 * self.rumination_ema)
+            self.v = _clip(self.v - shift, -1.0, 1.0)
+        return {"rumination_ema": round(self.rumination_ema, 4),
+                "repeat": bool(repeat), "repeat_count": int(self._neg_repeat)}
+
+    @staticmethod
+    def detect_identity_threat(text) -> bool:
+        """Swann 1987 proxy: deterministic self/role/narrative conflict cues."""
+        value = str(text or "")
+        cues = ("你不是她", "你不是你", "不配", "工具", "废物", "假的", "装的",
+                "人设", "角色", "根本不懂", "不是真的", "换个人", "你变了")
+        return any(cue in value for cue in cues)
+
+    def apply_identity_threat(self, text) -> bool:
+        """task-43 (default OFF): identity threat -> bounded stress bump (<=0.08)."""
+        if not getattr(self, "identity_threat_stress_enabled", False):
+            return False
+        if not self.detect_identity_threat(text):
+            return False
+        self.stress = _clip(float(getattr(self, "stress", 0.0)) + 0.06, 0.0, 1.0)
+        return True
+
     def autonomy_state(self, relationship=None, now=None, persist: bool = True) -> dict:
         """L1 task-15: deterministic noise -> autonomy readiness.
 
@@ -3090,6 +3255,10 @@ class BioCore:
                 "homeostasis": dict(getattr(self, "homeostasis", {}) or {}),
                 "boundary_pressure": round(float(getattr(self, "boundary_pressure", 0.0)), 3),
                 "refusal_readiness": round(float(getattr(self, "refusal_readiness", 0.0)), 3),
+                "conflict_ema": round(float(getattr(self, "conflict_ema", 0.0) or 0.0), 4),
+                "rumination_ema": round(float(getattr(self, "rumination_ema", 0.0) or 0.0), 4),
+                "anchor_weight": round(float(getattr(self, "anchor_weight", 0.25) or 0.25), 4),
+                "rumination_suppress": bool(getattr(self, "rumination_suppress", False)),
                 "user_trust_seeded": bool(getattr(self, "_user_trust_seeded", False)),
                 "user_trust_seed_delta": round(
                     float(getattr(self, "_user_trust_seed_delta", 0.0) or 0.0), 4),
@@ -3132,6 +3301,23 @@ class BioCore:
         if (getattr(self, "reply_consistency_enabled", False)
                 and isinstance(getattr(self, "reply_consistency", None), dict)):
             out["reply_consistency"] = dict(self.reply_consistency)
+        # 1.3.1: opt-in read-only projections (default OFF keeps the state file
+        # byte-identical to 1.3.0). thought_note is NEVER persisted.
+        if (getattr(self, "think_selfcheck_enabled", False)
+                and isinstance(getattr(self, "reverse_check", None), dict)):
+            out["reverse_check"] = dict(self.reverse_check)
+        if (getattr(self, "token_budget_enabled", False)
+                and isinstance(getattr(self, "token_usage", None), dict)):
+            out["token_usage"] = dict(self.token_usage)
+        if (getattr(self, "path_monitor_enabled", False)
+                and isinstance(getattr(self, "path_monitor", None), dict)):
+            out["path_monitor"] = dict(self.path_monitor)
+        if (getattr(self, "sycophancy_check_enabled", False)
+                and isinstance(getattr(self, "sycophancy_check", None), dict)):
+            out["sycophancy_check"] = dict(self.sycophancy_check)
+        if (getattr(self, "injection_trace_enabled", False)
+                and isinstance(getattr(self, "injection_trace", None), dict)):
+            out["injection_trace"] = dict(self.injection_trace)
         return out
 
 
@@ -3220,6 +3406,131 @@ class BioCorePlugin(Star):
                 self.config.get("refusal_brevity_max_chars", 160) or 160)))
         except Exception:
             self.refusal_brevity_max_chars = 160
+        # ---- 1.3.1 model-layer (task-37/38/39) ----
+        self.bc_budget_enabled = bool(self.config.get("bc_budget_enabled", True))
+        try:
+            self.bc_budget_tokens = max(80, min(4000, int(
+                self.config.get("bc_budget_tokens", 400) or 400)))
+        except Exception:
+            self.bc_budget_tokens = 400
+        # §6: total char budget 480–800 (engineering); legacy token budget maps ×2.5.
+        try:
+            self.bc_budget_chars = max(480, min(800, int(
+                self.config.get("bc_budget_chars", 700) or 700)))
+        except Exception:
+            self.bc_budget_chars = 700
+        self.sycophancy_check_enabled = bool(
+            self.config.get("sycophancy_check_enabled", True))
+        self.bc_dedupe_enabled = bool(self.config.get("bc_dedupe_enabled", True))
+        try:
+            self.bc_dedupe_history = max(1, min(50, int(
+                self.config.get("bc_dedupe_history", 5) or 5)))
+        except Exception:
+            self.bc_dedupe_history = 5
+        self.bc_hints_enabled = bool(self.config.get("bc_hints_enabled", True))
+        self.bc_trace_enabled = bool(self.config.get("bc_trace_enabled", False))
+        _wl = self.config.get("bc_label_whitelist")
+        self._bc_label_whitelist = (list(_wl) if isinstance(_wl, (list, tuple)) and _wl
+                                    else None)
+        # F1 deterministic reverse check: read-only + zero LLM => default ON.
+        self.think_selfcheck_enabled = bool(
+            self.config.get("think_selfcheck_enabled", True))
+        self.think_repeat_guard_enabled = bool(
+            self.config.get("think_repeat_guard_enabled", False))
+        self.think_reflect_enabled = bool(
+            self.config.get("think_reflect_enabled", False))
+        try:
+            self.think_reflect_daily_cap = max(1, min(20, int(
+                self.config.get("think_reflect_daily_cap", 3) or 3)))
+        except Exception:
+            self.think_reflect_daily_cap = 3
+        self.think_reflect_private_only = bool(
+            self.config.get("think_reflect_private_only", True))
+        self.think_reflect_llm_enabled = bool(
+            self.config.get("think_reflect_llm_enabled", False))
+        self.think_reflect_provider = str(
+            self.config.get("think_reflect_provider", "") or "").strip()
+        self.soft_bound_enabled = bool(self.config.get("soft_bound_enabled", False))
+        self.soft_bound_k = self._loop_cfg_float("soft_bound_k", 0.10, 0.05, 0.20)
+        self.soft_bound_m_frac = self._loop_cfg_float(
+            "soft_bound_m_frac", 0.08, 0.05, 0.10)
+        self.soft_bound_lam = self._loop_cfg_float(
+            "soft_bound_lam", 0.10, 0.05, 0.20)
+        self.path_monitor_enabled = bool(
+            self.config.get("path_monitor_enabled", False))
+        # ---- task-43: L1 thinking-physiology behaviour switches (all OFF) ----
+        self.conflict_gate_enabled = bool(
+            self.config.get("conflict_gate_enabled", False))
+        self.rumination_effect_enabled = bool(
+            self.config.get("rumination_effect_enabled", False))
+        self.anchor_update_enabled = bool(
+            self.config.get("anchor_update_enabled", False))
+        self.identity_threat_stress_enabled = bool(
+            self.config.get("identity_threat_stress_enabled", False))
+        self.anchor_weight = self._loop_cfg_float(
+            "anchor_weight", 0.25, 0.0, 0.9)
+        # ---- task-38 accuracy ----
+        self.temporal_validity_enabled = bool(
+            self.config.get("temporal_validity_enabled", False))
+        self.calibration_adaptive_enabled = bool(
+            self.config.get("calibration_adaptive_enabled", False))
+        self.rerank_enabled = bool(self.config.get("rerank_enabled", False))
+        try:
+            self.rerank_top_n = max(1, min(10, int(
+                self.config.get("rerank_top_n", 5) or 5)))
+        except Exception:
+            self.rerank_top_n = 5
+        self.memory_pin_enabled = bool(self.config.get("memory_pin_enabled", True))
+        self.memory_overflow_compact_enabled = bool(
+            self.config.get("memory_overflow_compact_enabled", False))
+        self.mood_congruence_enabled = bool(
+            self.config.get("mood_congruence_enabled", False))
+        self.emotion_gating_enabled = bool(
+            self.config.get("emotion_gating_enabled", False))
+        # ---- task-37 token/cost ----
+        self.token_budget_enabled = bool(
+            self.config.get("token_budget_enabled", True))
+        self.memory_recall_budget_enabled = bool(
+            self.config.get("memory_recall_budget_enabled", False))
+        try:
+            self.recall_top_k = max(1, min(8, int(
+                self.config.get("recall_top_k", 3) or 3)))
+        except Exception:
+            self.recall_top_k = 3
+        try:
+            self.recall_single_chars = max(40, min(220, int(
+                self.config.get("recall_single_chars", 120) or 120)))
+        except Exception:
+            self.recall_single_chars = 120
+        self.savings_mode = bool(self.config.get("savings_mode", False))
+        self.context_budget_enabled = bool(
+            self.config.get("context_budget_enabled", False))
+        try:
+            self.context_budget_turns = max(2, min(40, int(
+                self.config.get("context_budget_turns", 8) or 8)))
+        except Exception:
+            self.context_budget_turns = 8
+        self.cost_input_per_1m = self._loop_cfg_float(
+            "cost_input_per_1m", 2.0, 0.0, 1000.0)
+        self.cost_output_per_1m = self._loop_cfg_float(
+            "cost_output_per_1m", 8.0, 0.0, 1000.0)
+        self.cost_cache_per_1m = self._loop_cfg_float(
+            "cost_cache_per_1m", 0.5, 0.0, 1000.0)
+        # "省钱模式" is an OPTIONAL preset (default off); it only overrides
+        # effective caps, never the accuracy-first defaults.
+        if self.savings_mode:
+            _eff = savings_overrides({
+                "bc_budget_tokens": self.bc_budget_tokens,
+                "bc_budget_chars": self.bc_budget_chars,
+                "recall_top_k": self.recall_top_k,
+                "recall_single_chars": self.recall_single_chars})
+            self.bc_budget_tokens = int(_eff["bc_budget_tokens"])
+            self.bc_budget_chars = int(_eff["bc_budget_chars"])
+            self.memory_recall_budget_enabled = bool(_eff["memory_recall_budget_enabled"])
+            self.recall_top_k = int(_eff["recall_top_k"])
+            self.recall_single_chars = int(_eff["recall_single_chars"])
+            self.sentence_dedup_enabled = bool(_eff["sentence_dedup_enabled"])
+            self.bc_hints_enabled = bool(_eff["bc_hints_enabled"])
         # Stage-2: C8+C9 goal<->appraisal closed loop (default OFF = 1.2.98).
         self.bio_feedback_loops = bool(self.config.get("bio_feedback_loops", False))
         # Task-20: L1 learning defaults ON with small steps + hard bounds.
@@ -3332,6 +3643,23 @@ class BioCorePlugin(Star):
         # task-36: bounded read-only telemetry (never feeds prompts or gates).
         self._llm_telemetry = {"counters": {}, "recent": []}
         self._token_usage = {"available": False, "sessions": {}}
+        # task-37/39/40 per-turn read-only state (never fed back into prompts).
+        self._bc_history = []
+        self._last_injection_trace = None
+        self._last_reverse_check = None
+        self._reverse_check_hint = ""
+        self._repeat_guard = None
+        self._repeat_hint = ""
+        self._repeat_streak = 0
+        self._reflect_hint = ""
+        self._reflect_stats = {}
+        self._reflect_cache = {}
+        self._path_monitor = None
+        self._token_budget = {"sessions": {}, "today": {}, "calls": 0}
+        self._recent_replies = []
+        self._label_history = []
+        self._thought_note_current = ""
+        self._rerank_stats = {"calls": 0, "fallback": 0, "last_n": 0}
         # LLM scope: user requirement is "LLM only for reply + summary".
         # When true, BioCore only calls the LLM for event/memory summaries;
         # persona compile / event ranking / reflection / image caption are
@@ -3617,6 +3945,217 @@ class BioCorePlugin(Star):
             return head[:idx + 1].strip()
         return head.rstrip()
 
+    def _cost_for(self, input_tokens=0, output_tokens=0,
+                  cached_tokens=0) -> float:
+        """task-37: CNY cost from the configurable price table (per 1M tokens)."""
+        try:
+            tin = max(0, int(input_tokens or 0))
+            tout = max(0, int(output_tokens or 0))
+            tcached = max(0, min(tin, int(cached_tokens or 0)))
+        except Exception:
+            return 0.0
+        price_in = float(getattr(self, "cost_input_per_1m", 2.0) or 0.0)
+        price_out = float(getattr(self, "cost_output_per_1m", 8.0) or 0.0)
+        price_cache = float(getattr(self, "cost_cache_per_1m", 0.5) or 0.0)
+        return round(((tin - tcached) * price_in
+                      + tcached * price_cache
+                      + tout * price_out) / 1_000_000.0, 6)
+
+    def _record_token_budget(self, session, *, input_tokens=0,
+                             output_tokens=0, cached_tokens=0,
+                             estimated=True, core=None) -> None:
+        """task-37: measured/estimated token + cost counters (read-only)."""
+        try:
+            store = self._token_budget if isinstance(
+                getattr(self, "_token_budget", None), dict) else {}
+            sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
+            key = str(session or "default")[:80]
+            item = sessions.get(key) if isinstance(sessions.get(key), dict) else {}
+            tin = int(input_tokens or 0)
+            tout = int(output_tokens or 0)
+            tcached = int(cached_tokens or 0)
+            item["input_tokens"] = int(item.get("input_tokens", 0) or 0) + tin
+            item["output_tokens"] = int(item.get("output_tokens", 0) or 0) + tout
+            item["cached_tokens"] = int(item.get("cached_tokens", 0) or 0) + tcached
+            item["calls"] = int(item.get("calls", 0) or 0) + 1
+            item["estimated_calls"] = (int(item.get("estimated_calls", 0) or 0)
+                                       + (1 if estimated else 0))
+            item["last_input"] = tin
+            item["last_output"] = tout
+            item["last_estimated"] = bool(estimated)
+            item["cost"] = round(float(item.get("cost", 0.0) or 0.0)
+                                 + self._cost_for(tin, tout, tcached), 6)
+            sessions[key] = item
+            store["sessions"] = sessions
+            store["calls"] = int(store.get("calls", 0) or 0) + 1
+            today = time.strftime("%Y-%m-%d")
+            day = store.get("today") if isinstance(store.get("today"), dict) else {}
+            if str(day.get("date") or "") != today:
+                day = {"date": today, "input_tokens": 0, "output_tokens": 0,
+                       "cached_tokens": 0, "cost": 0.0, "calls": 0}
+            day["input_tokens"] = int(day.get("input_tokens", 0) or 0) + tin
+            day["output_tokens"] = int(day.get("output_tokens", 0) or 0) + tout
+            day["cached_tokens"] = int(day.get("cached_tokens", 0) or 0) + tcached
+            day["cost"] = round(float(day.get("cost", 0.0) or 0.0)
+                                + self._cost_for(tin, tout, tcached), 6)
+            day["calls"] = int(day.get("calls", 0) or 0) + 1
+            store["today"] = day
+            self._token_budget = store
+            if core is not None and getattr(self, "token_budget_enabled", True):
+                core.token_usage = dict(item)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _reflect_template(triggers, reverse=None, core=None) -> str:
+        labels = getattr(core, "labels", {}) if core is not None else {}
+        labels = labels if isinstance(labels, dict) else {}
+        emo = str(labels.get("emotion") or "neutral")[:10]
+        need = str(labels.get("need") or "talk")[:10]
+        action = {"low_confidence": "先确认再回答",
+                  "violations": "少下结论、先核对",
+                  "user_ask": "先复述再解释",
+                  "relationship": "先接住情绪"}.get(
+                      (triggers or ["generic"])[0], "先接住情绪")
+        text = ("自我检查（%s）：情绪=%s 需要=%s；下一轮：%s"
+                % ("/".join((triggers or ["generic"])[:2]), emo, need, action))
+        return text[:120]
+
+    async def _reflect_llm_text(self, key, prompt):
+        """Optional cheaper-model reflection: 24h cache, silent fallback."""
+        try:
+            cache = self._reflect_cache if isinstance(
+                getattr(self, "_reflect_cache", None), dict) else {}
+            now = time.time()
+            hit = cache.get(key)
+            if isinstance(hit, tuple) and len(hit) == 2 and now - float(hit[0]) < 86400:
+                return str(hit[1])[:120], "cached"
+            provider = None
+            if getattr(self, "think_reflect_provider", ""):
+                try:
+                    provider = self.context.get_provider_by_id(
+                        self.think_reflect_provider)
+                except Exception:
+                    provider = None
+            if provider is None:
+                return "", "no_provider"
+            try:
+                resp = await provider.text_chat(prompt=prompt)
+                text = str(getattr(resp, "completion_text", "") or "").strip()[:120]
+            except Exception:
+                return "", "error"
+            if not text:
+                return "", "empty"
+            cache[key] = (now, text)
+            self._reflect_cache = dict(list(cache.items())[-20:])
+            return text, "llm"
+        except Exception:
+            return "", "error"
+
+    async def _maybe_think_reflect(self, event, core, reply, user_text="") -> bool:
+        """task-39 F2: one bounded reflection when a trigger fires (default OFF)."""
+        try:
+            _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
+            if (getattr(self, "think_reflect_private_only", True)
+                    and not self._is_private_event(event)):
+                stats = self._reflect_stats.setdefault(_umo, {"count": 0, "day": ""})
+                stats["blocked_private"] = int(stats.get("blocked_private", 0) or 0) + 1
+                return False
+            triggers = []
+            _ansc = (getattr(self, "_last_memory_meta", {}) or {}).get("answer_confidence")
+            try:
+                if _ansc is not None and float(_ansc) < 0.40:
+                    triggers.append("low_confidence")
+            except Exception:
+                pass
+            _rc = getattr(self, "_last_reverse_check", None)
+            if isinstance(_rc, dict) and len(_rc.get("violations") or []) >= 2:
+                triggers.append("violations")
+            if any(w in str(user_text or "") for w in ("你想想", "想想为什么", "反思", "为什么")):
+                triggers.append("user_ask")
+            try:
+                _rel = self._relationship_of(self._user_record(event))
+                _state = _rel.get("state") if isinstance(_rel.get("state"), dict) else {}
+                if float(_state.get("conflict", 0.0) or 0.0) >= 0.60:
+                    triggers.append("relationship")
+            except Exception:
+                pass
+            if not triggers:
+                return False
+            today = time.strftime("%Y-%m-%d")
+            stats = self._reflect_stats.setdefault(_umo, {"count": 0, "day": ""})
+            if str(stats.get("day") or "") != today:
+                stats["day"] = today
+                stats["count"] = 0
+            cap = max(1, int(getattr(self, "think_reflect_daily_cap", 3) or 3))
+            if int(stats.get("count", 0) or 0) >= cap:
+                stats["blocked_daily"] = int(stats.get("blocked_daily", 0) or 0) + 1
+                return False
+            template = self._reflect_template(triggers, _rc, core)
+            text = template
+            fallback = True
+            if getattr(self, "think_reflect_llm_enabled", False):
+                key = _sha256(str(triggers) + str(_umo) + str(reply)[:80])[:16]
+                llm_text, source = await self._reflect_llm_text(
+                    key, "用不超过120字、只做一次自我检查：%s" % template)
+                if llm_text:
+                    text = llm_text
+                    fallback = False
+                stats["last_source"] = source
+            try:
+                tree = getattr(core, "reflection_tree", None)
+                if not isinstance(tree, dict):
+                    tree = {"roots": [], "count": 0}
+                node = {"ts": time.time(), "insight": text,
+                        "emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or "neutral"),
+                        "source": "think_reflect", "trigger": list(triggers[:3]),
+                        "fallback": bool(fallback), "children": []}
+                roots = tree.get("roots") or []
+                if roots:
+                    roots[-1].setdefault("children", []).append(node)
+                else:
+                    roots.append(node)
+                tree["roots"] = roots[-10:]
+                tree["count"] = int(tree.get("count", 0)) + 1
+                core.reflection_tree = tree
+            except Exception:
+                pass
+            stats["count"] = int(stats.get("count", 0) or 0) + 1
+            stats["last_trigger"] = list(triggers[:3])
+            stats["last_fallback"] = bool(fallback)
+            self._reflect_hint = ("先核对再回答；少下结论" if "violations" in triggers
+                                  else "先确认对方状态")[:140]
+            try:
+                if getattr(self, "think_repeat_guard_enabled", False):
+                    self._repeat_hint = self._repeat_hint or "换一种说法"
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _mood_multiplier(v) -> float:
+        """task-38: mood-consistent recall multiplier (0.90–1.10, default OFF)."""
+        try:
+            value = max(-1.0, min(1.0, float(v or 0.0)))
+        except Exception:
+            value = 0.0
+        return max(0.90, min(1.10, 1.0 + 0.10 * value))
+
+    @staticmethod
+    def _emotion_gate_params(stress, v) -> dict:
+        """task-38: emotion gating (raise threshold / lower top-k when stressed)."""
+        try:
+            s = max(0.0, min(1.0, float(stress or 0.0)))
+            val = max(-1.0, min(1.0, float(v or 0.0)))
+        except Exception:
+            s, val = 0.0, 0.0
+        active = bool(s >= 0.65 or val <= -0.50)
+        return {"active": active,
+                "threshold_bonus": 0.05 if active else 0.0,
+                "top_k_cap": 2 if active else 0}
+
     def _record_llm_telemetry(self, kind, outcome, detail="") -> None:
         """task-36: bounded read-only LLM failure/fallback telemetry."""
         if not getattr(self, "llm_telemetry_enabled", False):
@@ -3667,12 +4206,16 @@ class BioCorePlugin(Star):
                 prompt = int(data.get("prompt_tokens") or 0)
                 completion = int(data.get("completion_tokens") or 0)
                 total = int(data.get("total_tokens") or (prompt + completion))
+                cached = int(data.get("cached_tokens")
+                             or data.get("prompt_cache_hit_tokens")
+                             or data.get("cache_read_input_tokens") or 0)
             except Exception:
                 continue
             if prompt or completion or total:
                 return {"prompt_tokens": max(0, prompt),
                         "completion_tokens": max(0, completion),
-                        "total_tokens": max(0, total)}
+                        "total_tokens": max(0, total),
+                        "cached_tokens": max(0, cached)}
         return None
 
     def _record_token_usage(self, session, usage) -> None:
@@ -3775,6 +4318,12 @@ class BioCorePlugin(Star):
         rel = dict(data.get("relationship")) if isinstance(data.get("relationship"), dict) else {}
         rel["calibration"] = relationship_meta.calibration_update(
             rel.get("calibration"), source, predicted, correct)
+        try:
+            rel["calibration_last_delta"] = self._calibration_step(
+                abs(float(predicted) - float(correct)),
+                int((rel.get("calibration") or {}).get("samples", 1) or 1))
+        except Exception:
+            pass
         data["relationship"] = rel
         self._save_user_record(event, data)
 
@@ -4137,6 +4686,39 @@ class BioCorePlugin(Star):
                 getattr(self, "autonomy_loop_token_only", True))
             core.reply_consistency_enabled = bool(
                 getattr(self, "reply_consistency_enabled", False))
+            # 1.3.1 model-layer flags (read-only unless explicitly opt-in).
+            core.think_selfcheck_enabled = bool(
+                getattr(self, "think_selfcheck_enabled", True))
+            core.soft_bound_enabled = bool(
+                getattr(self, "soft_bound_enabled", False))
+            core.soft_bound_k = float(getattr(self, "soft_bound_k", 0.10) or 0.10)
+            core.soft_bound_m_frac = float(
+                getattr(self, "soft_bound_m_frac", 0.08) or 0.08)
+            core.soft_bound_lam = float(
+                getattr(self, "soft_bound_lam", 0.10) or 0.10)
+            core.token_budget_enabled = bool(
+                getattr(self, "token_budget_enabled", True))
+            core.temporal_validity_enabled = bool(
+                getattr(self, "temporal_validity_enabled", False))
+            core.mood_congruence_enabled = bool(
+                getattr(self, "mood_congruence_enabled", False))
+            core.emotion_gating_enabled = bool(
+                getattr(self, "emotion_gating_enabled", False))
+            core.path_monitor_enabled = bool(
+                getattr(self, "path_monitor_enabled", False))
+            core.injection_trace_enabled = bool(
+                getattr(self, "bc_trace_enabled", False))
+            core.conflict_gate_enabled = bool(
+                getattr(self, "conflict_gate_enabled", False))
+            core.rumination_effect_enabled = bool(
+                getattr(self, "rumination_effect_enabled", False))
+            core.anchor_update_enabled = bool(
+                getattr(self, "anchor_update_enabled", False))
+            core.identity_threat_stress_enabled = bool(
+                getattr(self, "identity_threat_stress_enabled", False))
+            core.anchor_weight = float(getattr(self, "anchor_weight", 0.25) or 0.25)
+            core.sycophancy_check_enabled = bool(
+                getattr(self, "sycophancy_check_enabled", True))
             core.bio_feedback_loops = bool(
                 getattr(self, "bio_feedback_loops", False))
             core.bio_learning = bool(getattr(self, "bio_learning", True))
@@ -5194,7 +5776,15 @@ class BioCorePlugin(Star):
                     _alpha = memory_meta.nassar_alpha(_ct - _old_trust)
                 else:
                     _alpha = 0.30
-                d["trust"] = round(_old_trust + _alpha * (_ct - _old_trust), 3)
+                _new_trust = _old_trust + _alpha * (_ct - _old_trust)
+                if getattr(self, "anchor_update_enabled", False):
+                    try:
+                        _new_trust = core.blend_prior(
+                            _new_trust, _old_trust,
+                            float(getattr(core, "anchor_weight", 0.25) or 0.25))
+                    except Exception:
+                        pass
+                d["trust"] = round(max(0.0, min(1.0, _new_trust)), 3)
             except Exception:
                 d["trust"] = d.get("trust", 0.5)
             try:
@@ -8044,6 +8634,8 @@ class BioCorePlugin(Star):
                          self.page_memory_delete, ["POST"], "BioCore memory soft delete")
                 register("/astrbot_plugin_biocore/page/memory/restore/<path:session>/<entry_id>",
                          self.page_memory_restore, ["POST"], "BioCore memory restore")
+                register("/astrbot_plugin_biocore/page/memory/pin/<path:session>/<entry_id>",
+                         self.page_memory_pin, ["POST"], "BioCore memory pin/unpin")
         except Exception as exc:
             logger.warning("[biocore] page api register failed: %s", exc)
 
@@ -8235,6 +8827,33 @@ class BioCorePlugin(Star):
                 pass
             self._memory_save_doc_for_session(path, doc)
             return {"status": "ok", "data": {"session": session, "id": entry_id, "deleted": True}}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:180], "data": {}}
+
+    async def page_memory_pin(self, session: str, entry_id: str):
+        """task-38: pin/unpin one memory entry (pinned rows escape the cap)."""
+        from quart import request
+        try:
+            body = await request.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+        if not getattr(self, "memory_pin_enabled", True):
+            return {"status": "error", "message": "pin 功能未开启"}
+        try:
+            path, doc = self._memory_doc_for_session(session)
+            entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+            target = self._memory_find_entry(entries, entry_id)
+            if target is None:
+                return {"status": "error", "message": "memory entry not found", "data": {}}
+            pinned = bool(body.get("pin", True))
+            memory_meta.set_pinned(target, pinned)
+            target["pin_ts"] = round(time.time(), 3)
+            memory_meta.append_write_log(doc, op="PIN" if pinned else "UNPIN",
+                                         entry_id=entry_id, reason="dashboard",
+                                         ts=time.time())
+            self._memory_save_doc_for_session(path, doc)
+            return {"status": "ok", "data": {"session": session, "id": entry_id,
+                                             "pin": pinned}}
         except Exception as exc:
             return {"status": "error", "message": str(exc)[:180], "data": {}}
 
@@ -8478,6 +9097,47 @@ class BioCorePlugin(Star):
         if (getattr(self, "reply_consistency_enabled", False)
                 and cores and isinstance(getattr(cores[0], "reply_consistency", None), dict)):
             _data["reply_consistency"] = dict(cores[0].reply_consistency)
+        # 1.3.1 model-layer read-only panels (each one gated by its switch).
+        if (getattr(self, "bc_trace_enabled", False)
+                and isinstance(getattr(self, "_last_injection_trace", None), dict)):
+            _data["injection_trace"] = dict(self._last_injection_trace)
+            _data["parse_stats"] = dict(interpretation.PARSE_STATS)
+        if (getattr(self, "think_selfcheck_enabled", True)
+                and isinstance(getattr(self, "_last_reverse_check", None), dict)):
+            _data["reverse_check"] = dict(self._last_reverse_check)
+        if (getattr(self, "think_repeat_guard_enabled", False)
+                and isinstance(getattr(self, "_repeat_guard", None), dict)):
+            _data["repeat_guard"] = dict(self._repeat_guard)
+        if getattr(self, "sycophancy_check_enabled", True):
+            _syco = None
+            if cores and isinstance(getattr(cores[0], "sycophancy_check", None), dict):
+                _syco = dict(cores[0].sycophancy_check)
+            if _syco is not None:
+                _data["sycophancy_check"] = _syco
+        if (getattr(self, "path_monitor_enabled", False)
+                and isinstance(getattr(self, "_path_monitor", None), dict)):
+            _data["path_monitor"] = dict(self._path_monitor)
+        if getattr(self, "think_reflect_enabled", False):
+            _data["think_reflect"] = {
+                "hint": str(getattr(self, "_reflect_hint", "") or "")[:140],
+                "stats": {str(k)[:80]: dict(v) for k, v in
+                          list((getattr(self, "_reflect_stats", {}) or {}).items())[:10]
+                          if isinstance(v, dict)}}
+        if getattr(self, "token_budget_enabled", True):
+            _tb = getattr(self, "_token_budget", {}) or {}
+            _data["token_budget"] = {
+                "enabled": True,
+                "today": dict(_tb.get("today") or {}),
+                "calls": int(_tb.get("calls", 0) or 0),
+                "sessions": {str(k)[:80]: dict(v) for k, v in
+                             list((_tb.get("sessions") or {}).items())[:10]
+                             if isinstance(v, dict)},
+                "prices": {"input_per_1m": float(getattr(self, "cost_input_per_1m", 2.0) or 0.0),
+                           "output_per_1m": float(getattr(self, "cost_output_per_1m", 8.0) or 0.0),
+                           "cache_per_1m": float(getattr(self, "cost_cache_per_1m", 0.5) or 0.0)},
+                "savings_mode": bool(getattr(self, "savings_mode", False))}
+        if getattr(self, "rerank_enabled", False):
+            _data["rerank_stats"] = dict(getattr(self, "_rerank_stats", {}) or {})
         return {"status": "ok", "data": _data}
 
     async def page_self_model(self):
@@ -9219,6 +9879,37 @@ class BioCorePlugin(Star):
             limit = int(limit * (1.0 + 0.2 * stress))
         return bool(compression.get("enabled")), threshold, limit
 
+    @staticmethod
+    def _select_overflow_archive(entries, room, importance_max=0.5):
+        """task-38: pick low-importance unpinned rows for deterministic archive."""
+        rows = [e for e in (entries or []) if isinstance(e, dict)]
+        rows.sort(key=lambda e: float(e.get("ts", 0) or 0))
+        try:
+            keep_n = max(0, int(room or 0))
+        except Exception:
+            keep_n = 80
+        keep = rows[-keep_n:] if keep_n else []
+        overflow = []
+        for row in rows:
+            if row in keep:
+                continue
+            try:
+                importance = float(row.get("importance", 0.5) or 0.5)
+            except Exception:
+                importance = 0.5
+            if importance < float(importance_max) and not memory_meta.is_pinned(row):
+                overflow.append(row)
+            else:
+                keep.append(row)
+        keep.sort(key=lambda e: float(e.get("ts", 0) or 0))
+        return keep, overflow
+
+    def _calibration_step(self, error, samples=1) -> float:
+        """task-38: adaptive calibration weight (default OFF => fixed 0.05)."""
+        if getattr(self, "calibration_adaptive_enabled", False):
+            return memory_meta.calibration_adaptive_delta(error, samples)
+        return 0.05
+
     def _trim_memory(self, doc, core=None):
         entries = doc.get("entries")
         if not isinstance(entries, list):
@@ -9227,14 +9918,32 @@ class BioCorePlugin(Star):
         if not entries:
             return
         enabled, threshold, summary_limit = self._memory_thresholds(core)
+        _pinned, _rest = memory_meta.split_pinned(entries)
         if not enabled:
-            entries[:] = entries[-80:]
+            # task-38: pinned facts escape the 80-entry cap (no pin => legacy).
+            if getattr(self, "memory_overflow_compact_enabled", False) and not _pinned:
+                _keep, _overflow = self._select_overflow_archive(_rest, 80)
+                if _overflow:
+                    _archive = doc.get("overflow_archive")
+                    _archive = _archive if isinstance(_archive, list) else []
+                    doc["overflow_archive"] = (_archive + _overflow)[-100:]
+                    entries[:] = sorted(_keep, key=lambda e: float(e.get("ts", 0) or 0))
+                    return
+            if _pinned:
+                _room = max(0, 80 - len(_pinned))
+                _tail = _rest[-_room:] if _room > 0 else []
+                entries[:] = sorted(_pinned + _tail,
+                                    key=lambda e: float(e.get("ts", 0) or 0))
+            else:
+                entries[:] = entries[-80:]
             return
         # Keep summarized originals for provenance; only trim active entries.
+        # Pinned facts are always retained regardless of the active cap.
         _archived = [e for e in entries if e.get("summarized")]
-        _active = [e for e in entries if not e.get("summarized")]
+        _active = [e for e in _rest if not e.get("summarized")]
         _active = _active[-200:]
-        entries[:] = sorted(_archived + _active, key=lambda e: float(e.get("ts", 0) or 0))
+        entries[:] = sorted(_archived + _pinned + _active,
+                            key=lambda e: float(e.get("ts", 0) or 0))
 
     def _schedule_consolidation(self, event, core=None):
         enabled, threshold, _ = self._memory_thresholds(core)
@@ -9803,8 +10512,20 @@ class BioCorePlugin(Star):
         now = time.time()
         _just_restabilized = set()
         _working_set = doc.get("working_set") if isinstance(doc.get("working_set"), list) else []
+        # task-38: temporal validity filter (default OFF; missing invalid_at is
+        # treated as valid, so old data keeps the legacy behaviour).
+        _temporal = bool(getattr(self, "temporal_validity_enabled", False))
+        _mood = bool(getattr(self, "mood_congruence_enabled", False))
+        _mood_factor = 1.0
+        if _mood:
+            try:
+                _mood_factor = self._mood_multiplier(getattr(core, "v", 0.0))
+            except Exception:
+                _mood_factor = 1.0
         for e in entries:
             if e.get("summarized") or e.get("deleted"):
+                continue
+            if _temporal and not memory_meta.entry_is_valid(e, now):
                 continue
             if getattr(self, "safety_enabled", False) and e.get("poison_risk"):
                 continue
@@ -9820,12 +10541,18 @@ class BioCorePlugin(Star):
                 e, _working_set, ttl_seconds=memory_meta.WORKING_SET_TTL_SECONDS)
             except Exception:
                 pass
+            if _mood and score:
+                score *= _mood_factor
             retrieval_pairs.append((e, cosine))
             if cosine >= 0.93:
                 duplicate = e
             # ACT-R partial matching + retrieval threshold (named constants).
             if cosine >= PARTIAL_MATCH_THRESHOLD:
-                _admit = score >= RETRIEVAL_THRESHOLD
+                _threshold = RETRIEVAL_THRESHOLD
+                if (getattr(core, "conflict_gate_enabled", False)
+                        and float(getattr(core, "conflict_ema", 0.0) or 0.0) >= 0.60):
+                    _threshold += 0.05
+                _admit = score >= _threshold
                 if getattr(self, "attention_gate_enabled", False):
                     _admit = self._attention_gate_admit(score, str(e.get("id") or ""))
                 if _admit:
@@ -9981,9 +10708,51 @@ class BioCorePlugin(Star):
         except Exception:
             pass
         self._schedule_consolidation(event, core)
+        # task-37/38: recall budget cap, emotion gating and optional rerank are
+        # all default OFF; with every switch off this block is the legacy path.
+        _top_k = self._memory_top_k(core)
+        if getattr(self, "memory_recall_budget_enabled", False):
+            try:
+                _top_k = min(_top_k, max(1, int(getattr(self, "recall_top_k", 3) or 3)))
+            except Exception:
+                pass
+        if (getattr(self, "rumination_effect_enabled", False) and core is not None
+                and float(getattr(core, "rumination_ema", 0.0) or 0.0) >= 0.60):
+            _top_k = max(1, _top_k - 1)
+        if getattr(self, "emotion_gating_enabled", False) and core is not None:
+            try:
+                _gate = self._emotion_gate_params(
+                    getattr(core, "stress", 0.0), getattr(core, "v", 0.0))
+                if _gate["active"]:
+                    _top_k = min(_top_k, int(_gate["top_k_cap"] or 2))
+                    _floor = RETRIEVAL_THRESHOLD + float(_gate["threshold_bonus"] or 0.0)
+                    scored = [(s, e) for s, e in scored if float(s) >= _floor]
+            except Exception:
+                pass
+        if getattr(self, "rerank_enabled", False) and len(scored) > 1:
+            try:
+                _n = min(max(1, int(getattr(self, "rerank_top_n", 5) or 5)),
+                         len(scored))
+                _head = scored[:_n]
+                _docs = [str(e.get("text") or "")[:300] for _s, e in _head]
+                _rs = await self._rerank_scores("memory_recall", text, _docs)
+                if _rs:
+                    _head = sorted(
+                        [(_rs.get(i, 0.0), e) for i, (_s, e) in enumerate(_head)],
+                        key=lambda x: x[0], reverse=True)
+                    scored = _head + scored[_n:]
+                    self._rerank_stats = {"calls": int(
+                        getattr(self, "_rerank_stats", {}).get("calls", 0) or 0) + 1,
+                        "last_n": _n, "fallback": 0}
+                else:
+                    self._rerank_stats = dict(
+                        getattr(self, "_rerank_stats", {}) or {}, fallback=int(
+                            (getattr(self, "_rerank_stats", {}) or {}).get("fallback", 0) or 0) + 1)
+            except Exception:
+                pass
         scored.sort(key=lambda x: x[0], reverse=True)
         top = memory_meta.select_top(
-            scored, self._memory_top_k(core),
+            scored, _top_k,
             lambda_=(0.72 if getattr(self, "hybrid_retrieval", True) else 1.0))
         try:
             self._apply_memory_trace(core, [e for _s, e in top])
@@ -10251,7 +11020,14 @@ class BioCorePlugin(Star):
             if getattr(self, "safety_enabled", False) and snippet and e.get("sensitive"):
                 snippet = memory_meta.mask_sensitive(snippet)
             if snippet:
-                lines.append("- %s：%s" % (role, snippet[:240]))
+                _cap = 240
+                if getattr(self, "memory_recall_budget_enabled", False):
+                    try:
+                        _cap = max(40, min(240, int(
+                            getattr(self, "recall_single_chars", 120) or 120)))
+                    except Exception:
+                        _cap = 120
+                lines.append("- %s：%s" % (role, snippet[:_cap]))
         lines.extend(_link_lines)
         lines.extend(_foreign_lines)
         memory_text = "\n".join(lines)
@@ -10508,6 +11284,18 @@ class BioCorePlugin(Star):
                 _query_vec = None
         if text:
             core.observe(text, embedding=_query_vec)
+            # task-43: deterministic L1 scalars (read-only state; behaviour
+            # effects are separately gated and default OFF). No LLM/token cost.
+            try:
+                core.update_conflict_ema(
+                    text, novelty=float(core.appraisal.get("novelty", 0.0) or 0.0))
+                core.update_rumination_ema(
+                    text, emotion=str((core.labels or {}).get("emotion") or "neutral"),
+                    intensity=float(core._intensity()),
+                    novelty=float(core.appraisal.get("novelty", 0.0) or 0.0))
+                core.apply_identity_threat(text)
+            except Exception:
+                pass
         _user_data = self._touch_user(event, core)
         # Task-15: readiness is computed by L1 only when autonomy is enabled;
         # remember private sessions and start the P0-1 generator lazily.
@@ -10608,6 +11396,17 @@ class BioCorePlugin(Star):
                 _brevity = "normal"
             if _brevity != "normal" and _strategy_hint:
                 _strategy_hint = _strategy_hint[:60 if _brevity == "short" else 90]
+        # 1.3.1: consume last round's model-layer hints (F1/F3/F2), bounded to
+        # one combined <=140-char hint; cleared immediately after consumption.
+        for _extra_hint in (getattr(self, "_reverse_check_hint", ""),
+                            getattr(self, "_repeat_hint", ""),
+                            getattr(self, "_reflect_hint", "")):
+            if _extra_hint:
+                _strategy_hint = interpretation.combine_strategy_hint(
+                    _strategy_hint, _extra_hint)
+        self._reverse_check_hint = ""
+        self._repeat_hint = ""
+        self._reflect_hint = ""
         _kb = ""
         if getattr(self, "kb_enabled", False) and getattr(self, "kb_names", None) and self._usable_memory_text(text):
             try:
@@ -10644,14 +11443,57 @@ class BioCorePlugin(Star):
             workspace_token=_ws_token,
             brevity=_brevity,
         ).strip()
+        # 1.3.1: deterministic [BC] budget + duplicate-line removal. The head
+        # (intent/emotion) is never dropped; memory before hint on truncation.
+        _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
+        _budget_chars = (int(getattr(self, "bc_budget_chars", 700) or 700)
+                         if getattr(self, "bc_budget_enabled", True) else 0)
+        try:
+            _hist_n = max(1, int(getattr(self, "bc_dedupe_history", 5) or 5))
+        except Exception:
+            _hist_n = 5
+        _compact, _inj = interpretation.apply_bc_budget(
+            _compact, budget_chars=_budget_chars,
+            history=list(getattr(self, "_bc_history", []) or [])[-_hist_n:],
+            dedupe=bool(getattr(self, "bc_dedupe_enabled", True)),
+            hints_enabled=bool(getattr(self, "bc_hints_enabled", True)))
+        # §6: at most one hint per round, placed AFTER the [BC] block (lower than
+        # system instructions), never duplicated inside [BC].
+        _compact, _hint_line = interpretation.extract_hint_line(_compact)
+        _inj["ts"] = round(time.time(), 3)
+        _inj["session"] = _umo
+        _inj["hint_line"] = _hint_line
+        self._last_injection_trace = _inj
+        if getattr(self, "bc_trace_enabled", False):
+            try:
+                core.injection_trace = dict(_inj, text=_compact[:4000])
+                _tn = interpretation.thought_note(
+                    {"labels": getattr(core, "labels", {}),
+                     "intensity": float(core._intensity())},
+                    memory_count=int(((getattr(self, "_last_memory_meta", {}) or {}).get("count", 0) or 0)),
+                    hint=_strategy_hint[:40], now=time.time())
+                self._thought_note_current = str(_tn.get("text") or "")
+                core.thought_note = self._thought_note_current
+            except Exception:
+                pass
+        if getattr(self, "token_budget_enabled", True):
+            try:
+                _req_text = (str(getattr(req, "prompt", "") or "")
+                             + _base + _compact)
+                self._record_token_budget(
+                    _umo, input_tokens=interpretation.estimate_text_tokens(_req_text),
+                    estimated=True)
+            except Exception:
+                pass
         if _compact:
-            # Keep the system prompt stable (prefix-cache friendly) and attach
-            # the transient intent to this user turn instead of persisting it.
-            parts = getattr(req, "extra_user_content_parts", None)
-            if isinstance(parts, list):
-                parts.append({"type": "text", "text": _compact})
-            else:
-                req.system_prompt = (_base + "\n\n" + _compact).strip()
+            self._bc_history = (list(getattr(self, "_bc_history", []) or [])
+                                + [_compact])[-20:]
+            # §6: single [BC] block appended to the SYSTEM prompt tail (best
+            # utilisation), never split; optional hint line follows after it.
+            _block = _compact
+            if _hint_line:
+                _block = _compact + "\n[BH] " + _hint_line[:140]
+            req.system_prompt = (_base + "\n\n" + _block).strip()
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse):
@@ -10709,6 +11551,92 @@ class BioCorePlugin(Star):
                         _usage)
             except Exception:
                 pass
+        _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
+        # task-39 F1: deterministic evidence-based reverse check (default ON,
+        # read-only, 0 LLM). Hint (<=140) is applied to the NEXT round only.
+        if getattr(self, "think_selfcheck_enabled", True):
+            try:
+                _rc = interpretation.reverse_check(
+                    _reply,
+                    core_state={"intensity": float(core._intensity()),
+                                "v": float(getattr(core, "v", 0.0) or 0.0),
+                                "stress": float(getattr(core, "stress", 0.0) or 0.0)},
+                    previous_replies=list(getattr(self, "_recent_replies", []) or [])[-3:],
+                    low_confidence=bool((getattr(self, "_last_memory_meta", {}) or {}).get("abstain")),
+                    boundary_pressure=float(getattr(core, "boundary_pressure", 0.0) or 0.0))
+                core.reverse_check = _rc
+                self._last_reverse_check = _rc
+                self._reverse_check_hint = str(_rc.get("hint") or "")
+            except Exception:
+                pass
+        # task-39 F3: repeat guard (default OFF) — mark only, never rewrite.
+        if getattr(self, "think_repeat_guard_enabled", False):
+            try:
+                _rg = interpretation.repeat_guard(
+                    _reply, list(getattr(self, "_recent_replies", []) or [])[-3:])
+                self._repeat_guard = _rg
+                if _rg.get("flag") == "repeat":
+                    self._repeat_streak = int(getattr(self, "_repeat_streak", 0) or 0) + 1
+                else:
+                    self._repeat_streak = 0
+                # §6: hint only after 2 consecutive repeats.
+                self._repeat_hint = ("不要重复上一句，换一种说法"
+                                     if self._repeat_streak >= 2 else "")
+            except Exception:
+                pass
+        # task-39 F2: triggered reflection (default OFF, silent fallback).
+        if getattr(self, "think_reflect_enabled", False):
+            try:
+                await self._maybe_think_reflect(event, core, _reply, text)
+            except Exception:
+                pass
+        # §6: read-only sycophancy / risky-agreement trace (never rewrites text).
+        if getattr(self, "sycophancy_check_enabled", True):
+            try:
+                _syco = interpretation.sycophancy_check(
+                    _reply,
+                    core_state={"intensity": float(core._intensity())},
+                    risky=bool((getattr(core, "labels", {}) or {}).get("emotion")
+                               in ("anger", "fear")))
+                core.sycophancy_check = _syco
+            except Exception:
+                pass
+        # task-37 token/cost measurement (read-only; real usage else estimate).
+        if getattr(self, "token_budget_enabled", True):
+            try:
+                _usage = self._extract_token_usage(response)
+                if _usage:
+                    self._record_token_budget(
+                        _umo,
+                        output_tokens=int(_usage.get("completion_tokens", 0) or 0),
+                        cached_tokens=int(_usage.get("cached_tokens", 0) or 0),
+                        estimated=False, core=core)
+                else:
+                    self._record_token_budget(
+                        _umo, output_tokens=interpretation.estimate_text_tokens(_reply),
+                        estimated=True, core=core)
+            except Exception:
+                pass
+        # task-39/40: path-dependence monitors (default OFF, read-only).
+        if getattr(self, "path_monitor_enabled", False):
+            try:
+                _labels = list(getattr(self, "_label_history", []) or [])
+                _labels.append(str((getattr(core, "labels", {}) or {}).get("emotion") or ""))
+                self._label_history = _labels[-8:]
+                self._path_monitor = interpretation.path_dependence_metrics(
+                    list(getattr(self, "_recent_replies", []) or []) + [_reply],
+                    self._label_history,
+                    [str(_e.get("big_summary") or "")
+                     for _e in self._event_archive(2) if isinstance(_e, dict)])
+                core.path_monitor = dict(self._path_monitor)
+            except Exception:
+                pass
+        # thought note lives for this turn only: clear before the next round.
+        core.thought_note = None
+        self._thought_note_current = ""
+        if _reply:
+            self._recent_replies = ([str(_reply)]
+                                    + list(getattr(self, "_recent_replies", []) or []))[:5]
         try:
             core.record_reply(_reply, _meta)
         except Exception:

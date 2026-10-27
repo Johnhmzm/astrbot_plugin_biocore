@@ -2188,6 +2188,143 @@ def worthiness_from_parts(*, I: Any = 0.0, S: Any = 0.0, C: Any = 0.0,
             "reason": reason}
 
 
+# ---------------------------------------------------------------------------
+# 1.3.1 model-layer additions (task-37/38/39): deterministic, default-off
+# unless noted; no LLM and no biological-state writes.
+# ---------------------------------------------------------------------------
+SOFT_BOUND_K = 0.10
+SOFT_BOUND_M_FRAC = 0.08
+SOFT_BOUND_LAM = 0.10
+
+
+def soft_bounded(x: Any, SP: Any = 0.0, lo: Any = -1.0, hi: Any = 1.0,
+                 k: Any = SOFT_BOUND_K, m_frac: Any = SOFT_BOUND_M_FRAC,
+                 lam: Any = SOFT_BOUND_LAM) -> float:
+    """task-39 §9.3 soft boundary replacing hard _clip when enabled.
+
+    x' = x + k*(SP - x) - push (quadratic push inside the margin); only the
+    final min/max is a hard guard. Deterministic and monotone; default-off
+    callers keep using _clip bit-for-bit.
+    """
+    try:
+        xv = float(x)
+        spv = float(SP)
+        lov = float(lo)
+        hiv = float(hi)
+        kv = max(0.0, min(0.5, float(k)))
+        mv = max(1e-9, (hiv - lov) * max(0.0, min(0.5, float(m_frac))))
+        lv = max(0.0, min(1.0, float(lam)))
+    except Exception:
+        return _clamp(x)
+    if xv != xv or spv != spv or lov >= hiv:
+        return _clamp(xv)
+    push = 0.0
+    if xv > hiv - mv:
+        push = lv * (((xv - (hiv - mv)) / mv) ** 2)
+    elif xv < lov + mv:
+        push = -lv * ((((lov + mv) - xv) / mv) ** 2)
+    nxt = xv + kv * (spv - xv) - push
+    return max(lov, min(hiv, nxt))
+
+
+def entry_is_valid(entry: Any, now: Any = None) -> bool:
+    """task-38: False only when an entry was explicitly invalidated at/before now."""
+    if not isinstance(entry, dict):
+        return False
+    try:
+        invalid_at = float(entry.get("invalid_at") or 0.0)
+    except Exception:
+        invalid_at = 0.0
+    if invalid_at <= 0:
+        return True
+    try:
+        current = float(now if now is not None else time.time())
+    except Exception:
+        current = time.time()
+    return current < invalid_at
+
+
+def entry_invalidate(entry: Any, now: Any = None, reason: Any = "") -> bool:
+    """Soft-invalidate one entry (kept for audit/rollback; never deleted)."""
+    if not isinstance(entry, dict):
+        return False
+    try:
+        stamp = float(now if now is not None else time.time())
+    except Exception:
+        stamp = time.time()
+    # floor (not round) so an entry invalidated "now" is immediately invalid.
+    entry["invalid_at"] = math.floor(stamp * 1000.0) / 1000.0
+    entry["invalid_reason"] = str(reason or "superseded")[:40]
+    return True
+
+
+def entry_restore_validity(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    entry.pop("invalid_at", None)
+    entry.pop("invalid_reason", None)
+    return True
+
+
+def entry_valid_at(entry: Any) -> float:
+    """Best-effort validity start (valid_at else ts; 0 when unknown)."""
+    if not isinstance(entry, dict):
+        return 0.0
+    for key in ("valid_at", "ts"):
+        try:
+            value = float(entry.get(key) or 0.0)
+        except Exception:
+            value = 0.0
+        if value > 0:
+            return value
+    return 0.0
+
+
+def is_pinned(entry: Any) -> bool:
+    return bool(entry.get("pin")) if isinstance(entry, dict) else False
+
+
+def set_pinned(entry: Any, pinned: Any = True) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    entry["pin"] = bool(pinned)
+    return True
+
+
+def split_pinned(entries: Any) -> tuple[list, list]:
+    """Partition entries into (pinned, unpinned) preserving order."""
+    pinned, rest = [], []
+    for item in (entries or []):
+        if not isinstance(item, dict):
+            continue
+        (pinned if is_pinned(item) else rest).append(item)
+    return pinned, rest
+
+
+CALIBRATION_MAX_DELTA = 0.15
+CALIBRATION_MIN_DELTA = 0.05
+
+
+def calibration_adaptive_delta(error: Any, samples: Any = 1,
+                               *, base: float = 0.05,
+                               max_delta: float = CALIBRATION_MAX_DELTA) -> float:
+    """task-38: map calibration error -> bounded delta (log-scaled, monotone)."""
+    try:
+        err = abs(float(error))
+    except Exception:
+        err = 0.0
+    try:
+        n = max(1.0, float(samples or 1))
+    except Exception:
+        n = 1.0
+    if err != err:
+        err = 0.0
+    scale = math.log1p(err * 10.0) / math.log1p(10.0)
+    shrink = 1.0 / (1.0 + 0.10 * math.log1p(n))
+    delta = float(base) + (float(max_delta) - float(base)) * _clamp(scale) * shrink
+    return round(max(0.0, min(float(max_delta), delta)), 4)
+
+
 def event_self_defining(schema_congruence: Any, importance: Any,
                         *, threshold: float = SCHEMA_SELF_DEFINING_THRESHOLD,
                         importance_min: float = 0.62) -> bool:

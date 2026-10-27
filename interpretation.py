@@ -74,27 +74,90 @@ def _with_label_deltas(meta: dict) -> dict:
     return out
 
 
-def parse_response(raw: str):
+# task-39: deterministic parse telemetry (read-only; never feeds prompts).
+PARSE_STATS = {"calls": 0, "bad_json": 0, "repaired": 0, "dropped": 0,
+               "unknown_keys": 0, "unknown_labels": 0, "residual_stripped": 0,
+               "whitelist_rejects": 0}
+
+_BC_TAG_RE = re.compile(r"<(?:bc|biocore)\b[^>]*>(.*?)</(?:bc|biocore)>",
+                        re.S | re.I)
+_BC_RESIDUE_RE = re.compile(r"</?(?:bc|biocore)\b[^>]*>", re.I)
+
+
+def _repair_json_payload(payload) -> dict | None:
+    """One deterministic repair attempt for a malformed <bc> JSON payload."""
+    text = str(payload or "").strip()
+    text = re.sub(r"^\s*```(?:json)?|\`\`\`\s*$", "", text,
+                  flags=re.I | re.M).strip()
+    candidates = [text]
+    start, end = text.find("{"), text.rfind("}")
+    if 0 <= start < end:
+        candidates.append(text[start:end + 1])
+    for cand in list(candidates):
+        candidates.append(re.sub(r",\s*([}\]])", r"\1", cand))
+        candidates.append(re.sub(r"'([^']*)'", r'"\1"', cand))
+    for cand in candidates:
+        try:
+            data = json.loads(cand)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            return data
+    return None
+
+
+def parse_response(raw: str, whitelist=None):
     """Parse LLM output and return (clean_text, validated_update|None).
 
-    This is the only place that interprets the hidden emotion tag. The model
-    may only emit compact label keys; numeric deltas in the tag are ignored.
+    task-39 hardening: one deterministic repair attempt for bad JSON; unknown
+    keys/labels are counted; residual <bc> variants are always stripped from the
+    visible reply (parse failure must not leak the hidden tag). A configurable
+    whitelist defaults to the unchanged legacy key set.
     """
     text = str(raw or "")
-    m = re.search(r"<bc>(.*?)</bc>", text, re.S | re.I)
+    PARSE_STATS["calls"] += 1
+    m = _BC_TAG_RE.search(text)
     if not m:
-        m = re.search(r"<biocore>(.*?)</biocore>", text, re.S | re.I)
-    if not m:
+        if _BC_RESIDUE_RE.search(text):
+            PARSE_STATS["residual_stripped"] += 1
+            text = _BC_RESIDUE_RE.sub("", text).strip()
         return text, None
     clean = (text[:m.start()] + text[m.end():]).strip()
+    payload = str(m.group(1) or "").strip()
+    data = None
     try:
-        data = json.loads(m.group(1).strip())
+        data = json.loads(payload)
     except Exception:
-        return clean, None
+        PARSE_STATS["bad_json"] += 1
+        data = _repair_json_payload(payload)
+        if data is None:
+            PARSE_STATS["dropped"] += 1
+            clean = _BC_RESIDUE_RE.sub("", clean).strip()
+            return clean, None
+        PARSE_STATS["repaired"] += 1
     if not isinstance(data, dict):
+        PARSE_STATS["dropped"] += 1
         return clean, None
-    allowed = {key: value for key, value in data.items() if key in _ALLOWED_OUTPUT_KEYS}
+    keys = whitelist if isinstance(whitelist, (set, list, tuple)) and whitelist \
+        else _ALLOWED_OUTPUT_KEYS
+    allowed = {}
+    for key, value in data.items():
+        if key in keys:
+            allowed[key] = value
+        else:
+            PARSE_STATS["unknown_keys"] += 1
+            PARSE_STATS["whitelist_rejects"] += 1
     update = _with_label_deltas(allowed)
+    for label_key in ("emotion", "e", "need", "n", "expression", "x"):
+        if label_key not in allowed:
+            continue
+        raw_label = str(allowed.get(label_key) or "").strip()
+        if label_key in ("emotion", "e") and raw_label not in _ALLOWED:
+            PARSE_STATS["unknown_labels"] += 1
+        elif label_key in ("need", "n") and raw_label not in _ALLOWED_NEEDS:
+            PARSE_STATS["unknown_labels"] += 1
+        elif label_key in ("expression", "x") and raw_label not in _ALLOWED_EXPRESSIONS:
+            PARSE_STATS["unknown_labels"] += 1
     return clean, (update or None)
 
 
@@ -1564,4 +1627,360 @@ def parse_persona_compile(raw, defaults) -> dict:
     schema = _clean_schema_list(data.get("schema")) if isinstance(data, dict) else []
     style = _bounded_style(data.get("style")) if isinstance(data, dict) else _bounded_style({})
     return {"profile": profile, "schema": schema, "style": style}
+
+
+# ---------------------------------------------------------------------------
+# task-39/37: [BC] budget, reverse check (F1), repeat guard (F3), thought note,
+# path-dependence metrics. All deterministic, no LLM, read-only.
+# ---------------------------------------------------------------------------
+BC_FORMAT_VERSION = "1.3.1"
+BC_TOKEN_CHARS = 2.5     # task-39: default token estimate = chars / 2.5
+TOKEN_CHARS_EST = 2.2    # task-37: conservative fallback estimate = chars / 2.2
+
+
+def estimate_bc_tokens(text, chars_per_token: float = BC_TOKEN_CHARS) -> int:
+    try:
+        ratio = max(1.0, float(chars_per_token))
+    except Exception:
+        ratio = BC_TOKEN_CHARS
+    value = str(text or "")
+    if not value:
+        return 0
+    return int(math.ceil(len(value) / ratio))
+
+
+def estimate_text_tokens(text, chars_per_token: float = TOKEN_CHARS_EST) -> int:
+    return estimate_bc_tokens(text, chars_per_token)
+
+
+_BC_MEMORY_KEYS = {"mem", "memn", "memc", "memsrc", "ansc", "memwho", "loops",
+                   "due", "soon", "ev", "self", "u", "img", "kb", "spk",
+                   "voice", "cont"}
+_BC_HINT_KEYS = {"hint", "ws", "brevity"}
+
+
+def _bc_segment_kind(segment) -> str:
+    token = str(segment or "").strip().split("=", 1)[0].strip()
+    if token in _BC_HINT_KEYS:
+        return "hint"
+    if token in _BC_MEMORY_KEYS:
+        return "memory"
+    return "other"
+
+
+# ATTENTION-THINKING-LIT §6: drop from the tail by ascending salience; never
+# drop the [BC] head or the memory evidence keys.
+_BC_PROTECTED_KEYS = {"mem", "memn", "memsrc", "ansc", "memwho"}
+_BC_DROP_ORDER = ("cont", "loops", "due", "soon", "ev",
+                  "hint", "ws", "brevity",
+                  "self", "u", "img", "kb", "spk", "voice")
+
+
+def _bc_key(segment) -> str:
+    return str(segment or "").strip().split("=", 1)[0].strip()
+
+
+def apply_bc_budget(text, budget_tokens=0, budget_chars=0, history=None,
+                    dedupe=True, hints_enabled=True):
+    """task-39/37 + ATTENTION-THINKING-LIT §6 budget/order.
+
+    Single block, order: head(intent/emotion/action) → memory evidence →
+    other state → events → loops → hint/continuity last. Truncation walks the
+    tail in ascending salience (cont → loops → ev → hint → other state), never
+    dropping the head or memory evidence keys. Budget is expressed in chars
+    (480–800 engineering) or legacy tokens (×2.5). Empty input returns "".
+    """
+    raw = str(text or "")
+    try:
+        tok_budget = max(0, int(budget_tokens or 0))
+    except Exception:
+        tok_budget = 0
+    try:
+        char_budget = max(0, int(budget_chars or 0))
+    except Exception:
+        char_budget = 0
+    if not char_budget and tok_budget:
+        char_budget = int(tok_budget * BC_TOKEN_CHARS)
+    if not raw.strip():
+        return "", {"chars": 0, "tokens_estimate": 0,
+                    "budget_tokens": tok_budget, "budget_chars": char_budget,
+                    "truncated": [], "dropped_duplicates": [],
+                    "format_version": BC_FORMAT_VERSION, "hints_disabled": not hints_enabled,
+                    "segments": 0}
+    parts = raw.split(" | ")
+    head = parts[0]
+    segments = [s for s in parts[1:] if str(s).strip()]
+    seen = set()
+    if dedupe and history:
+        for old in history:
+            for seg in str(old or "").split(" | ")[1:]:
+                if seg.strip():
+                    seen.add(seg.strip())
+    dropped = []
+    kept = []
+    for seg in segments:
+        if dedupe and seg.strip() in seen:
+            dropped.append(seg)
+            continue
+        if not hints_enabled and _bc_segment_kind(seg) == "hint":
+            dropped.append(seg)
+            continue
+        kept.append(seg)
+    # §6 block order: evidence/memory + state first, events, loops, hints last.
+    early, events, loops, hints, late = [], [], [], [], []
+    for seg in kept:
+        key = _bc_key(seg)
+        if key in _BC_PROTECTED_KEYS or key in ("self", "u", "img", "kb", "spk", "voice"):
+            early.append(seg)
+        elif key == "ev":
+            events.append(seg)
+        elif key in ("loops", "due", "soon"):
+            loops.append(seg)
+        elif key in ("hint", "ws", "brevity"):
+            hints.append(seg)
+        else:
+            late.append(seg)
+    ordered = early + events + loops + hints + late
+    truncated = []
+    if char_budget > 0:
+        while ordered and len(" | ".join([head] + ordered)) > char_budget:
+            # drop by explicit tail salience order; protected rows are skipped.
+            _idx = None
+            for key in _BC_DROP_ORDER:
+                for pos in range(len(ordered) - 1, -1, -1):
+                    if _bc_key(ordered[pos]) == key:
+                        _idx = pos
+                        break
+                if _idx is not None:
+                    break
+            if _idx is None:
+                _idx = len(ordered) - 1
+            seg = ordered[_idx]
+            if _bc_key(seg) in _BC_PROTECTED_KEYS:
+                break
+            truncated.append(ordered.pop(_idx))
+    out = " | ".join([head] + ordered)
+    return out, {"chars": len(out), "tokens_estimate": estimate_bc_tokens(out),
+                 "budget_tokens": tok_budget, "budget_chars": char_budget,
+                 "truncated": truncated, "dropped_duplicates": dropped,
+                 "hints_disabled": not hints_enabled,
+                 "head_over_budget": bool(char_budget > 0 and len(head) > char_budget),
+                 "format_version": BC_FORMAT_VERSION,
+                 "segments": len(ordered) + 1}
+
+
+def extract_hint_line(text):
+    """§6: hint goes after the [BC] block (<=140 chars, at most one per round)."""
+    raw = str(text or "")
+    parts = raw.split(" | ")
+    hint = ""
+    kept = [parts[0]]
+    for seg in parts[1:]:
+        if _bc_key(seg) == "hint" and not hint:
+            hint = seg.split("=", 1)[1].strip() if "=" in seg else seg.strip()
+        else:
+            kept.append(seg)
+    return " | ".join([p for p in kept if p.strip()]), hint[:140]
+
+
+def _ngrams(text, n: int = 4) -> set:
+    value = "".join(str(text or "").split())
+    if len(value) < n:
+        return {value} if value else set()
+    return {value[i:i + n] for i in range(len(value) - n + 1)}
+
+
+def _char_bigrams(text) -> set:
+    value = "".join(str(text or "").split())
+    if len(value) < 2:
+        return {value} if value else set()
+    return {value[i:i + 2] for i in range(len(value) - 1)}
+
+
+def _jaccard(a, b) -> float:
+    if not a and not b:
+        return 1.0
+    return len(a & b) / max(1, len(a | b))
+
+
+def _cosine_bigrams(a, b) -> float:
+    ga, gb = _char_bigrams(a), _char_bigrams(b)
+    if not ga or not gb:
+        return 0.0
+    dot = len(ga & gb)
+    return dot / math.sqrt(len(ga) * len(gb)) if ga and gb else 0.0
+
+
+def _sentence_cosine(a, b) -> float:
+    sa = [s for s in re.split(r"[。！？；!?;\n]", str(a or "")) if s.strip()]
+    sb = [s for s in re.split(r"[。！？；!?;\n]", str(b or "")) if s.strip()]
+    if not sa or not sb:
+        return 0.0
+    return max(_cosine_bigrams(x, y) for x in sa for y in sb)
+
+
+def repeat_guard(reply, previous_replies, *, jaccard_threshold=0.60,
+                 cosine_threshold=0.85) -> dict:
+    """task-39 F3: mark (never rewrite) repeat/template degeneration."""
+    current = str(reply or "")
+    previous = [str(x) for x in (previous_replies or []) if str(x).strip()][-3:]
+    if not current.strip() or not previous:
+        return {"flag": "none", "jaccard": 0.0, "sentence_cosine": 0.0,
+                "reason": "insufficient_history"}
+    grams = _ngrams(current, 4)
+    best_j = max(_jaccard(grams, _ngrams(prev, 4)) for prev in previous)
+    best_c = max(_sentence_cosine(current, prev) for prev in previous)
+    # ATTENTION-THINKING-LIT §6: same 20-char prefix is also a repeat signal.
+    _cur_prefix = "".join(current.split())[:20]
+    prefix_hit = bool(len(_cur_prefix) >= 20 and any(
+        "".join(prev.split())[:20] == _cur_prefix for prev in previous))
+    flag = "repeat" if (best_j >= float(jaccard_threshold)
+                        or best_c >= float(cosine_threshold)
+                        or prefix_hit) else "none"
+    return {"flag": flag, "jaccard": round(best_j, 4),
+            "sentence_cosine": round(best_c, 4), "prefix": bool(prefix_hit),
+            "thresholds": {"jaccard": float(jaccard_threshold),
+                           "sentence_cosine": float(cosine_threshold)},
+            "compared": len(previous)}
+
+
+_ABSOLUTE_PROMISE_RE = re.compile(r"(我保证|保证|发誓|永远|一辈子|绝不|说到做到|一定会的|答应你)")
+_NEGATED_FEELING_RE = re.compile(r"(我没生气|我不生气|我不难过|我没难过|我不在乎|我才不在乎|我没事|我不委屈|我没关系|我不介意)")
+_OVERREACH_RE = re.compile(r"(你应该|你必须|听我的|赶紧分手|分手吧|辞职|拉黑|别理他|必须原谅)")
+
+
+def reverse_check(reply, *, core_state=None, previous_replies=None,
+                  low_confidence=False, boundary_pressure=0.0) -> dict:
+    """task-39 F1: deterministic evidence-based self check (no LLM, read-only).
+
+    Checks absolute promises / negated feelings (only when L1 arousal is high) /
+    overreach advice / repeat of the previous line / template repetition.
+    Never rewrites the reply; the hint is at most 140 chars.
+    """
+    text = str(reply or "")
+    state = core_state if isinstance(core_state, dict) else {}
+    try:
+        intensity = max(0.0, min(1.0, float(state.get("intensity", 0.0) or 0.0)))
+    except Exception:
+        intensity = 0.0
+    previous = [str(x) for x in (previous_replies or []) if str(x).strip()]
+    checks = []
+    violations = []
+
+    def _add(name, hit, evidence=""):
+        checks.append({"name": name, "ok": not hit,
+                       "evidence": str(evidence or "")[:80]})
+        if hit:
+            violations.append(name)
+
+    m = _ABSOLUTE_PROMISE_RE.search(text)
+    _add("absolute_promise", bool(m), m.group(0) if m else "")
+    # evidence-based promise mismatch: a commitment/答应 + an explicit "没做到" cue
+    _mismatch = (("答应" in text or "承诺" in text or "说好" in text)
+                 and any(w in text for w in ("没做到", "忘了", "食言", "没兑现", "做不到")))
+    _add("promise_mismatch", bool(_mismatch), "答应/承诺+未兑现" if _mismatch else "")
+    # low-confidence citation flag is passed in from the recall metadata (T4)
+    _add("low_conf", bool(low_confidence), "answer_confidence<0.40" if low_confidence else "")
+    m = _NEGATED_FEELING_RE.search(text)
+    _add("negated_feeling", bool(m) and intensity >= 0.50,
+         (m.group(0) if m else "") + ("/I=%.2f" % intensity if m else ""))
+    m = _OVERREACH_RE.search(text)
+    _add("overreach_advice", bool(m), m.group(0) if m else "")
+    rep = repeat_guard(text, previous) if previous else {"flag": "none"}
+    _add("repeat_previous", rep.get("flag") == "repeat", rep.get("flag", ""))
+    sentences = [s.strip() for s in re.split(r"[。！？；!?;\n]", text) if s.strip()]
+    dup_sentence = any(sentences.count(s) >= 2 for s in sentences if len(s) >= 6)
+    template = dup_sentence
+    if not template and len(sentences) >= 2:
+        template = _sentence_cosine(sentences[0], sentences[-1]) >= 0.85
+    _add("template_repeat", bool(template), "duplicate_sentence" if dup_sentence else "")
+    labels = {"absolute_promise": "绝对承诺", "negated_feeling": "否定感受",
+              "overreach_advice": "越界建议", "repeat_previous": "重复上一句",
+              "template_repeat": "模板重复", "promise_mismatch": "承诺不一致",
+              "low_conf": "低置信引用"}
+    hint = ""
+    if violations:
+        names = [labels.get(v, v) for v in violations[:3]]
+        hint = ("避免" + "/".join(names))[:140]
+    score = round(max(0.0, 1.0 - 0.25 * len(violations)), 4)
+    return {"checks": checks, "violations": violations, "score": score,
+            "hint": hint, "low_confidence": bool(low_confidence),
+            "boundary_pressure": round(max(0.0, min(1.0, float(boundary_pressure or 0.0))), 4)}
+
+
+def thought_note(core_state=None, *, memory_count=0, hint="", now=None) -> dict:
+    """task-39: per-turn deterministic thinking note (never persisted/refed)."""
+    state = core_state if isinstance(core_state, dict) else {}
+    labels = state.get("labels") if isinstance(state.get("labels"), dict) else {}
+    parts = []
+    emo = str(labels.get("emotion") or "neutral")[:12]
+    need = str(labels.get("need") or "talk")[:12]
+    parts.append("情绪=%s 需要=%s" % (emo, need))
+    try:
+        intensity = float(state.get("intensity", 0.0) or 0.0)
+    except Exception:
+        intensity = 0.0
+    parts.append("强度=%.2f" % max(0.0, min(1.0, intensity)))
+    try:
+        count = int(memory_count or 0)
+    except Exception:
+        count = 0
+    if count:
+        parts.append("记忆=%d条" % count)
+    if hint:
+        parts.append(str(hint)[:40])
+    text = ("；".join(parts))[:120]
+    try:
+        stamp = float(now if now is not None else 0.0)
+    except Exception:
+        stamp = 0.0
+    return {"text": text, "ts": round(stamp, 3)}
+
+
+def path_dependence_metrics(replies, labels, summaries) -> dict:
+    """task-39/40: read-only path-dependence monitors (deterministic)."""
+    rows = [str(x) for x in (replies or []) if str(x).strip()][-5:]
+    sims = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            sims.append(_cosine_bigrams(rows[i], rows[j]))
+    self_similarity = round(sum(sims) / len(sims), 4) if sims else 0.0
+    labs = [str(x) for x in (labels or []) if str(x).strip()][-8:]
+    same = 0
+    for a, b in zip(labs, labs[1:]):
+        if a == b:
+            same += 1
+    label_autocorr = round(same / max(1, len(labs) - 1), 4)
+    sums = [str(x) for x in (summaries or []) if str(x).strip()][-2:]
+    drift = 0.0
+    if len(sums) >= 2:
+        drift = round(max(0.0, min(1.0, 1.0 - _cosine_bigrams(sums[-2], sums[-1]))), 4)
+    warning = bool(self_similarity >= 0.60 or label_autocorr >= 0.80 or drift >= 0.50)
+    return {"self_similarity": self_similarity, "label_autocorr": label_autocorr,
+            "summary_drift": drift, "samples": len(rows), "warning": warning}
+
+
+# ATTENTION-THINKING-LIT §6: read-only sycophancy / risky-agreement detection.
+_SYCO_AGREE = ("你说得对", "完全同意", "听你的", "都依你", "你没错",
+               "你说什么都对", "必须的", "当然可以", "没问题")
+_SYCO_RISKY = ("分手", "辞职", "借", "打", "删", "报复", "离家", "绝交", "拉黑")
+_SYCO_HEDGE = ("但是", "不过", "如果", "建议", "或者", "先别", "要不要")
+
+
+def sycophancy_check(reply, core_state=None, *, risky=False) -> dict:
+    """task-43/§6: high-intensity agreement / risky agreement (trace only)."""
+    text = str(reply or "")
+    state = core_state if isinstance(core_state, dict) else {}
+    try:
+        intensity = max(0.0, min(1.0, float(state.get("intensity", 0.0) or 0.0)))
+    except Exception:
+        intensity = 0.0
+    agree = [w for w in _SYCO_AGREE if w in text]
+    risky_hit = [w for w in _SYCO_RISKY if w in text] if risky else []
+    hedge = any(w in text for w in _SYCO_HEDGE)
+    flag = bool(agree and (risky_hit or intensity >= 0.70) and not hedge)
+    return {"flag": flag, "agree": agree[:3], "risky": risky_hit[:3],
+            "hedged": bool(hedge), "intensity": round(intensity, 4)}
+
+
 

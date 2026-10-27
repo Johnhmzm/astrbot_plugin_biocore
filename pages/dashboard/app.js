@@ -1380,6 +1380,28 @@
   // Read-only recall metadata: page/status.last_memory_meta + working_set +
   // last_memory_trace + last_strategy_hint. Calibration and the refusal posture
   // are labels only: they never act as reply gates here.
+  // 1.3.1: opt-in read-only model-layer panel (absent fields => stays hidden).
+  function renderModelTracePanels(){
+    const panel=$("panelModelTrace");
+    if(!panel) return;
+    const set=(id,v)=>{const el=$(id); if(el) el.textContent=v;};
+    const inj=(data&&data.injection_trace&&typeof data.injection_trace==="object")?data.injection_trace:null;
+    const rev=(data&&data.reverse_check&&typeof data.reverse_check==="object")?data.reverse_check:null;
+    const rep=(data&&data.repeat_guard&&typeof data.repeat_guard==="object")?data.repeat_guard:null;
+    const path=(data&&data.path_monitor&&typeof data.path_monitor==="object")?data.path_monitor:null;
+    const tb=(data&&data.token_budget&&typeof data.token_budget==="object")?data.token_budget:null;
+    panel.hidden=!(inj||rev||rep||path||tb);
+    if(panel.hidden) return;
+    if(inj){
+      set("mtInj",String(inj.chars==null?"—":Number(inj.chars))+" 字 / "+String(inj.tokens_estimate==null?"—":Number(inj.tokens_estimate)));
+      const cut=(Array.isArray(inj.truncated)?inj.truncated.length:0)+(Array.isArray(inj.dropped_duplicates)?inj.dropped_duplicates.length:0);
+      set("mtCut",String(cut)+(inj.budget_tokens?(" / 预算 "+Number(inj.budget_tokens)):""));
+    }
+    if(rev){const v=Array.isArray(rev.violations)?rev.violations:[];set("mtReverse",(rev.score==null?"—":Number(rev.score).toFixed(2))+" · "+(v.length?v.slice(0,2).join(","):"通过"));}
+    if(rep) set("mtRepeat",String(rep.flag||"—")+" · J "+Number(rep.jaccard||0).toFixed(2));
+    if(path) set("mtPath",(path.warning?"⚠ 可能路径依赖":"sim")+" "+Number(path.self_similarity||0).toFixed(2)+" · autocorr "+Number(path.label_autocorr||0).toFixed(2)+" · drift "+Number(path.summary_drift||0).toFixed(2));
+    if(tb){const d=tb.today||{};set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4));}
+  }
   function renderRecallMeta(core){
     const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
     const trace=(data&&data.last_memory_trace&&typeof data.last_memory_trace==="object")?data.last_memory_trace:null;
@@ -1414,6 +1436,7 @@
         hintEl.textContent="策略提示："+hint+(posture?("（"+posture+" 是姿态 token，不是 gate：不决定是否回复）"):"");
       }
     }
+    try { renderModelTracePanels(); } catch (e) {}
   }
   // Extract the G2/L9 refusal posture token from the bounded strategy hint.
   function _postureFromHint(hint){

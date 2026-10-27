@@ -491,5 +491,263 @@
     "hint": "默认关=不读 usage、page/status 无新增字段。开启后仅当 provider 在响应里返回 usage 时按会话累计 prompt/completion/total；拿不到则 available=false（不估算）。只读投影，不参与判定。",
     "type": "bool",
     "default": false
+  },
+  "bc_budget_enabled": {
+    "description": "注入总预算（默认开）",
+    "hint": "默认开：按优先级 意图>情绪>记忆>hint 截断 [BC]；空块不渲染，只减不增。",
+    "type": "bool",
+    "default": true
+  },
+  "bc_budget_tokens": {
+    "description": "[BC] token 预算（legacy，默认 400）",
+    "hint": "兼容旧配置；实际默认使用 bc_budget_chars。仅影响截断，不增加默认 token。",
+    "type": "int",
+    "default": 400
+  },
+  "bc_budget_chars": {
+    "description": "[BC] 总预算字符数（默认 700，480–800）",
+    "hint": "§6 工程值：单块 [BC] 总字符预算；截断顺序 continuity→loops→event→hint→其他，不裁头部与 memory evidence。",
+    "type": "int",
+    "default": 700
+  },
+  "sycophancy_check_enabled": {
+    "description": "迎合检测（默认开，只读）",
+    "hint": "默认开：确定性检测高强度同意/高风险附和（结合否定/hedge），只写 state.sycophancy_check 与只读面板，不改变回复。",
+    "type": "bool",
+    "default": true
+  },
+  "bc_dedupe_enabled": {
+    "description": "[BC] 重复行去重（默认开）",
+    "hint": "与最近 N 轮注入的相同段落不重复注入（无损项）。",
+    "type": "bool",
+    "default": true
+  },
+  "bc_dedupe_history": {
+    "description": "去重历史窗口（默认 5）",
+    "hint": "最近 N 轮 [BC] 用于逐字去重；范围 1–50。",
+    "type": "int",
+    "default": 5
+  },
+  "bc_hints_enabled": {
+    "description": "[BC] hint 渲染（默认开）",
+    "hint": "关闭后不渲染 hint/ws/brevity 段（省钱模式会关）。",
+    "type": "bool",
+    "default": true
+  },
+  "bc_trace_enabled": {
+    "description": "[BC] 注入 trace（默认关）",
+    "hint": "默认关=state 无新字段。开启后记录本轮 [BC] 全文/字符/估算 token/截断明细，Dashboard 只读。",
+    "type": "bool",
+    "default": false
+  },
+  "think_selfcheck_enabled": {
+    "description": "确定性反向检查 F1（默认开，0 LLM）",
+    "hint": "默认开：只读检查绝对承诺/否定感受/越界建议/复读/模板重复，命中写 state.reverse_check 并在下一轮 [BC] 加 ≤140 字避免提示；不改回复。",
+    "type": "bool",
+    "default": true
+  },
+  "think_repeat_guard_enabled": {
+    "description": "复读检测 F3（默认关，只标记）",
+    "hint": "默认关。开启后与最近 3 条回复做 4-gram Jaccard≥0.60 或句级余弦≥0.85 标记，下一轮提示不要重复；不写入记忆。",
+    "type": "bool",
+    "default": false
+  },
+  "think_reflect_enabled": {
+    "description": "触发式反思 F2（默认关）",
+    "hint": "默认关。开启后 ansc<0.40/违规≥2/用户要求/关系冲突 触发，日限 3，写 1 条 reflection（≤120 字）+ 下一轮 hint；失败静默降级。",
+    "type": "bool",
+    "default": false
+  },
+  "think_reflect_daily_cap": {
+    "description": "F2 日限（默认 3）",
+    "hint": "每会话每日最多触发次数；范围 1–20。",
+    "type": "int",
+    "default": 3
+  },
+  "think_reflect_private_only": {
+    "description": "F2 只私聊（默认开）",
+    "hint": "开启时群聊不触发 F2。",
+    "type": "bool",
+    "default": true
+  },
+  "think_reflect_llm_enabled": {
+    "description": "F2 便宜模型（默认关）",
+    "hint": "默认关=纯确定性模板。开启且配置 provider 时单次调用、24h 缓存；失败回退模板。",
+    "type": "bool",
+    "default": false
+  },
+  "think_reflect_provider": {
+    "description": "F2 便宜模型 provider",
+    "hint": "留空=不调用；填 AstrBot provider id 时启用单次便宜模型反思。",
+    "type": "string",
+    "default": ""
+  },
+  "soft_bound_enabled": {
+    "description": "软边界负反馈（默认关）",
+    "hint": "默认关=旧 _clip 逐位一致。开启后用 k/m_frac/lam 的软边界替代 apply_affect 最终硬 clamp。",
+    "type": "bool",
+    "default": false
+  },
+  "soft_bound_k": {
+    "description": "软边界恢复速度 k（默认 0.10）",
+    "hint": "范围 0.05–0.20。",
+    "type": "float",
+    "default": 0.1
+  },
+  "soft_bound_m_frac": {
+    "description": "软边界缓冲带 m_frac（默认 0.08）",
+    "hint": "范围 0.05–0.10。",
+    "type": "float",
+    "default": 0.08
+  },
+  "soft_bound_lam": {
+    "description": "软边界推力 lam（默认 0.10）",
+    "hint": "范围 0.05–0.20。",
+    "type": "float",
+    "default": 0.1
+  },
+  "path_monitor_enabled": {
+    "description": "路径依赖监控（默认关，只读）",
+    "hint": "默认关。开启后计算 self_similarity/label_autocorr/summary_drift 并写 page_status.path_monitor，供 Dashboard 只读。",
+    "type": "bool",
+    "default": false
+  },
+  "temporal_validity_enabled": {
+    "description": "双时态有效性（默认关）",
+    "hint": "默认关。开启后检索过滤 invalid_at<=now 的旧事实；冲突默认软失效旧条（保留可回滚）。",
+    "type": "bool",
+    "default": false
+  },
+  "calibration_adaptive_enabled": {
+    "description": "calibration 自适应（默认关）",
+    "hint": "默认关=固定 ±0.05。开启后按误差 log 缩放，δ 上限 ±0.15。",
+    "type": "bool",
+    "default": false
+  },
+  "rerank_enabled": {
+    "description": "召回跨编码器重排（默认关）",
+    "hint": "默认关。开启后用现有 rerank provider 对 top-N 精排；失败回退本地排序。",
+    "type": "bool",
+    "default": false
+  },
+  "rerank_top_n": {
+    "description": "重排 top-N（默认 5）",
+    "hint": "范围 1–10。",
+    "type": "int",
+    "default": 5
+  },
+  "memory_pin_enabled": {
+    "description": "记忆钉住（默认开）",
+    "hint": "默认开：pin=true 的条目不被 80 条上限截断；提供 pin/unpin API（无 pin 条目=旧行为）。",
+    "type": "bool",
+    "default": true
+  },
+  "memory_overflow_compact_enabled": {
+    "description": "溢出确定性归档（默认关）",
+    "hint": "默认关=旧 80 条截断。开启后对低重要度非 pinned 旧条移入 overflow_archive（不调 LLM）。",
+    "type": "bool",
+    "default": false
+  },
+  "mood_congruence_enabled": {
+    "description": "心境一致性召回（默认关）",
+    "hint": "默认关。开启后按当前 v 给召回分数乘 0.90–1.10 并 clamp。",
+    "type": "bool",
+    "default": false
+  },
+  "emotion_gating_enabled": {
+    "description": "情绪门控（默认关）",
+    "hint": "默认关。开启后 stress≥0.65 或 v≤-0.50 时提高阈值并降 top-k。",
+    "type": "bool",
+    "default": false
+  },
+  "token_budget_enabled": {
+    "description": "token/费用测量（默认开，只读）",
+    "hint": "默认开：真实 usage 优先，否则 chars/2.2 估算并标估算；按会话累计输入/输出/缓存/费用，Dashboard 只读。",
+    "type": "bool",
+    "default": true
+  },
+  "memory_recall_budget_enabled": {
+    "description": "召回预算（默认关）",
+    "hint": "默认关=旧 top-k/220 字。开启后 top-k≤3、单条≤120 字（省钱模式会开）。",
+    "type": "bool",
+    "default": false
+  },
+  "recall_top_k": {
+    "description": "召回 top-k 上限（默认 3）",
+    "hint": "仅 memory_recall_budget_enabled 时生效；范围 1–8。",
+    "type": "int",
+    "default": 3
+  },
+  "recall_single_chars": {
+    "description": "召回单条字符上限（默认 120）",
+    "hint": "仅 memory_recall_budget_enabled 时生效；范围 40–220。",
+    "type": "int",
+    "default": 120
+  },
+  "savings_mode": {
+    "description": "省钱模式预设（默认关）",
+    "hint": "默认关。开启=预算 300、top-k 3、单条 100、句级排重开、hint 关；不改变准确优先默认。",
+    "type": "bool",
+    "default": false
+  },
+  "context_budget_enabled": {
+    "description": "上下文预算模式（默认关）",
+    "hint": "默认关。开启仅记录建议轮数（需 AstrBot 侧配合，不改宿主配置）。",
+    "type": "bool",
+    "default": false
+  },
+  "context_budget_turns": {
+    "description": "上下文预算轮数（默认 8）",
+    "hint": "范围 2–40；仅记录建议。",
+    "type": "int",
+    "default": 8
+  },
+  "cost_input_per_1m": {
+    "description": "输入价格/1M（默认 2.0）",
+    "hint": "费用估算价格表（¥/1M tokens），只用于只读面板。",
+    "type": "float",
+    "default": 2
+  },
+  "cost_output_per_1m": {
+    "description": "输出价格/1M（默认 8.0）",
+    "hint": "费用估算价格表（¥/1M tokens）。",
+    "type": "float",
+    "default": 8
+  },
+  "cost_cache_per_1m": {
+    "description": "缓存价格/1M（默认 0.5）",
+    "hint": "费用估算价格表（¥/1M cached tokens）。",
+    "type": "float",
+    "default": 0.5
+  },
+  "conflict_gate_enabled": {
+    "description": "冲突门控（默认关）",
+    "hint": "默认关。开启后 conflict_ema≥0.60 时召回阈值 +0.05、autonomy effort_debt +0.02（有界）。",
+    "type": "bool",
+    "default": false
+  },
+  "rumination_effect_enabled": {
+    "description": "反刍效应（默认关）",
+    "hint": "默认关。开启后 rumination_ema>0 时 v 负向偏移≤0.12；≥0.60 时召回 top-k-1（narrowing）。",
+    "type": "bool",
+    "default": false
+  },
+  "anchor_update_enabled": {
+    "description": "锚定更新（默认关）",
+    "hint": "默认关。开启后信任/信念更新用 update=(1-anchor)*new+anchor*prior。",
+    "type": "bool",
+    "default": false
+  },
+  "identity_threat_stress_enabled": {
+    "description": "身份威胁→stress（默认关）",
+    "hint": "默认关。开启后确定性检测自我/角色冲突，命中 stress 上跳 ≤0.08。",
+    "type": "bool",
+    "default": false
+  },
+  "anchor_weight": {
+    "description": "锚定权重（默认 0.25）",
+    "hint": "范围 0–0.9；可人格推导/配置。",
+    "type": "float",
+    "default": 0.25
   }
 }

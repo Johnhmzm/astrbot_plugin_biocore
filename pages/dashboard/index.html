@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261027-1250" />
+<link rel="stylesheet" href="./styles.css?v=20261027-1840" />
 </head>
 <body>
 <div class="shell">
@@ -106,6 +106,18 @@
           <div><small>reply_consistency / 回复一致性</small><b id="sReplyConsistency">--</b></div>
         </div>
         <p class="api-note" id="steadyNote">只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。</p>
+      </div>
+      <div class="panel" id="panelModelTrace" hidden>
+        <div class="panel-head"><h3>本轮注入 / 模型层只读</h3><span class="hint">INJECTION TRACE · REVERSE CHECK · COST · READ-ONLY</span></div>
+        <div class="signal-grid" id="modelTraceGrid">
+          <div><small>[BC] 字符 / 估算 token</small><b id="mtInj">--</b></div>
+          <div><small>截断 / 去重段</small><b id="mtCut">--</b></div>
+          <div><small>F1 反向检查</small><b id="mtReverse">--</b></div>
+          <div><small>复读检测 F3</small><b id="mtRepeat">--</b></div>
+          <div><small>路径依赖监控</small><b id="mtPath">--</b></div>
+          <div><small>今日 token / 费用</small><b id="mtCost">--</b></div>
+        </div>
+        <p class="api-note" id="modelTraceNote">只读投影：注入 trace / 反向检查 / 路径依赖 / 费用估算只用于观察，不改变回复，也不写生物层。</p>
       </div>
       <div class="panel" id="panelAutonomy">
         <div class="panel-head"><h3>自主行为就绪度</h3><span class="hint">AUTONOMY READINESS · 只读 · 默认关</span></div>
@@ -568,5 +580,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261027-1250"></script><script src="./app.js?v=20261027-1250"></script><script src="./orb.js?v=20261027-1250"></script>
+<script src="./orb_math.js?v=20261027-1840"></script><script src="./app.js?v=20261027-1840"></script><script src="./orb.js?v=20261027-1840"></script>
 </body></html>

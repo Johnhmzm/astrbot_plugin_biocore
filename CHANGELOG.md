@@ -9,6 +9,11 @@
 - 未接线项补齐（默认关）：relationship_impression / tom_probe / diary / relationship_narrative 进入 [BC] hint；多跳召回 `memory_chain_multihop`（hop≤2/fan≤3/新增≤6）；`refusal_brevity_enabled` 降低回复长度与主动度；`workspace_token` 仅在自主循环开启时注入 [BC]。
 - 回复侧只读统计：`reply_consistency`（回复与意图一致性）、`llm_telemetry`（各函数失败/降级/回退计数）、`token_usage`（provider 提供则累计，否则标记不可用）。
 - 新增 eval_wire_fixes.py（56 checks）；全量 eval 76/76。
+- **模型层完善**：[BC] 单块放 system 尾部 + 字符预算 `bc_budget_chars=700`（480–800），按 continuity→loops→event→hint→其他 截断、不裁头部与 memory evidence；hint 独立 `[BH]` 行（≤140 字/轮 1 条）放 [BC] 之后；注入 trace（`bc_trace_enabled` 默认关）；最近 5 轮逐字去重（默认开，无损）；解析稳健（坏 JSON 一次修复、未知键/标签计数、白名单可配、残留剥离）；确定性反向检查 F1（默认开、0 LLM、只读）、复读检测 F3（默认关）、软边界负反馈 `soft_bounded`（默认关）、thought note 仅本轮不落盘、触发式反思 F2（默认关、日限 3）、路径依赖监控（默认关只读）、迎合检测（默认开只读）。
+- **准确性**：双时态 `valid_at/invalid_at`（默认关）、calibration 自适应 ±0.15（默认关）、cross-encoder 重排 `rerank_enabled`（默认关、失败回退）、事实钉住 `memory_pin_enabled`（默认开，pin 不被 80 条截断 + `/page/memory/pin` API）、溢出确定性归档（默认关）、心境一致性扩展与情绪门控（默认关）、single vs power_law A/B 输出。
+- **省钱**：真实 usage 优先/缺失用 chars/2.2 估算并标记；费用表可配；`state.token_usage` + Dashboard 费用行；召回预算（默认关）；「省钱模式」预设（默认关：预算 300/top-k 3/单条 100 字/句级排重/hint 关）；A/B 护栏断言 must-have top-1 不丢；`docs/BIOCORE-COST-SAVINGS-v1.md` 含算例与宿主历史限制。
+- **L1 生理前提**：`conflict_ema`、`rumination_ema`、`anchor_weight`、`identity_threat→stress`（行为开关默认关，snapshot 只读）；`soft_bounded` 负反馈替代硬 clip（默认关）。
+- 新增 eval_thinking_loop（70）/ eval_accuracy_v131（30）/ eval_token_budget（26）/ eval_l1_thinking（34）；全量 eval **80/80**。
 
 ### Changed
 - 默认行为不变：新增功能默认关；telemetry/token 只读不影响回复；默认 [BC] 无新增 token、无新增默认 LLM 调用。
