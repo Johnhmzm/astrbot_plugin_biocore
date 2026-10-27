@@ -827,5 +827,11 @@
     "hint": "provider 图片 caption 等待上限 2–20s；超时降级为空串并计数，不阻塞回复。",
     "type": "int",
     "default": 8000
+  },
+  "summary_llm_timeout_ms": {
+    "description": "摘要直连超时（默认 8000ms）",
+    "hint": "event_summary/memory_summary 直连 provider 的 wait_for 超时（2–8s），超时降级确定性 fallback 并计数。",
+    "type": "int",
+    "default": 8000
   }
 }

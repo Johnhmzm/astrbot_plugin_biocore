@@ -2,6 +2,21 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   let bridge = null;
+  // P2: remote dashboard admin token (matches plugin config data_admin_token).
+  function _adminHeaders(){
+    try{ const t=localStorage.getItem("biocore_admin_token")||"";
+      return t ? {"X-BioCore-Admin":t} : {}; }catch(e){ return {}; }
+  }
+  function _adminToken(){ try{ return localStorage.getItem("biocore_admin_token")||""; }catch(e){ return ""; } }
+  async function _adminApiPost(path, body){
+    if(!bridge) throw new Error("未连接 AstrBot 页面桥");
+    // Host bridge apiPost only accepts (path, body): token goes in the body;
+    // header is kept for servers that do read it.
+    const payload=Object.assign({}, body||{});
+    const t=_adminToken();
+    if(t) payload.admin_token=t;
+    return bridge.apiPost(path, payload, {headers:_adminHeaders()});
+  }
   const demo = {
     enabled: true, inject_intent: true, proactive_reply: false, memory_dedup_embedding: false, persona_loaded: true,
     memory: { entries: 42, sessions: 3 },
@@ -1471,6 +1486,21 @@
       warn.textContent="公开部署建议开启：敏感记忆/图片/危机边界依赖此开关；私人使用可关。";
     }
   }
+  function renderEnvChecks(){
+    try{
+      const e=(data&&data.env_checks&&typeof data.env_checks==="object")?data.env_checks:null;
+      const panel=$("envChecksPanel"), txt=$("envChecksText");
+      if(!panel||!e) return;
+      const warns=Array.isArray(e.warnings)?e.warnings:[];
+      panel.hidden=false;
+      if(txt) txt.textContent="data可写="+(e.data_writable?"是":"否")
+        +" · AstrBot="+String(e.astrbot_version||"—")
+        +" · 版本OK="+(e.version_ok?"是":"否")
+        +" · persona="+(e.persona_present?"有":"缺")
+        +" · 缺配置="+((Array.isArray(e.missing_config)&&e.missing_config.length)?e.missing_config.join("/"):"无")
+        +(warns.length?(" · ⚠ "+warns.join("；")):"");
+    }catch(err){}
+  }
   function renderModelTracePanels(snap){
     const panel=$("panelModelTrace");
     if(!panel) return;
@@ -1519,7 +1549,7 @@
     if(tb){const d=tb.today||{};const est=(d.estimated||Number(d.estimated_calls||0)>0)?" · 估算":"";set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4)+est);}
   }
   function renderRecallMeta(core){
-    try { renderInlineNotices(); renderSafetyWarn(); } catch (e) {}
+    try { renderInlineNotices(); renderSafetyWarn(); renderEnvChecks(); } catch (e) {}
     const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
     const trace=(data&&data.last_memory_trace&&typeof data.last_memory_trace==="object")?data.last_memory_trace:null;
     const ws=(core&&core.working_set&&typeof core.working_set==="object")?core.working_set:null;
@@ -2157,24 +2187,59 @@
     if (!bridge) { if (st) st.textContent = "未连接 AstrBot 页面桥，无法下载"; return; }
     if (st) st.textContent = "正在打包备份…";
     try {
-      const raw = await bridge.apiGet("page/backup", {});
+      if(!confirm("安全备份不含 API Key，但含记忆与状态；确认下载？")) return;
+      const raw = await _adminApiPost("page/backup", {confirm:true});
       const payload = raw && raw.data ? raw.data : raw;
       if(!payload || !payload.token) throw new Error((payload && payload.message) || "empty backup");
-      const bin = atob(payload.base64);
-      const bytes = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      const blob = new Blob([bytes], { type: payload.mime || "application/zip" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = payload.filename || "biocore_core_backup.zip";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      const url = payload.download_url ||
+        ("/astrbot_plugin_biocore/page/download/" + encodeURIComponent(payload.token));
+      if (st) st.textContent = "正在下载…";
+      window.location.href = url;
       if (st) st.textContent = "下载已开始 · " + (payload.filename || "");
     } catch (e) {
       if (st) st.textContent = "下载失败：" + String(e && e.message || e);
     }
   });
 
+
+  // P2: admin token field (localStorage only).
+  const adminTokenInput = $("adminTokenInput");
+  if (adminTokenInput) {
+    try { adminTokenInput.value = localStorage.getItem("biocore_admin_token") || ""; } catch(e) {}
+    adminTokenInput.addEventListener("change", () => {
+      try { localStorage.setItem("biocore_admin_token", String(adminTokenInput.value || "")); } catch(e) {}
+    });
+  }
+  async function _dataExport(){
+    const st=$("dataAdminState");
+    try {
+      const raw=await _adminApiPost("page/data_export",{confirm:true});
+      const payload=raw&&raw.data?raw.data:raw;
+      if(!payload||payload.status==="error") throw new Error((payload&&payload.message)||"export failed");
+      const blob=new Blob([JSON.stringify(payload,null,1)],{type:"application/json"});
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement("a"); a.href=url; a.download="biocore_export.json";
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),10000);
+      if(st) st.textContent="导出已开始（不含 API Key）";
+    } catch(e) { if(st) st.textContent="导出失败："+String(e&&e.message||e); }
+  }
+  async function _dataDelete(){
+    const st=$("dataAdminState");
+    if(!confirm("硬删除记忆/事件/洞察/状态/人设（先写 tombstone）。确认？")) return;
+    try {
+      const t=await _adminApiPost("page/data_delete_token",{});
+      const token=(t&&t.data?t.data.token:t&&t.token)||"";
+      if(!token) throw new Error("删除 token 获取失败");
+      const raw=await _adminApiPost("page/data_delete",{token, scopes:["memory","events","insights","state","learning_state","archives","persona","self_model","image_cache"]});
+      const payload=raw&&raw.data?raw.data:raw;
+      if(!payload||payload.status==="error") throw new Error((payload&&payload.message)||"delete failed");
+      if(st) st.textContent="已删除："+String((payload.removed||[]).join(", "))+(payload.tombstone?"（tombstone 已保留）":"");
+      await _focusReloadData();
+    } catch(e) { if(st) st.textContent="删除失败："+String(e&&e.message||e); }
+  }
+  const dataExportBtn=$("dataExportBtn"), dataDeleteBtn=$("dataDeleteBtn");
+  if(dataExportBtn) dataExportBtn.addEventListener("click",_dataExport);
+  if(dataDeleteBtn) dataDeleteBtn.addEventListener("click",_dataDelete);
 
   let restoreArmed = false, restoreTimer = null;
   function resetRestore() {
@@ -2197,7 +2262,7 @@
       restoreArmed = true;
       if (restoreTimer) clearTimeout(restoreTimer);
       restoreTimer = setTimeout(resetRestore, 5000);
-      if (st) st.textContent = "警告：会覆盖当前核心数据（人设/记忆/状态/API 配置）。5 秒内再点一次确认。";
+      if (st) st.textContent = "警告：会覆盖当前核心数据（人设/记忆/状态），但不会覆盖 API 配置/密钥。5 秒内再点一次确认。";
       return;
     }
     resetRestore();
@@ -2213,10 +2278,12 @@
         r.onerror = reject;
         r.readAsDataURL(f);
       });
-      const raw = await bridge.apiPost("page/restore", { filename: f.name, base64 });
+      const raw = await _adminApiPost("page/restore", { filename: f.name, base64 });
       const payload = raw && raw.data ? raw.data : raw;
       if (!payload || payload.status === "error") throw new Error((payload && payload.message) || "restore failed");
-      if (st) st.textContent = "已恢复 " + Number(payload.files || 0) + " 个文件，请重启 AstrBot 生效。";
+      if (st) st.textContent = (payload.message ||
+        ("已恢复 " + Number(payload.files || 0) + " 个文件")) +
+        "；已跳过 api_config（保留当前 Key），请重启 AstrBot 生效。";
     } catch (e) {
       if (st) st.textContent = "恢复失败：" + String(e && e.message || e);
     }

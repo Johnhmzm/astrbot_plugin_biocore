@@ -95,7 +95,7 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 
 | 配置项 | 默认值 | 说明 |
 |---|---|---|
-| `safety_enabled` | `false` | 私人使用默认关闭；公开/多用户部署前建议设为 `true`，启用敏感信息掩码、跨会话限制、低置信记忆拒答等保护 |
+| `safety_enabled` | `true` | 新装默认开启；公开/多用户部署建议保持 `true`（敏感信息掩码、跨会话限制、低置信记忆拒答）；私人使用可手动关闭 |
 | `we_memory_enabled` | `false` | 共同记忆/多用户共享记忆默认关闭；仅在明确需要时开启 |
 | `llm_only_reply_summary` | `true` | 严格模式：LLM 仅用于回复与总结，其他提案型功能保持关闭 |
 | `event_summary` / `memory_summary` | 开启 | 事件/记忆总结；可在 LLM 功能开关中关闭 |
@@ -106,6 +106,15 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 | `image_service_port` | `0` | 本地 llama-server 端口；0=不启用，仅本地 VLM 模式，不是通用 API 地址 |
 
 Dashboard 设置页还提供 BioCore 专用 API 覆盖、记忆压缩、可视化图层、版本检查和备份。
+
+### 最小配置清单
+
+装好后先确认这四项，再开始聊天：
+
+1. **人设（persona）**：AstrBot 当前人设可读；`persona_compile` 是可选项，不编译也会使用默认/已有档案。
+2. **API key / provider**：主回复用宿主 LLM；事件/记忆总结、embedding、重排需要对应 provider，缺失时走确定性回退/本地排序，不阻断回复。
+3. **data 目录可写**：确认 `AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/` 可写；不可写会导致状态/记忆静默降级。
+4. **AstrBot 版本**：`>=4.16,<5`，平台 `aiocqhttp`；公开部署保持 `safety_enabled=true`。
 
 ## 使用
 
@@ -135,7 +144,7 @@ AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
 
 - 默认不包含任何外部遥测、统计上报或下载行为。
 - 只有在启用对应 LLM 功能且配置了 Provider 时，相关摘要/洞察请求才会发送给该 Provider；发送内容限于该功能所需的事件/记忆摘要，不包含完整聊天上下文。
-- `safety_enabled: false` 是私人使用默认值；公开部署前建议开启，并按需配置敏感信息掩码和跨会话记忆限制。
+- `safety_enabled: true` 是新装默认值；公开部署建议保持开启，私人使用可关闭，并按需配置敏感信息掩码和跨会话记忆限制。
 - 更新/卸载前请备份上述数据目录。
 
 ## 平台与兼容性
@@ -168,6 +177,7 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 ## 更新日志
 
 - 当前版本：`1.3.0`（以 `metadata.yaml` 为准）
+- 发版口径：**本地 `1.3.0` 为发版目标；公开仓库/市场记录在正式发布前保持 `1.2.99`**，发布时再同步
 - 详细历史见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)
 - 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
 

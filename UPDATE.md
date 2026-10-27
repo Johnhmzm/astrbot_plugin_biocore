@@ -2,13 +2,15 @@
 
 当前版本：以 `metadata.yaml` 为准（当前 **1.3.0**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
 
+> 发版口径：本地 `1.3.0` 为发版目标；公开仓库/市场记录在正式发布前保持 `1.2.99`，发布时再同步。
+
 ## 1.3.0 升级提示
 
 - 记忆聚焦新增「重新判定」：按多角度 W/W_her/K 重算，结论为只归档/不该记时降级（importance 0.15、memory_point=false），可用「恢复」撤销。
 - 未接线项补齐：impression/tom/diary/narrative 进入 [BC] hint；多跳召回、refusal 降长度、workspace_token 注入均可选（默认关）。
 - 回复侧新增只读统计：回复一致性、LLM 失败/降级、token 用量；本 AstrBot 版本不暴露流式回调，不做假流式。
 - 默认行为不变：新增功能默认关，只读统计不影响回复；默认 [BC] 无新增 token。
-- 模型层：`[BC]` 默认放 system 尾部 + 字符预算 700，hint 改为独立 `[BH]` 行（≤140 字）；超预算才截断（continuity→loops→event→hint），不裁头部与记忆证据。
+- 模型层：`[BC]` 默认放 system 尾部 + 字符预算 700，hint 改为独立 `[BH]` 行（≤140 字）；只去浪费、不裁剪（空块/重复行/无消费者 hint/过期旧摘要），不裁头部与记忆证据。
 - 准确性：事实钉住默认开（重要记忆不被 80 条挤掉）；双时态、自适应 calibration、重排、心境/情绪门控默认关，A/B 后再开。
 - 省钱：Dashboard 新增只读费用行（token 估算 + 可配价格表）；「省钱模式」预设默认关，开启后降低注入与召回预算。
 - L1 新增只读信号 `conflict_ema / rumination_ema / anchor_weight`；行为影响默认关。

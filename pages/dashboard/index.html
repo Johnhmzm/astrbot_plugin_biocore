@@ -107,6 +107,7 @@
         </div>
         <p class="api-note" id="steadyNote">只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。</p>
       </div>
+      <details class="panel" id="envChecksPanel" hidden><summary>环境检查（只读）</summary><p class="api-note" id="envChecksText">—</p></details>
       <div class="panel" id="panelModelTrace" hidden>
         <div class="panel-head"><h3>本轮注入 / 模型层只读</h3><span class="hint">INJECTION TRACE · REVERSE CHECK · COST · READ-ONLY</span></div>
         <div class="signal-grid" id="modelTraceGrid">
@@ -581,7 +582,10 @@
       <div class="section-title mt" data-settings-title="settingsBackup"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
       <div class="panel settings settings-panel" id="settingsBackup">
         <div class="setting-row"><div><b>下载核心备份</b><small>插件代码 + data/ 打包成 zip，可用于迁移或恢复。</small></div><button type="button" class="btn" id="backupBtn">下载备份</button></div>
-        <p class="api-note" id="backupState">⚠ 安全备份：不含 API Key（api_config/密钥文件被排除，JSON 密钥字段脱敏）；点击后需确认，生成一次性下载链接。</p>
+        <div class="setting-row"><div><b>管理令牌</b><small>远程 dashboard 备份/导出/删除/恢复需与插件配置 data_admin_token 一致；只存本机 localStorage。</small></div><input id="adminTokenInput" type="text" placeholder="可选" /></div>
+      <div class="setting-row"><div><b>导出 / 硬删除</b><small>导出 JSON 不含 API Key；硬删除先写 tombstone（保留原文，仅用于恢复）。</small></div><button type="button" class="btn mini" id="dataExportBtn">导出 JSON</button> <button type="button" class="btn danger" id="dataDeleteBtn">硬删除</button></div>
+      <p class="api-note" id="dataAdminState"></p>
+      <p class="api-note" id="backupState">⚠ 安全备份：不含 API Key（api_config/密钥文件被排除，JSON 密钥字段脱敏）；点击后需确认，生成一次性下载链接。</p>
         <div class="setting-row"><div><b>加载核心备份</b><small>选择备份 zip；连续点击两次确认，会覆盖当前 data/。</small></div></div>
         <input type="file" id="restoreFile" accept=".zip,application/zip" style="margin:8px 0">
         <button type="button" class="btn danger" id="restoreBtn">加载备份（需点两次）</button>
