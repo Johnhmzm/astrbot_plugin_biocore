@@ -800,9 +800,10 @@
     const evs=Array.isArray(data.events)?data.events:[];
     // task-33: archive-only rows (memory_point=false) stay in the archive for
     // retrieval but are NOT memory points, so they get no ball.
-    // task-45: downgraded points stay visible so the 「恢复」 action is reachable.
+    // task-60: a downgraded ("not a memory point") event must NOT get a ball.
+    // Recovery stays available from the session memory list / focus panel.
     return evs.filter(e=>e&&typeof e==="object"
-        &&(e.memory_point!==false||_isDowngraded(e))).map(e=>{
+        &&e.memory_point!==false).map(e=>{
       const text=String(e.event||e.title||"").trim();
       if(!text) return null;
       return {_kind:"event", id:String(e.id||("evt_"+Number(e.ts||0))),
@@ -1442,16 +1443,33 @@
   // 1.3.1: opt-in read-only model-layer panel (absent fields => stays hidden).
   // task-44: L1 thinking-precursor rows (conflict / rumination / anchor /
   // sycophancy) live in a collapsed <details>; each one hides when missing.
-  // P0-3/P1-7: one-time safety + migration banners (read-only).
-  function renderSafetyBanners(){
+  // task-61: no page-top banners. One-time migration note lives inline in
+  // 设置 → 版本 (non-fatal notices must not occupy the page top).
+  function renderInlineNotices(){
     try {
-      const sec=(data&&data.security_notice&&typeof data.security_notice==="object")?data.security_notice:null;
-      const el=$("secBanner");
-      if(el&&sec){el.hidden=false;el.textContent="⚠ "+String(sec.message||"");}
       const mig=(data&&typeof data.migration_note==="string")?data.migration_note:"";
-      const mb=$("migBanner");
-      if(mb&&mig&&!localStorage.getItem("biocore_mig_seen_131")){mb.hidden=false;mb.textContent="升级提示："+mig;localStorage.setItem("biocore_mig_seen_131","1");}
+      const mb=$("migNote");
+      if(!mb) return;
+      if(mig&&!localStorage.getItem("biocore_mig_seen_131")){
+        mb.hidden=false;
+        mb.textContent="升级提示："+mig;
+        localStorage.setItem("biocore_mig_seen_131","1");
+      } else {
+        mb.hidden=true;
+        mb.textContent="";
+      }
     } catch(e) {}
+  }
+  // task-61: the safety warning is an inline line under the 安全限制 switch,
+  // only rendered while safety is OFF (no page-top banner).
+  function renderSafetyWarn(){
+    const warn=$("safetyWarn");
+    if(!warn) return;
+    const enabled=!!(data&&data.safety_enabled);
+    warn.hidden=enabled;
+    if(!enabled){
+      warn.textContent="公开部署建议开启：敏感记忆/图片/危机边界依赖此开关；私人使用可关。";
+    }
   }
   function renderModelTracePanels(snap){
     const panel=$("panelModelTrace");
@@ -1501,7 +1519,7 @@
     if(tb){const d=tb.today||{};const est=(d.estimated||Number(d.estimated_calls||0)>0)?" · 估算":"";set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4)+est);}
   }
   function renderRecallMeta(core){
-    try { renderSafetyBanners(); } catch (e) {}
+    try { renderInlineNotices(); renderSafetyWarn(); } catch (e) {}
     const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
     const trace=(data&&data.last_memory_trace&&typeof data.last_memory_trace==="object")?data.last_memory_trace:null;
     const ws=(core&&core.working_set&&typeof core.working_set==="object")?core.working_set:null;
@@ -1910,8 +1928,10 @@
         const payload=raw&&raw.data?raw.data:raw;
         if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
         if(data) data[key]=val;
+        if(key==="safety_enabled") renderSafetyWarn();
       }catch(err){
         e.target.checked=!val;
+        if(key==="safety_enabled") renderSafetyWarn();
         if(window.alert) window.alert("设置保存失败："+String(err&&err.message||err));
       }
     });

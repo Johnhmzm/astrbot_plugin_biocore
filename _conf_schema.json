@@ -221,10 +221,10 @@
     "default": true
   },
   "safety_enabled": {
-    "description": "安全限制（默认关）",
-    "hint": "默认关闭，私人使用无限制。开启后恢复敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤。",
+    "description": "安全限制（默认开）",
+    "hint": "默认开启：敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤。公开部署建议保持开启；私人使用可关。旧配置保留用户已保存值。",
     "type": "bool",
-    "default": false
+    "default": true
   },
   "hybrid_retrieval": {
     "description": "混合检索（词法 + MMR）",

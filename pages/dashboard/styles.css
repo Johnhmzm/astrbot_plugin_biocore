@@ -201,6 +201,9 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .btn.mini.is-pinned{border-color:var(--accent);color:var(--accent2);background:#fff0e2}
 .btn.mini.is-restore{border-color:var(--accent2);color:var(--accent2);background:transparent}
 .hero-mem-badge.is-downgraded{border-color:var(--accent2);color:var(--accent2)}
+.setting-warn{grid-column:1/-1;margin:6px 0 0;font-size:10px;line-height:1.5;letter-spacing:.02em;color:var(--accent2)}
+.setting-warn::before{content:"⚠ ";color:var(--accent2)}
+.setting-warn[hidden]{display:none}
 .mt-l1{margin-top:12px;border-top:1px dashed var(--line2);padding-top:8px}
 .mt-l1>summary{cursor:pointer;font-size:9px;letter-spacing:.1em;color:var(--faint);text-transform:uppercase;list-style:none}
 .mt-l1>summary::-webkit-details-marker{display:none}

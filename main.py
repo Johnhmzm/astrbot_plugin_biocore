@@ -3593,8 +3593,8 @@ class BioCorePlugin(Star):
         except Exception:
             self.image_caption_timeout_ms = 8000
         if not bool(getattr(self, "safety_enabled", False)):
-            logger.warning("[biocore] !!! safety_enabled=false: 公开部署请开启 "
-                           "safety_enabled（隐私/敏感记忆/危机边界依赖该开关）")
+            logger.warning("[biocore] safety_enabled=false: 公开部署建议保持开启；"
+                           "私人使用可关（当前关闭敏感掩码/跨会话隔离/低置信拒答/投毒过滤）")
         # "省钱模式" is an OPTIONAL preset (default off); it only overrides
         # effective caps, never the accuracy-first defaults.
         if self.savings_mode:
@@ -3700,9 +3700,10 @@ class BioCorePlugin(Star):
         # OFF = exact legacy behaviour (archive every candidate, no new fields).
         self.memory_worthiness_enabled = bool(
             self.config.get("memory_worthiness_enabled", True))
-        # Safety switch: default OFF for private use. When OFF, no masking,
+        # Safety switch: default ON (new installs). When OFF, no masking,
         # no cross-session isolation, no forced abstention, no poison filter.
-        self.safety_enabled = bool(self.config.get("safety_enabled", False))
+        # Saved old settings keep the user's stored value (load_settings below).
+        self.safety_enabled = bool(self.config.get("safety_enabled", True))
         self.cross_session_memory = not self.safety_enabled
         self.sensitive_memory_protection = self.safety_enabled
         # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
@@ -9949,8 +9950,8 @@ class BioCorePlugin(Star):
         if not getattr(self, "safety_enabled", False):
             _data["security_notice"] = {
                 "safety_enabled": False,
-                "message": "safety_enabled=false：公开部署请开启 safety_enabled；"
-                           "敏感记忆/图片/危机边界依赖该开关。"}
+                "message": "safety_enabled=false：公开部署建议保持开启；私人使用可关。"
+                           "当前关闭敏感掩码/跨会话隔离/低置信拒答/投毒过滤。"}
         try:
             _marker = DATA_DIR / "migration_seen.json"
             if not _marker.exists():
