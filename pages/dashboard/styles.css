@@ -198,6 +198,14 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 .api-grid input:focus,.api-grid select:focus{border-color:var(--accent)}
 .api-model-row{display:grid;grid-template-columns:1fr auto;gap:7px}
 .btn.mini{height:32px;padding:0 10px;font-size:9px;white-space:nowrap}
+.btn.mini.is-pinned{border-color:var(--accent);color:var(--accent2);background:#fff0e2}
+.mt-l1{margin-top:12px;border-top:1px dashed var(--line2);padding-top:8px}
+.mt-l1>summary{cursor:pointer;font-size:9px;letter-spacing:.1em;color:var(--faint);text-transform:uppercase;list-style:none}
+.mt-l1>summary::-webkit-details-marker{display:none}
+.mt-l1>summary::before{content:"▸ ";color:var(--muted)}
+.mt-l1[open]>summary::before{content:"▾ "}
+.mt-l1 .signal-grid{margin-top:10px}
+.mt-l1 .bar{margin-top:5px}
 .api-note{font-size:10px;color:var(--muted);margin:10px 0 0;line-height:1.5}
 .api-actions{display:flex;align-items:center;gap:12px;margin-top:6px}
 #apiSaveState{font-size:9px;color:var(--faint)}

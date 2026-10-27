@@ -163,7 +163,6 @@ def savings_overrides(base) -> dict:
     It never changes accuracy-first defaults unless the user opts in.
     """
     out = dict(base or {})
-    out["bc_budget_tokens"] = min(int(out.get("bc_budget_tokens", 400) or 400), 300)
     out["bc_budget_chars"] = min(int(out.get("bc_budget_chars", 700) or 700), 300)
     out["memory_recall_budget_enabled"] = True
     out["recall_top_k"] = min(int(out.get("recall_top_k", 3) or 3), 3)
@@ -470,6 +469,17 @@ def _memory_entry_id_of(entry) -> str:
     return _sha256(text[:300])[:12] if text else ""
 
 
+def _pin_ts_of(entry):
+    """task-44 read-only pin timestamp (None when not pinned/unknown)."""
+    if not isinstance(entry, dict) or not memory_meta.is_pinned(entry):
+        return None
+    try:
+        ts = float(entry.get("pin_ts") or 0.0)
+    except Exception:
+        ts = 0.0
+    return round(ts, 3) if ts > 0 else None
+
+
 def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                        max_entries: int = 200, max_tombstones: int = 20) -> list:
     """Read-only, bounded memory index consumed by the dashboard.
@@ -548,7 +558,10 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
                 "links": len(entry.get("links") or []),
                 "self_defining": bool(entry.get("self_defining")),
                 "verification": str((entry.get("verification") or {}).get("status")
-                                    or memory_meta.verify_entry(entry).get("status") or "")
+                                    or memory_meta.verify_entry(entry).get("status") or ""),
+                # task-44 backend gap: expose pin state read-only (no semantics change).
+                "pinned": bool(memory_meta.is_pinned(entry)),
+                "pin_ts": _pin_ts_of(entry),
             })
         tombstones = []
         for item in (doc.get("tombstones") or [])[-max_tombstones:]:
@@ -794,7 +807,8 @@ class BioCore:
         self.reply_consistency_enabled = False
         self.reply_consistency = None
         # 1.3.1 model-layer flags / read-only projections (set by plugin config).
-        self.think_selfcheck_enabled = False
+        self.think_selfcheck_trace_enabled = False
+        self.think_selfcheck_hint_enabled = False
         self.soft_bound_enabled = False
         self.soft_bound_k = 0.10
         self.soft_bound_m_frac = 0.08
@@ -3303,7 +3317,7 @@ class BioCore:
             out["reply_consistency"] = dict(self.reply_consistency)
         # 1.3.1: opt-in read-only projections (default OFF keeps the state file
         # byte-identical to 1.3.0). thought_note is NEVER persisted.
-        if (getattr(self, "think_selfcheck_enabled", False)
+        if (getattr(self, "think_selfcheck_trace_enabled", False)
                 and isinstance(getattr(self, "reverse_check", None), dict)):
             out["reverse_check"] = dict(self.reverse_check)
         if (getattr(self, "token_budget_enabled", False)
@@ -3408,12 +3422,8 @@ class BioCorePlugin(Star):
             self.refusal_brevity_max_chars = 160
         # ---- 1.3.1 model-layer (task-37/38/39) ----
         self.bc_budget_enabled = bool(self.config.get("bc_budget_enabled", True))
-        try:
-            self.bc_budget_tokens = max(80, min(4000, int(
-                self.config.get("bc_budget_tokens", 400) or 400)))
-        except Exception:
-            self.bc_budget_tokens = 400
-        # §6: total char budget 480–800 (engineering); legacy token budget maps ×2.5.
+        # §6: total char budget 480–800 (engineering); the old token-only key
+        # was dead config and has been removed (P2 fix).
         try:
             self.bc_budget_chars = max(480, min(800, int(
                 self.config.get("bc_budget_chars", 700) or 700)))
@@ -3432,9 +3442,13 @@ class BioCorePlugin(Star):
         _wl = self.config.get("bc_label_whitelist")
         self._bc_label_whitelist = (list(_wl) if isinstance(_wl, (list, tuple)) and _wl
                                     else None)
-        # F1 deterministic reverse check: read-only + zero LLM => default ON.
-        self.think_selfcheck_enabled = bool(
-            self.config.get("think_selfcheck_enabled", True))
+        # P1-1: F1 split into two independent switches.
+        #   trace: write state.reverse_check only (default ON, read-only, no hint)
+        #   hint:  inject the <=140-char "avoid X" line next round (default OFF)
+        self.think_selfcheck_trace_enabled = bool(
+            self.config.get("think_selfcheck_trace_enabled", True))
+        self.think_selfcheck_hint_enabled = bool(
+            self.config.get("think_selfcheck_hint_enabled", False))
         self.think_repeat_guard_enabled = bool(
             self.config.get("think_repeat_guard_enabled", False))
         self.think_reflect_enabled = bool(
@@ -3520,11 +3534,9 @@ class BioCorePlugin(Star):
         # effective caps, never the accuracy-first defaults.
         if self.savings_mode:
             _eff = savings_overrides({
-                "bc_budget_tokens": self.bc_budget_tokens,
                 "bc_budget_chars": self.bc_budget_chars,
                 "recall_top_k": self.recall_top_k,
                 "recall_single_chars": self.recall_single_chars})
-            self.bc_budget_tokens = int(_eff["bc_budget_tokens"])
             self.bc_budget_chars = int(_eff["bc_budget_chars"])
             self.memory_recall_budget_enabled = bool(_eff["memory_recall_budget_enabled"])
             self.recall_top_k = int(_eff["recall_top_k"])
@@ -3647,6 +3659,8 @@ class BioCorePlugin(Star):
         self._bc_history = []
         self._last_injection_trace = None
         self._last_reverse_check = None
+        # P1-1: F1 hint is NOT merged into strategy hints; it is a separate
+        # pending line accounted inside bc_budget_chars.
         self._reverse_check_hint = ""
         self._repeat_guard = None
         self._repeat_hint = ""
@@ -3963,7 +3977,8 @@ class BioCorePlugin(Star):
 
     def _record_token_budget(self, session, *, input_tokens=0,
                              output_tokens=0, cached_tokens=0,
-                             estimated=True, core=None) -> None:
+                             estimated=True, core=None,
+                             count_call=True) -> None:
         """task-37: measured/estimated token + cost counters (read-only)."""
         try:
             store = self._token_budget if isinstance(
@@ -3977,9 +3992,13 @@ class BioCorePlugin(Star):
             item["input_tokens"] = int(item.get("input_tokens", 0) or 0) + tin
             item["output_tokens"] = int(item.get("output_tokens", 0) or 0) + tout
             item["cached_tokens"] = int(item.get("cached_tokens", 0) or 0) + tcached
-            item["calls"] = int(item.get("calls", 0) or 0) + 1
+            # P2: a turn has one input call and one output call -> count the
+            # round only on the output call (request passes count_call=False).
+            if count_call:
+                item["calls"] = int(item.get("calls", 0) or 0) + 1
             item["estimated_calls"] = (int(item.get("estimated_calls", 0) or 0)
                                        + (1 if estimated else 0))
+            item["estimated"] = bool(estimated) or bool(item.get("estimated"))
             item["last_input"] = tin
             item["last_output"] = tout
             item["last_estimated"] = bool(estimated)
@@ -3987,18 +4006,24 @@ class BioCorePlugin(Star):
                                  + self._cost_for(tin, tout, tcached), 6)
             sessions[key] = item
             store["sessions"] = sessions
-            store["calls"] = int(store.get("calls", 0) or 0) + 1
+            if count_call:
+                store["calls"] = int(store.get("calls", 0) or 0) + 1
             today = time.strftime("%Y-%m-%d")
             day = store.get("today") if isinstance(store.get("today"), dict) else {}
             if str(day.get("date") or "") != today:
                 day = {"date": today, "input_tokens": 0, "output_tokens": 0,
-                       "cached_tokens": 0, "cost": 0.0, "calls": 0}
+                       "cached_tokens": 0, "cost": 0.0, "calls": 0,
+                       "estimated_calls": 0, "estimated": False}
             day["input_tokens"] = int(day.get("input_tokens", 0) or 0) + tin
             day["output_tokens"] = int(day.get("output_tokens", 0) or 0) + tout
             day["cached_tokens"] = int(day.get("cached_tokens", 0) or 0) + tcached
             day["cost"] = round(float(day.get("cost", 0.0) or 0.0)
                                 + self._cost_for(tin, tout, tcached), 6)
-            day["calls"] = int(day.get("calls", 0) or 0) + 1
+            if count_call:
+                day["calls"] = int(day.get("calls", 0) or 0) + 1
+            day["estimated_calls"] = (int(day.get("estimated_calls", 0) or 0)
+                                      + 1)
+            day["estimated"] = bool(day.get("estimated")) or bool(estimated)
             store["today"] = day
             self._token_budget = store
             if core is not None and getattr(self, "token_budget_enabled", True):
@@ -4687,8 +4712,10 @@ class BioCorePlugin(Star):
             core.reply_consistency_enabled = bool(
                 getattr(self, "reply_consistency_enabled", False))
             # 1.3.1 model-layer flags (read-only unless explicitly opt-in).
-            core.think_selfcheck_enabled = bool(
-                getattr(self, "think_selfcheck_enabled", True))
+            core.think_selfcheck_trace_enabled = bool(
+                getattr(self, "think_selfcheck_trace_enabled", True))
+            core.think_selfcheck_hint_enabled = bool(
+                getattr(self, "think_selfcheck_hint_enabled", False))
             core.soft_bound_enabled = bool(
                 getattr(self, "soft_bound_enabled", False))
             core.soft_bound_k = float(getattr(self, "soft_bound_k", 0.10) or 0.10)
@@ -9102,7 +9129,7 @@ class BioCorePlugin(Star):
                 and isinstance(getattr(self, "_last_injection_trace", None), dict)):
             _data["injection_trace"] = dict(self._last_injection_trace)
             _data["parse_stats"] = dict(interpretation.PARSE_STATS)
-        if (getattr(self, "think_selfcheck_enabled", True)
+        if (getattr(self, "think_selfcheck_trace_enabled", True)
                 and isinstance(getattr(self, "_last_reverse_check", None), dict)):
             _data["reverse_check"] = dict(self._last_reverse_check)
         if (getattr(self, "think_repeat_guard_enabled", False)
@@ -9849,22 +9876,23 @@ class BioCorePlugin(Star):
         """Batch4 L19: Cowan 2001 capacity (default 8 legacy; flag -> cowan)."""
         if getattr(self, "cowan_capacity_enabled", False):
             return max(3, min(6, int(getattr(self, "cowan_capacity", 4) or 4)))
-        return max(4, self._memory_top_k(core) * 2)
+        return 8  # task-51: working-set capacity stays legacy 8; top-k=3 separately
 
     def _memory_top_k(self, core) -> int:
-        k = 4
+        """task-51: default recall top-k = 3 (not only in savings mode).
+
+        Attention/stress still modulates downward (2..3); cowan-style capacity
+        remains an engineering proxy (Ma 2014), never an absolute "4".
+        """
+        k = 3
         if core is not None:
             if float(getattr(core, "stress", 0.0)) > 0.65:
                 k -= 1
             if float(getattr(core, "energy", 1.0)) < 0.35:
                 k -= 1
-            if float(getattr(core, "trust", 0.0)) > 0.65:
-                k += 1
-            if float(getattr(core, "attention", 0.5)) > 0.7:
-                k += 1
-            elif float(getattr(core, "attention", 0.5)) < 0.3:
+            if float(getattr(core, "attention", 0.5)) < 0.3:
                 k -= 1
-        k = max(2, min(6, k))
+        k = max(2, min(3, k))
         if getattr(self, "attention_topk_cap_enabled", False):
             k = min(k, int(getattr(self, "attention_topk_cap", 4) or 4))
         return k
@@ -11020,7 +11048,7 @@ class BioCorePlugin(Star):
             if getattr(self, "safety_enabled", False) and snippet and e.get("sensitive"):
                 snippet = memory_meta.mask_sensitive(snippet)
             if snippet:
-                _cap = 240
+                _cap = 220
                 if getattr(self, "memory_recall_budget_enabled", False):
                     try:
                         _cap = max(40, min(240, int(
@@ -11396,14 +11424,17 @@ class BioCorePlugin(Star):
                 _brevity = "normal"
             if _brevity != "normal" and _strategy_hint:
                 _strategy_hint = _strategy_hint[:60 if _brevity == "short" else 90]
-        # 1.3.1: consume last round's model-layer hints (F1/F3/F2), bounded to
-        # one combined <=140-char hint; cleared immediately after consumption.
-        for _extra_hint in (getattr(self, "_reverse_check_hint", ""),
-                            getattr(self, "_repeat_hint", ""),
+        # 1.3.1: consume last round's F3/F2 hints (bounded, inside strategy_hint).
+        # P1-1: the F1 "avoid X" hint is separate (only when hint switch is ON)
+        # and is NOT merged into strategy_hint.
+        for _extra_hint in (getattr(self, "_repeat_hint", ""),
                             getattr(self, "_reflect_hint", "")):
             if _extra_hint:
                 _strategy_hint = interpretation.combine_strategy_hint(
                     _strategy_hint, _extra_hint)
+        _pending_f1_hint = str(getattr(self, "_reverse_check_hint", "") or "")[:140]
+        if not getattr(self, "think_selfcheck_hint_enabled", False):
+            _pending_f1_hint = ""
         self._reverse_check_hint = ""
         self._repeat_hint = ""
         self._reflect_hint = ""
@@ -11443,8 +11474,7 @@ class BioCorePlugin(Star):
             workspace_token=_ws_token,
             brevity=_brevity,
         ).strip()
-        # 1.3.1: deterministic [BC] budget + duplicate-line removal. The head
-        # (intent/emotion) is never dropped; memory before hint on truncation.
+        # 1.3.1: deterministic [BC] budget + duplicate-line removal.
         _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
         _budget_chars = (int(getattr(self, "bc_budget_chars", 700) or 700)
                          if getattr(self, "bc_budget_enabled", True) else 0)
@@ -11452,17 +11482,30 @@ class BioCorePlugin(Star):
             _hist_n = max(1, int(getattr(self, "bc_dedupe_history", 5) or 5))
         except Exception:
             _hist_n = 5
-        _compact, _inj = interpretation.apply_bc_budget(
-            _compact, budget_chars=_budget_chars,
-            history=list(getattr(self, "_bc_history", []) or [])[-_hist_n:],
-            dedupe=bool(getattr(self, "bc_dedupe_enabled", True)),
-            hints_enabled=bool(getattr(self, "bc_hints_enabled", True)))
-        # §6: at most one hint per round, placed AFTER the [BC] block (lower than
-        # system instructions), never duplicated inside [BC].
-        _compact, _hint_line = interpretation.extract_hint_line(_compact)
+        _dedupe_on = bool(getattr(self, "bc_dedupe_enabled", True))
+        if not getattr(self, "bc_budget_enabled", True):
+            # P1-2: budget OFF => full bypass: no apply_bc_budget, no reorder,
+            # no dedupe, no extract_hint_line (legacy hint position preserved).
+            _block = _compact
+            if _pending_f1_hint:
+                _block = (_block + "\n[BH] " + _pending_f1_hint).strip()
+            _inj = {"budget_enabled": False, "chars": len(_block),
+                    "tokens_estimate": interpretation.estimate_bc_tokens(_block),
+                    "truncated": [], "dropped_duplicates": [],
+                    "essential_chars": 0, "optional_chars": 0,
+                    "essential_over_budget": False, "alert": "",
+                    "hint_line": _pending_f1_hint,
+                    "format_version": interpretation.BC_FORMAT_VERSION}
+            _compact = _block
+        else:
+            _compact, _inj = interpretation.compose_bc_block(
+                _compact, budget_chars=_budget_chars,
+                history=list(getattr(self, "_bc_history", []) or [])[-_hist_n:],
+                dedupe=_dedupe_on,  # task-51: never reorder (memory-layer order wins)
+                hints_enabled=bool(getattr(self, "bc_hints_enabled", True)),
+                f1_hint=_pending_f1_hint, budget_enabled=True)
         _inj["ts"] = round(time.time(), 3)
         _inj["session"] = _umo
-        _inj["hint_line"] = _hint_line
         self._last_injection_trace = _inj
         if getattr(self, "bc_trace_enabled", False):
             try:
@@ -11482,18 +11525,16 @@ class BioCorePlugin(Star):
                              + _base + _compact)
                 self._record_token_budget(
                     _umo, input_tokens=interpretation.estimate_text_tokens(_req_text),
-                    estimated=True)
+                    estimated=True, count_call=False)
             except Exception:
                 pass
         if _compact:
             self._bc_history = (list(getattr(self, "_bc_history", []) or [])
                                 + [_compact])[-20:]
             # §6: single [BC] block appended to the SYSTEM prompt tail (best
-            # utilisation), never split; optional hint line follows after it.
-            _block = _compact
-            if _hint_line:
-                _block = _compact + "\n[BH] " + _hint_line[:140]
-            req.system_prompt = (_base + "\n\n" + _block).strip()
+            # utilisation), never split; [BH] hint lines (if any) are already
+            # composed and budgeted inside _compact by compose_bc_block.
+            req.system_prompt = (_base + "\n\n" + _compact).strip()
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse):
@@ -11552,9 +11593,11 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
-        # task-39 F1: deterministic evidence-based reverse check (default ON,
-        # read-only, 0 LLM). Hint (<=140) is applied to the NEXT round only.
-        if getattr(self, "think_selfcheck_enabled", True):
+        # P1-1: F1 split — trace writes state only (default ON, no token cost);
+        # hint (default OFF) is the only path that injects next round.
+        _f1_trace = bool(getattr(self, "think_selfcheck_trace_enabled", True))
+        _f1_hint_on = bool(getattr(self, "think_selfcheck_hint_enabled", False))
+        if _f1_trace or _f1_hint_on:
             try:
                 _rc = interpretation.reverse_check(
                     _reply,
@@ -11564,11 +11607,17 @@ class BioCorePlugin(Star):
                     previous_replies=list(getattr(self, "_recent_replies", []) or [])[-3:],
                     low_confidence=bool((getattr(self, "_last_memory_meta", {}) or {}).get("abstain")),
                     boundary_pressure=float(getattr(core, "boundary_pressure", 0.0) or 0.0))
-                core.reverse_check = _rc
                 self._last_reverse_check = _rc
-                self._reverse_check_hint = str(_rc.get("hint") or "")
+                if _f1_trace:
+                    core.reverse_check = _rc
+                # P2: disabled hint must not leave a stale pending line.
+                self._reverse_check_hint = (str(_rc.get("hint") or "")[:140]
+                                            if _f1_hint_on else "")
             except Exception:
-                pass
+                self._reverse_check_hint = ""
+        else:
+            # both switches off mid-flight: drop any pending F1 hint.
+            self._reverse_check_hint = ""
         # task-39 F3: repeat guard (default OFF) — mark only, never rewrite.
         if getattr(self, "think_repeat_guard_enabled", False):
             try:

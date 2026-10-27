@@ -501,7 +501,7 @@
     const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
       " · 年龄 " + Math.round(hit.ageDays) + "d" +
       (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
-      _mergeTip(ev);
+      _mergeTip(ev) + (ev.pinned === true ? " · 已钉住" : "");
     const _secKey = String(ev.emotion_secondary || "").trim();
     const _status = String((ev.source_check && ev.source_check.status) || "ok");
     const _emoLine = "情绪：" + _emotionZh(ev.emotion) +
@@ -1324,6 +1324,16 @@
           ctx.beginPath(); ctx.arc(b.x, b.y, size, 0, Math.PI * 2);
           ctx.fillStyle = bodyFill; ctx.fill();
         }
+        // task-44: pinned facts get a tiny accent dot on the ball (visual only;
+        // unpinned balls draw exactly as before).
+        if (ev.pinned === true) {
+          ctx.globalAlpha = clamp(.85 * dimK);
+          ctx.beginPath();
+          ctx.arc(b.x + size * .68, b.y - size * .68, Math.max(1.1, size * .16), 0, Math.PI * 2);
+          ctx.fillStyle = "hsl(" + primaryRingHsl.h.toFixed(0) + "," +
+            primaryRingHsl.s.toFixed(0) + "%,38%)";
+          ctx.fill();
+        }
         // task-65: 0-3 emotion rings, one per non-primary emotion layer.
         // New archive records carry emotion_layers (top-4 spectrum probs incl.
         // the primary). Rings exclude the primary, keep p >= .15, sort desc and
@@ -1683,7 +1693,7 @@
         const impLine = "重要度 " + Number(hit.imp || 0).toFixed(2) +
           " · 年龄 " + Math.round(hit.ageDays) + "d" +
           (ev.peripheral_forgotten ? " · 外围已遗忘" : "") +
-          _mergeTip(ev);
+          _mergeTip(ev) + (ev.pinned === true ? " · 已钉住" : "");
         const small = String(ev.small_summary || "").trim();
         const fallbackText = small ? "小总结：" + small
           : String(ev.event || ev.central_details || ev.meaning_to_her || "");

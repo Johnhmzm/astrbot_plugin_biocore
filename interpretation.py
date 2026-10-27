@@ -1671,102 +1671,194 @@ def _bc_segment_kind(segment) -> str:
 # ATTENTION-THINKING-LIT §6: drop from the tail by ascending salience; never
 # drop the [BC] head or the memory evidence keys.
 _BC_PROTECTED_KEYS = {"mem", "memn", "memsrc", "ansc", "memwho"}
-_BC_DROP_ORDER = ("cont", "loops", "due", "soon", "ev",
-                  "hint", "ws", "brevity",
-                  "self", "u", "img", "kb", "spk", "voice")
+# P2 fix: hint is dropped BEFORE event (memory > hint > event); docs/ACC
+# wording kept in sync with this list.
+_BC_DROP_ORDER = ("cont", "loops", "due", "soon", "hint", "ws", "brevity",
+                  "ev", "self", "u", "img", "kb", "spk", "voice")
 
 
 def _bc_key(segment) -> str:
     return str(segment or "").strip().split("=", 1)[0].strip()
 
 
-def apply_bc_budget(text, budget_tokens=0, budget_chars=0, history=None,
-                    dedupe=True, hints_enabled=True):
-    """task-39/37 + ATTENTION-THINKING-LIT §6 budget/order.
+# task-51 layered budget: must-keep (never trimmed) / nice-to-have / trimmable.
+_BC_MUST_KEYS = {"due", "soon"}          # open-loop commitments
+_BC_MEMORY_KEYS_ALL = {"mem", "memn", "memsrc", "ansc", "memwho"}
+_BC_TRIM_KEY_ORDER = ("cont", "loops", "hint", "ws", "brevity", "ev")
+_BC_LATE_KEYS = ("self", "u", "img", "kb", "spk", "voice")
 
-    Single block, order: head(intent/emotion/action) → memory evidence →
-    other state → events → loops → hint/continuity last. Truncation walks the
-    tail in ascending salience (cont → loops → ev → hint → other state), never
-    dropping the head or memory evidence keys. Budget is expressed in chars
-    (480–800 engineering) or legacy tokens (×2.5). Empty input returns "".
+
+def _bc_key(segment) -> str:
+    return str(segment or "").strip().split("=", 1)[0].strip()
+
+
+def _bc_layers(segments):
+    """Return (must_positions, memory_positions) for a segment list."""
+    must = set()
+    memory = []
+    first_mem = None
+    for pos, seg in enumerate(segments):
+        key = _bc_key(seg)
+        if key in _BC_MUST_KEYS:
+            must.add(pos)
+        elif key in _BC_MEMORY_KEYS_ALL:
+            memory.append(pos)
+            if first_mem is None:
+                first_mem = pos
+    if first_mem is not None:
+        must.add(first_mem)
+    return must, memory
+
+
+def _bc_trim_candidates(segments, must_positions):
+    """task-51 order: continuity -> loops -> hint -> events -> 3rd mem -> 2nd mem."""
+    out = []
+    for key in _BC_TRIM_KEY_ORDER:
+        for pos in range(len(segments) - 1, -1, -1):
+            if pos not in must_positions and _bc_key(segments[pos]) == key \
+                    and pos not in out:
+                out.append(pos)
+    memory = [p for p in range(len(segments))
+              if p not in must_positions and _bc_key(segments[p]) in _BC_MEMORY_KEYS_ALL]
+    for pos in reversed(memory):          # 3rd, then 2nd ...
+        if pos not in out:
+            out.append(pos)
+    for pos in range(len(segments) - 1, -1, -1):
+        if pos not in must_positions and _bc_key(segments[pos]) in _BC_LATE_KEYS \
+                and pos not in out:
+            out.append(pos)
+    return out
+
+
+def apply_bc_budget(text, budget_tokens=0, budget_chars=0, history=None,
+                    dedupe=True, hints_enabled=True, reorder=False,
+                    hard_chars=0, stale_segments=None):
+    """task-51: remove WASTE only; never trim valuable content.
+
+    Kept regardless of size: state head/intent, commitments, all memory
+    evidence, key events, relationship changes. The 700-char budget is a
+    target/tip, not a threshold: trace.size records the actual size and
+    trace.over_target is informational. Only invalid items are removed:
+    empty blocks, exact duplicate lines (vs recent history or inside this
+    block), unvalued hints (feature off), stale/superseded summary segments
+    passed by the memory layer. wasted counts make the waste visible.
+    The model layer never reorders (memory-layer order wins).
     """
     raw = str(text or "")
+    try:
+        target = max(0, int(budget_chars or 0))
+    except Exception:
+        target = 0
     try:
         tok_budget = max(0, int(budget_tokens or 0))
     except Exception:
         tok_budget = 0
-    try:
-        char_budget = max(0, int(budget_chars or 0))
-    except Exception:
-        char_budget = 0
-    if not char_budget and tok_budget:
-        char_budget = int(tok_budget * BC_TOKEN_CHARS)
+    if not target and tok_budget:
+        target = int(tok_budget * BC_TOKEN_CHARS)
+    wasted = {"empty_blocks": 0, "duplicates": 0, "stale": 0,
+              "unvalued_hint": 0}
+    empty_trace = {"chars": 0, "size": 0, "tokens_estimate": 0,
+                   "budget_tokens": tok_budget, "budget_chars": target,
+                   "over_target": False, "wasted": wasted,
+                   "truncated": [], "dropped_duplicates": [],
+                   "format_version": BC_FORMAT_VERSION,
+                   "hints_disabled": not hints_enabled, "segments": 0}
     if not raw.strip():
-        return "", {"chars": 0, "tokens_estimate": 0,
-                    "budget_tokens": tok_budget, "budget_chars": char_budget,
-                    "truncated": [], "dropped_duplicates": [],
-                    "format_version": BC_FORMAT_VERSION, "hints_disabled": not hints_enabled,
-                    "segments": 0}
+        return "", empty_trace
     parts = raw.split(" | ")
     head = parts[0]
-    segments = [s for s in parts[1:] if str(s).strip()]
+    all_segments = parts[1:]
+    segments = [s for s in all_segments if str(s).strip()]
+    wasted["empty_blocks"] = max(0, len(all_segments) - len(segments))
+    stale = set(str(x) for x in (stale_segments or []) if str(x).strip())
     seen = set()
     if dedupe and history:
         for old in history:
             for seg in str(old or "").split(" | ")[1:]:
                 if seg.strip():
                     seen.add(seg.strip())
-    dropped = []
-    kept = []
+    dropped, kept = [], []
     for seg in segments:
+        if seg.strip() in stale:
+            wasted["stale"] += 1
+            continue
         if dedupe and seg.strip() in seen:
+            wasted["duplicates"] += 1
             dropped.append(seg)
             continue
         if not hints_enabled and _bc_segment_kind(seg) == "hint":
+            wasted["unvalued_hint"] += 1
             dropped.append(seg)
             continue
         kept.append(seg)
-    # §6 block order: evidence/memory + state first, events, loops, hints last.
-    early, events, loops, hints, late = [], [], [], [], []
+    # remove identical duplicate memory lines inside this block (same entry).
+    final = []
     for seg in kept:
-        key = _bc_key(seg)
-        if key in _BC_PROTECTED_KEYS or key in ("self", "u", "img", "kb", "spk", "voice"):
-            early.append(seg)
-        elif key == "ev":
-            events.append(seg)
-        elif key in ("loops", "due", "soon"):
-            loops.append(seg)
-        elif key in ("hint", "ws", "brevity"):
-            hints.append(seg)
-        else:
-            late.append(seg)
-    ordered = early + events + loops + hints + late
-    truncated = []
-    if char_budget > 0:
-        while ordered and len(" | ".join([head] + ordered)) > char_budget:
-            # drop by explicit tail salience order; protected rows are skipped.
-            _idx = None
-            for key in _BC_DROP_ORDER:
-                for pos in range(len(ordered) - 1, -1, -1):
-                    if _bc_key(ordered[pos]) == key:
-                        _idx = pos
-                        break
-                if _idx is not None:
-                    break
-            if _idx is None:
-                _idx = len(ordered) - 1
-            seg = ordered[_idx]
-            if _bc_key(seg) in _BC_PROTECTED_KEYS:
-                break
-            truncated.append(ordered.pop(_idx))
-    out = " | ".join([head] + ordered)
-    return out, {"chars": len(out), "tokens_estimate": estimate_bc_tokens(out),
-                 "budget_tokens": tok_budget, "budget_chars": char_budget,
-                 "truncated": truncated, "dropped_duplicates": dropped,
-                 "hints_disabled": not hints_enabled,
-                 "head_over_budget": bool(char_budget > 0 and len(head) > char_budget),
+        if dedupe and _bc_segment_kind(seg) == "memory" and seg in final:
+            wasted["duplicates"] += 1
+            dropped.append(seg)
+            continue
+        final.append(seg)
+    out = " | ".join([head] + final)
+    size = len(out)
+    must_positions, _memory = _bc_layers(final)
+    essential_len = len(" | ".join(
+        [head] + [final[i] for i in sorted(must_positions)]))
+    return out, {"chars": size, "size": size,
+                 "tokens_estimate": estimate_bc_tokens(out),
+                 "budget_tokens": tok_budget, "budget_chars": target,
+                 "over_target": bool(target and size > target),
+                 "wasted": wasted, "truncated": [],
+                 "dropped_duplicates": dropped,
+                 "essential_chars": essential_len,
                  "format_version": BC_FORMAT_VERSION,
-                 "segments": len(ordered) + 1}
+                 "hints_disabled": not hints_enabled,
+                 "segments": len(final) + 1}
+
+
+def compose_bc_block(text, *, budget_chars=0, hard_chars=0, history=None,
+                     dedupe=True, reorder=False, hints_enabled=True, f1_hint="",
+                     budget_enabled=True, stale_segments=None):
+    """Compose the final [BC] block (+ optional [BH] hint lines), task-51.
+
+    No trimming of valuable content and no hard cap. 700 is a target only:
+    trace.size/over_target are informational. Only waste is removed by
+    apply_bc_budget. budget_enabled=False fully bypasses budget/dedupe/hint
+    extraction (legacy position preserved, byte-identical).
+    """
+    raw = str(text or "")
+    hint = str(f1_hint or "").strip()[:140]
+    if not budget_enabled:
+        block = raw
+        if hint:
+            block = (block + "\n[BH] " + hint).strip()
+        return block, {"budget_enabled": False, "chars": len(block),
+                       "size": len(block),
+                       "tokens_estimate": estimate_bc_tokens(block),
+                       "budget_chars": 0, "over_target": False,
+                       "wasted": {"empty_blocks": 0, "duplicates": 0,
+                                  "stale": 0, "unvalued_hint": 0},
+                       "hint_line": hint, "strategy_hint_line": "",
+                       "truncated": [], "dropped_duplicates": [],
+                       "format_version": BC_FORMAT_VERSION}
+    target = max(0, int(budget_chars or 0))
+    bc, tr = apply_bc_budget(raw, budget_chars=target, history=history,
+                             dedupe=dedupe, hints_enabled=hints_enabled,
+                             reorder=False, stale_segments=stale_segments)
+    bc, strategy_hint = extract_hint_line(bc)
+    lines = []
+    if strategy_hint:
+        lines.append("[BH] " + strategy_hint[:140])
+    if hint:
+        lines.append("[BH] " + hint)
+    block = bc + (("\n" + "\n".join(lines)) if lines else "")
+    tr.update({"budget_enabled": True, "chars": len(block), "size": len(block),
+               "chars_bc": len(bc), "budget_chars": target,
+               "over_target": bool(target and len(block) > target),
+               "hint_line": hint, "strategy_hint_line": strategy_hint,
+               "hint_budgeted": bool(hint),
+               "format_version": BC_FORMAT_VERSION})
+    return block, tr
 
 
 def extract_hint_line(text):

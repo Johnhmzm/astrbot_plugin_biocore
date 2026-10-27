@@ -12,7 +12,7 @@
 - 准确性：事实钉住默认开（重要记忆不被 80 条挤掉）；双时态、自适应 calibration、重排、心境/情绪门控默认关，A/B 后再开。
 - 省钱：Dashboard 新增只读费用行（token 估算 + 可配价格表）；「省钱模式」预设默认关，开启后降低注入与召回预算。
 - L1 新增只读信号 `conflict_ema / rumination_ema / anchor_weight`；行为影响默认关。
-- 若升级后回复风格变化明显：先检查 `bc_budget_chars`、`think_selfcheck_enabled`、`memory_pin_enabled` 三项，可单独关闭回退。
+- 若升级后回复风格变化明显：先检查 `bc_budget_chars`、`think_selfcheck_trace_enabled`、`think_selfcheck_hint_enabled`、`memory_pin_enabled` 四项，可单独关闭回退。
 
 ## 1.2.99 升级提示
 - 记忆点判定默认开启：琐碎事件（纯工具问答、低情绪/低关系增量）不再生成记忆点；如需恢复旧行为，关闭 `memory_worthiness_enabled`。
