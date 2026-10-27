@@ -25,6 +25,7 @@ replies; it only post-processes the final completion and does not fake streaming
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -614,7 +615,8 @@ def _memory_index_rows(memory_dir: Path, *, max_sessions: int = 50,
             tombstones.append({
                 "id": str(item.get("id") or ""),
                 "ts": tomb_ts,
-                "text": str(item.get("text") or "")[:200],
+                "status": str(item.get("status") or "deleted")[:12],
+                "text": "",   # tombstone is redacted: never expose the original text
             })
         for entry in soft_deleted[-max_tombstones:]:
             try:
@@ -3420,7 +3422,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.1")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.2")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -9634,19 +9636,37 @@ class BioCorePlugin(Star):
         tomb_dir.mkdir(parents=True, exist_ok=True)
         tomb = tomb_dir / ("deleted_" + time.strftime("%Y%m%d_%H%M%S") + ".zip")
         try:
+            # tombstone 脱敏：只写路径 + sha256 + 字节数，绝不写原文/二进制内容。
+            entries = []
+            for scope in scopes:
+                for name in mapping.get(str(scope), (str(scope),)):
+                    target = DATA_DIR / name
+                    files = []
+                    if target.is_file():
+                        files = [target]
+                    elif target.is_dir():
+                        files = [p for p in target.rglob("*") if p.is_file()]
+                    for p in files:
+                        try:
+                            raw = p.read_bytes()
+                        except Exception:
+                            continue
+                        entries.append({
+                            "path": "data/" + str(p.relative_to(DATA_DIR)),
+                            "status": "已删除",
+                            "sha256": hashlib.sha256(raw).hexdigest(),
+                            "bytes": len(raw),
+                        })
             with zipfile.ZipFile(tomb, "w", zipfile.ZIP_DEFLATED) as z:
-                for scope in scopes:
-                    for name in mapping.get(str(scope), (str(scope),)):
-                        target = DATA_DIR / name
-                        if target.is_file():
-                            z.write(target, "data/" + name)
-                        elif target.is_dir():
-                            for p in target.rglob("*"):
-                                if p.is_file():
-                                    z.write(p, "data/" + str(p.relative_to(DATA_DIR)))
-            with zipfile.ZipFile(tomb, "r") as z:
-                if not z.namelist():
-                    tomb.unlink(missing_ok=True)
+                z.writestr("TOMBSTONE.json", json.dumps({
+                    "redacted": True,
+                    "created_ts": round(time.time(), 3),
+                    "entries": entries,
+                }, ensure_ascii=False, indent=1))
+                z.writestr("README.txt",
+                           "tombstone 已脱敏：不保留原文，只有路径/sha256/字节数，无法还原内容。")
+            if not entries:
+                tomb.unlink(missing_ok=True)
             for scope in scopes:
                 for name in mapping.get(str(scope), (str(scope),)):
                     target = DATA_DIR / name
@@ -9660,7 +9680,8 @@ class BioCorePlugin(Star):
             return {"status": "ok", "data": {
                 "scopes": list(scopes), "removed": removed,
                 "tombstone": str(tomb) if tomb.exists() else "",
-                "tombstone_is_backup": True}}
+                "tombstone_is_backup": False,
+                "tombstone_redacted": True}}
         except Exception as exc:
             return {"status": "error", "message": str(exc)[:180],
                     "data": {"tombstone": str(tomb) if tomb.exists() else ""}}
@@ -9834,7 +9855,11 @@ class BioCorePlugin(Star):
             if target is None:
                 return {"status": "error", "message": "memory entry not found", "data": {}}
             doc["tombstones"] = (doc.get("tombstones") if isinstance(doc.get("tombstones"), list) else [])[-100:]
-            doc["tombstones"].append({"id": entry_id, "ts": time.time(), "text": str(target.get("text", ""))[:200]})
+            doc["tombstones"].append({
+                "id": entry_id, "ts": round(time.time(), 3),
+                "status": "已删除",
+                "sha256": _sha256(str(target.get("text", "")))[:16],
+            })
             doc["entries"] = [e for e in entries if not (isinstance(e, dict) and self._memory_entry_id(e) == entry_id)]
             memory_meta.append_write_log(doc, op="DELETE", entry_id=entry_id,
                                          reason="dashboard", ts=time.time())
@@ -9897,6 +9922,10 @@ class BioCorePlugin(Star):
                              and str(item.get("id") or "") == entry_id), None)
                 if tomb is None:
                     return {"status": "error", "message": "memory entry not found", "data": {}}
+                if not str(tomb.get("text") or "").strip():
+                    return {"status": "error",
+                            "message": "tombstone 已脱敏，无法从 tombstone 恢复原文",
+                            "data": {}}
                 target = {"id": entry_id,
                           "text": str(tomb.get("text") or "")[:1200],
                           "role": "user", "ts": time.time(), "hits": 1,

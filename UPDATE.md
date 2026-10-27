@@ -1,8 +1,15 @@
 # BioCore 插件更新说明
 
-当前版本：以 `metadata.yaml` 为准（当前 **1.3.1**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：以 `metadata.yaml` 为准（当前 **1.3.2**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
 
-> 发版口径：本地 `1.3.1` 为发版目标；公开仓库/市场记录在正式发布前保持 `1.2.99`，发布时再同步。
+> 发版口径：`1.3.2` 为发版目标；市场记录已同步为 `1.3.2`，公开仓库与市场在发布时同步。
+
+## 1.3.2 升级提示
+
+- 新增可选 `text` 提示词模式（`bc_prompt_mode=text`，默认仍 `telemetry`）：数值转文字档位、保留标签、固定顺序（她此刻→对你→这一轮）≤150 字；含多情绪（1 主+1 次+强度）、事件联系、固定图例（≤2 行，只进 system 前缀）。
+- 物理删除 tombstone 已脱敏：只保留 `路径 + sha256 + 字节数 + 已删除`，删除后**不可从 tombstone 还原原文**（重要数据请先导出/备份）。
+- 增量 eval 基建：`scripts/run_evals.py --changed/--full`，按组+文件哈希只跑受影响 eval；`scripts/eval_render.py` 57 checks。
+- 默认行为与 1.3.1 一致（默认 `telemetry`）。回退：`bc_prompt_mode=telemetry`、`bc_text_legend_enabled=false`。
 
 ## 1.3.1 升级提示
 

@@ -2233,7 +2233,7 @@
       const raw=await _adminApiPost("page/data_delete",{token, scopes:["memory","events","insights","state","learning_state","archives","persona","self_model","image_cache"]});
       const payload=raw&&raw.data?raw.data:raw;
       if(!payload||payload.status==="error") throw new Error((payload&&payload.message)||"delete failed");
-      if(st) st.textContent="已删除："+String((payload.removed||[]).join(", "))+(payload.tombstone?"（tombstone 已保留）":"");
+      if(st) st.textContent="已删除："+String((payload.removed||[]).join(", "))+(payload.tombstone?"（tombstone 已脱敏，不可恢复原文）":"");
       await _focusReloadData();
     } catch(e) { if(st) st.textContent="删除失败："+String(e&&e.message||e); }
   }
@@ -2485,7 +2485,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.3.1";
+  const BIO_VERSION = "v1.3.2";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
