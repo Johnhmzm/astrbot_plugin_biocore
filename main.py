@@ -343,6 +343,11 @@ LLM_FUNCTION_ALIASES = {
 }
 
 # L-T01..L-T12 cooldowns (seconds); all functions stay OFF by default.
+LLM_BACKGROUND_KINDS = {"event_summary", "event_ranking", "memory_summary",
+                       "relationship_impression", "diary", "relationship_narrative",
+                       "persona_compile", "insight", "tom_probe", "pragmatics_hint",
+                       "humor_hint"}
+EMBED_DIM_MISMATCH = 0
 LLM_V2_COOLDOWNS = {
     "relationship_impression": 3600,
     "repair_hint": 900,
@@ -836,6 +841,16 @@ class BioCore:
         self.rumination_effect_enabled = False
         self.anchor_update_enabled = False
         self.identity_threat_stress_enabled = False
+        self.learning_state = None
+        self.relationship_dynamics = None
+        self.big5_effect = None
+        self.expression_chain_enabled = False
+        self.relationship_chain_enabled = False
+        self.gottman_enabled = False
+        self.big5_effect_enabled = False
+        self.learning_bandit_enabled = False
+        self.learning_relationship_enabled = False
+        self.learning_worthiness_enabled = False
         self._noise_seed = 0
         self._noise_accum = {}
         # Task-20: L1 learning state (deterministic, bounded, auditable).
@@ -3329,6 +3344,18 @@ class BioCore:
         if (getattr(self, "sycophancy_check_enabled", False)
                 and isinstance(getattr(self, "sycophancy_check", None), dict)):
             out["sycophancy_check"] = dict(self.sycophancy_check)
+        if any(getattr(self, k, False) for k in (
+                "learning_bandit_enabled", "learning_relationship_enabled",
+                "learning_worthiness_enabled")) and isinstance(
+                getattr(self, "learning_state", None), dict):
+            out["learning_state"] = dict(self.learning_state)
+        if (getattr(self, "relationship_chain_enabled", False)
+                or getattr(self, "gottman_enabled", False)) and isinstance(
+                getattr(self, "relationship_dynamics", None), dict):
+            out["relationship_dynamics"] = dict(self.relationship_dynamics)
+        if (getattr(self, "big5_effect_enabled", False)
+                and isinstance(getattr(self, "big5_effect", None), dict)):
+            out["big5_effect"] = dict(self.big5_effect)
         if (getattr(self, "injection_trace_enabled", False)
                 and isinstance(getattr(self, "injection_trace", None), dict)):
             out["injection_trace"] = dict(self.injection_trace)
@@ -3530,6 +3557,44 @@ class BioCorePlugin(Star):
             "cost_output_per_1m", 8.0, 0.0, 1000.0)
         self.cost_cache_per_1m = self._loop_cfg_float(
             "cost_cache_per_1m", 0.5, 0.0, 1000.0)
+        # ---- task-54/55 chains (all default OFF; no LLM) ----
+        self.expression_chain_enabled = bool(
+            self.config.get("expression_chain_enabled", False))
+        self.relationship_chain_enabled = bool(
+            self.config.get("relationship_chain_enabled", False))
+        self.gottman_enabled = bool(self.config.get("gottman_enabled", False))
+        self.big5_effect_enabled = bool(
+            self.config.get("big5_effect_enabled", False))
+        self.learning_bandit_enabled = bool(
+            self.config.get("learning_bandit_enabled", False))
+        self.learning_relationship_enabled = bool(
+            self.config.get("learning_relationship_enabled", False))
+        self.learning_worthiness_enabled = bool(
+            self.config.get("learning_worthiness_enabled", False))
+        # P0/P1 safety + external-call governance (default-safe).
+        self.data_admin_token = str(self.config.get("data_admin_token", "") or "")
+        self.embedding_sensitive_allowed = bool(
+            self.config.get("embedding_sensitive_allowed", False))
+        try:
+            self.bg_llm_daily_calls = max(0, min(100000, int(
+                self.config.get("bg_llm_daily_calls", 200) or 200)))
+        except Exception:
+            self.bg_llm_daily_calls = 200
+        self.bg_llm_daily_cost = self._loop_cfg_float(
+            "bg_llm_daily_cost", 2.0, 0.0, 1000.0)
+        try:
+            self.outbound_timeout_ms = max(2000, min(5000, int(
+                self.config.get("outbound_timeout_ms", 3000) or 3000)))
+        except Exception:
+            self.outbound_timeout_ms = 3000
+        try:
+            self.image_caption_timeout_ms = max(2000, min(20000, int(
+                self.config.get("image_caption_timeout_ms", 8000) or 8000)))
+        except Exception:
+            self.image_caption_timeout_ms = 8000
+        if not bool(getattr(self, "safety_enabled", False)):
+            logger.warning("[biocore] !!! safety_enabled=false: 公开部署请开启 "
+                           "safety_enabled（隐私/敏感记忆/危机边界依赖该开关）")
         # "省钱模式" is an OPTIONAL preset (default off); it only overrides
         # effective caps, never the accuracy-first defaults.
         if self.savings_mode:
@@ -3674,6 +3739,21 @@ class BioCorePlugin(Star):
         self._label_history = []
         self._thought_note_current = ""
         self._rerank_stats = {"calls": 0, "fallback": 0, "last_n": 0}
+        # task-54/55: per-session learning state (L1 read-only projection).
+        self._learning = {}
+        self._learning_pending = {}
+        self._learning_daily = {}
+        self._last_user_text = ""
+        # P0/P1 safety ops state (read-only; tokens are in-memory/one-shot).
+        self._download_tokens = {}
+        self._delete_tokens = {}
+        self._image_caption_timeouts = 0
+        self._bg_lock = None
+        self._bg_llm_usage = {"day": "", "calls": 0, "cost": 0.0}
+        self._embed_cache_sig = None
+        self._image_fail_count = 0
+        self._corrupt_backups = 0
+        self._migration_note = ""
         # LLM scope: user requirement is "LLM only for reply + summary".
         # When true, BioCore only calls the LLM for event/memory summaries;
         # persona compile / event ranking / reflection / image caption are
@@ -3876,7 +3956,24 @@ class BioCorePlugin(Star):
             if _strict is None:
                 return True
             return (not bool(_strict)) or str(kind or "") in ("reply", "summary")
-        return self._function_cfg(kind)["enabled"]
+        if not self._function_cfg(kind)["enabled"]:
+            return False
+        # P1-3: global background-LLM daily budget (calls + estimated cost).
+        if str(kind) in LLM_BACKGROUND_KINDS:
+            try:
+                _today = time.strftime("%Y-%m-%d")
+                if str(self._bg_llm_usage.get("day") or "") != _today:
+                    self._bg_llm_usage = {"day": _today, "calls": 0, "cost": 0.0}
+                _limit_calls = int(getattr(self, "bg_llm_daily_calls", 200) or 0)
+                _limit_cost = float(getattr(self, "bg_llm_daily_cost", 2.0) or 0.0)
+                if ((_limit_calls and int(self._bg_llm_usage.get("calls", 0)) >= _limit_calls)
+                        or (_limit_cost and float(self._bg_llm_usage.get("cost", 0.0)) >= _limit_cost)):
+                    self._bg_budget_blocked = True
+                    self._record_llm_telemetry(kind, "budget_blocked")
+                    return False
+            except Exception:
+                pass
+        return True
 
     def _provider_kind(self, provider) -> str:
         """Classify a provider by id/model/type (chat / vision / embedding / tts / rerank)."""
@@ -4181,6 +4278,234 @@ class BioCorePlugin(Star):
                 "threshold_bonus": 0.05 if active else 0.0,
                 "top_k_cap": 2 if active else 0}
 
+    # ---- task-54/55 expression / relationship / learning (default OFF) ----
+    def _learning_for(self, session) -> dict:
+        store = self._learning if isinstance(getattr(self, "_learning", None), dict) else {}
+        key = str(session or "default")[:80]
+        st = store.get(key) if isinstance(store.get(key), dict) else {}
+        day = time.strftime("%Y-%m-%d")
+        if str(st.get("day") or "") != day:
+            st = {"day": day, "cap_base": float(st.get("cap_base", 30.0) or 30.0),
+                  "cap_delta_today": 0.0, "rel_delta_today": 0.0,
+                  "k1": float(st.get("k1", 1.0) or 1.0),
+                  "k3": float(st.get("k3", 1.0) or 1.0),
+                  "repair_mult": float(st.get("repair_mult", 1.0) or 1.0),
+                  "worth_bias": float(st.get("worth_bias", 0.0) or 0.0),
+                  "updates": 0, "reward_baseline": float(st.get("reward_baseline", 0.0) or 0.0)}
+        for k, v in (("cap_base", 30.0), ("cap_delta_today", 0.0),
+                     ("rel_delta_today", 0.0), ("k1", 1.0), ("k3", 1.0),
+                     ("repair_mult", 1.0), ("worth_bias", 0.0),
+                     ("updates", 0), ("reward_baseline", 0.0)):
+            st.setdefault(k, v)
+        st["last_ts"] = time.time()
+        store[key] = st
+        # P2: bounded session map (oldest dropped, never unbounded growth).
+        if len(store) > 50:
+            _keep = sorted(store.items(), key=lambda kv: float(
+                (kv[1] or {}).get("last_ts", 0.0) or 0.0), reverse=True)[:50]
+            store = dict(_keep)
+        self._learning = store
+        return st
+
+    def _learning_publish(self, core, session) -> None:
+        if core is None:
+            return
+        if any(getattr(self, k, False) for k in (
+                "learning_bandit_enabled", "learning_relationship_enabled",
+                "learning_worthiness_enabled")):
+            core.learning_state = dict(self._learning_for(session))
+
+    @staticmethod
+    def _learning_reward(prev_len, user_len, same_emotion=False) -> float:
+        try:
+            pl = max(1, int(prev_len or 0))
+            ul = max(0, int(user_len or 0))
+        except Exception:
+            pl, ul = 1, 0
+        engagement = min(1.0, ul / float(pl))
+        emotion_cont = 1.0 if same_emotion else 0.0
+        awkward = 1.0 if ul < 4 else 0.0
+        shortened = 1.0 if ul < 0.5 * pl else 0.0
+        return round(0.25 * engagement + 0.25 * emotion_cont
+                     - 0.25 * awkward - 0.25 * shortened, 4)
+
+    def _learning_bandit_update(self, core, session, reward) -> dict:
+        st = self._learning_for(session)
+        eta = 0.02
+        baseline = float(st.get("reward_baseline", 0.0) or 0.0)
+        target = float(st.get("cap_base", 30.0) or 30.0) + eta * (float(reward) - baseline)
+        target = max(30.0, min(240.0, target))
+        allowed = max(0.0, 5.0 - abs(float(st.get("cap_delta_today", 0.0) or 0.0)))
+        step = max(-allowed, min(allowed, target - float(st.get("cap_base", 30.0))))
+        st["cap_base"] = round(float(st["cap_base"]) + step, 4)
+        st["cap_delta_today"] = round(float(st.get("cap_delta_today", 0.0)) + step, 4)
+        st["reward_baseline"] = round(0.9 * baseline + 0.1 * float(reward), 4)
+        st["updates"] = int(st.get("updates", 0)) + 1
+        self._learning_publish(core, session)
+        return dict(st)
+
+    def _learning_relationship_update(self, core, session, disclosure=0.0,
+                                      overreach=0.0) -> dict:
+        st = self._learning_for(session)
+        step = 0.01
+        d1 = step * (1.0 if disclosure else 0.0) - step * (1.0 if overreach else 0.0)
+        d3 = step * (1.0 if overreach else 0.0)
+        d_rep = 0.01 if disclosure else -0.01
+        # P1-3: hard daily cap ±0.03 across calls (all relationship coeffs).
+        used = float(st.get("rel_delta_today", 0.0) or 0.0)
+        remaining = 0.03 - abs(used)
+        total = d1 + d3 + d_rep
+        if abs(total) > remaining:
+            scale = remaining / abs(total) if total else 0.0
+            d1, d3, d_rep = d1 * scale, d3 * scale, d_rep * scale
+        st["k1"] = round(max(0.50, min(1.50, float(st["k1"]) + d1)), 4)
+        st["k3"] = round(max(0.50, min(1.50, float(st["k3"]) + d3)), 4)
+        st["repair_mult"] = round(max(0.80, min(1.20, float(st["repair_mult"]) + d_rep)), 4)
+        st["rel_delta_today"] = round(used + d1 + d3 + d_rep, 4)
+        st["updates"] = int(st.get("updates", 0)) + 1
+        self._learning_publish(core, session)
+        return dict(st)
+
+    def _learning_worthiness_step(self, core, session, important=True) -> dict:
+        st = self._learning_for(session)
+        delta = 0.01 if important else -0.01
+        st["worth_bias"] = round(max(-0.05, min(0.05,
+                                   float(st.get("worth_bias", 0.0)) + delta)), 4)
+        st["updates"] = int(st.get("updates", 0)) + 1
+        self._learning_publish(core, session)
+        return dict(st)
+
+    def _expression_hint(self, core, session, user_text="") -> str:
+        labels = getattr(core, "labels", {}) or {}
+        expr = str(labels.get("expression") or "normal")
+        elaboration = {"open": 1.0, "normal": 0.6, "short": 0.25}.get(expr, 0.6)
+        stress = float(getattr(core, "stress", 0.0) or 0.0)
+        st = self._learning_for(session)
+        cap_base = float(st.get("cap_base", 30.0)) if getattr(
+            self, "learning_bandit_enabled", False) else 30.0
+        if getattr(self, "big5_effect_enabled", False) and isinstance(
+                getattr(core, "big5_effect", None), dict):
+            elaboration += (float(core.big5_effect.get("openness", 0.5)) - 0.5) * 0.2
+        suppression = float(getattr(core, "suppression", 0.0) or 0.0)
+        if not suppression:
+            try:
+                _m = getattr(self, "_last_memory_meta", {}) or {}
+                suppression = 0.5 if _m.get("abstain") else 0.0
+            except Exception:
+                suppression = 0.0
+        cap_t = interpretation.expression_length_cap(
+            elaboration, suppression=suppression, stress=stress, cap_base=cap_base)
+        try:
+            rel = self._relationship_of(self._user_record_from_text(user_text))
+            state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+            distance = 1.0 - float(state.get("closeness", 0.5) or 0.5)
+            trust = float(state.get("trust", 0.5) or 0.5)
+        except Exception:
+            distance, trust = 0.5, 0.5
+        risk = interpretation.politeness_risk(distance, trust, stress)
+        strategy = interpretation.politeness_strategy(risk)
+        allowed = False
+        try:
+            meta = getattr(self, "_last_memory_meta", {}) or {}
+            if int(meta.get("count", 0) or 0) > 0:
+                mode = "explicit" if any(w in str(user_text) for w in (
+                    "记得", "上次", "之前", "你忘")) else "none"
+                allowed = interpretation.memory_citation_allowed(
+                    mode,
+                    continuity_seconds=float(meta.get("continuity_seconds", 0.0) or 0.0),
+                    open_loop=bool(getattr(core, "open_loops", None)),
+                    milestone=bool(meta.get("milestone")),
+                    confidence=float(meta.get("confidence", 0.0) or 0.0),
+                    already_cited=0)
+        except Exception:
+            allowed = False
+        return interpretation.expression_prompt_hint(
+            cap_t, strategy, "可引用1条" if allowed else "不点破记忆")
+
+    def _user_record_from_text(self, text):
+        try:
+            return self._relationship_of({})
+        except Exception:
+            return {}
+
+    def _big5_effect(self, core) -> dict:
+        prof = getattr(core, "profile", {}) if isinstance(
+            getattr(core, "profile", {}), dict) else {}
+        traits = prof.get("traits") if isinstance(prof.get("traits"), dict) else (
+            prof.get("big5") if isinstance(prof.get("big5"), dict) else {})
+        cue = max(0.0, min(1.0, (float(getattr(core, "a", 0.5) or 0.0)
+                                 + (0.5 + 0.5 * float(getattr(core, "v", 0.0) or 0.0))) / 2.0))
+        out = {}
+        for name in ("openness", "conscientiousness", "extraversion",
+                     "agreeableness", "neuroticism"):
+            try:
+                trait = float(traits.get(name, 0.5) or 0.5)
+            except Exception:
+                trait = 0.5
+            out[name] = interpretation.big5_trait_effect(trait, cue)
+        return out
+
+    def _apply_relationship_chain(self, event, core, user_text, reply) -> None:
+        try:
+            data = self._user_record(event)
+            rel = data.get("relationship") if isinstance(data, dict) else None
+            if not isinstance(rel, dict):
+                return
+            state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+            trust = float(state.get("trust", 0.5) or 0.5)
+            conflict = float(state.get("conflict", 0.5) or 0.5)
+            closeness = float(state.get("closeness", 0.5) or 0.5)
+            repair = float(state.get("repair", 0.0) or 0.0)
+            dyn = relationship_meta.attachment_dynamics(trust, conflict, closeness)
+            text = str(user_text or "")
+            disclosure = min(1.0, sum(1 for w in ("其实", "感觉", "最近", "压力",
+                                                  "难过", "开心", "害怕", "喜欢")
+                                      if w in text) / 3.0)
+            response = 1.0 if any(w in str(reply or "") for w in (
+                "我在", "听起来", "理解", "然后呢", "嗯，")) else 0.0
+            overreach = 1.0 if interpretation._OVERREACH_RE.search(str(reply or "")) else 0.0
+            st = self._learning_for(str(getattr(event, "unified_msg_origin", "default")))
+            k1 = float(st.get("k1", 1.0)) if getattr(
+                self, "learning_relationship_enabled", False) else 1.0
+            k3 = float(st.get("k3", 1.0)) if getattr(
+                self, "learning_relationship_enabled", False) else 1.0
+            d_close = relationship_meta.closeness_step(disclosure, response, overreach, k1, k3)
+            conflict_step = repair_act_step = 0.0
+            horsemen = {}
+            _writes = bool(getattr(self, "relationship_chain_enabled", False))
+            if _writes and getattr(self, "gottman_enabled", False):
+                horsemen, conflict_step = relationship_meta.gottman_conflict_step(text)
+                _, repair_act_step = relationship_meta.repair_step(reply, dyn["repair_speed"])
+                try:
+                    repair_act_step *= float(st.get("repair_mult", 1.0) or 1.0)
+                except Exception:
+                    pass
+            # P1-2: every per-round relationship delta is clipped to ±0.03.
+            d_close = max(-0.03, min(0.03, d_close))
+            conflict_step = max(-0.03, min(0.03, conflict_step))
+            repair_act_step = max(-0.03, min(0.03, repair_act_step))
+            closeness = max(0.0, min(1.0, closeness + d_close))
+            conflict = max(0.0, min(1.0, conflict + conflict_step))
+            repair = max(0.0, min(1.0, repair + repair_act_step))
+            if _writes:
+                rel["state"] = dict(state, trust=round(trust, 3), closeness=round(closeness, 3),
+                                    conflict=round(conflict, 3), repair=round(repair, 3),
+                                    predictability=state.get("predictability", 0.5))
+                data["relationship"] = rel
+                self._save_user_record(event, data)
+            core.relationship_dynamics = dict(dyn, d_closeness=d_close,
+                                              conflict_step=conflict_step,
+                                              repair_step=repair_act_step,
+                                              gottman=horsemen)
+            if getattr(self, "learning_relationship_enabled", False):
+                self._learning_relationship_update(
+                    core, str(getattr(event, "unified_msg_origin", "default")),
+                    disclosure=disclosure, overreach=overreach)
+            if getattr(self, "big5_effect_enabled", False):
+                core.big5_effect = self._big5_effect(core)
+        except Exception:
+            pass
+
     def _record_llm_telemetry(self, kind, outcome, detail="") -> None:
         """task-36: bounded read-only LLM failure/fallback telemetry."""
         if not getattr(self, "llm_telemetry_enabled", False):
@@ -4264,6 +4589,66 @@ class BioCorePlugin(Star):
         except Exception:
             pass
 
+    # ---- P2: persisted, concurrency-safe background LLM budget ----
+    def _bg_budget_file(self):
+        return DATA_DIR / "background_budget.json"
+
+    def _bg_budget_reserve(self, kind) -> bool:
+        import threading
+        import json as _json
+        lock = getattr(self, "_bg_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._bg_lock = lock
+        with lock:
+            path = self._bg_budget_file()
+            day = time.strftime("%Y-%m-%d")
+            state = {}
+            try:
+                if path.exists():
+                    state = _json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                state = {}
+            if str(state.get("day") or "") != day:
+                state = {"day": day, "calls": 0, "cost": 0.0}
+            limit_calls = int(getattr(self, "bg_llm_daily_calls", 200) or 0)
+            limit_cost = float(getattr(self, "bg_llm_daily_cost", 2.0) or 0.0)
+            if ((limit_calls and int(state.get("calls", 0)) >= limit_calls)
+                    or (limit_cost and float(state.get("cost", 0.0)) >= limit_cost)):
+                self._bg_llm_usage = state
+                return False
+            state["calls"] = int(state.get("calls", 0)) + 1
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_json.dumps(state), encoding="utf-8")
+            except Exception:
+                pass
+            self._bg_llm_usage = state
+            return True
+
+    def _bg_budget_add_cost(self, cost) -> None:
+        import threading
+        import json as _json
+        lock = getattr(self, "_bg_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._bg_lock = lock
+        try:
+            with lock:
+                path = self._bg_budget_file()
+                day = time.strftime("%Y-%m-%d")
+                state = {}
+                if path.exists():
+                    state = _json.loads(path.read_text(encoding="utf-8"))
+                if str(state.get("day") or "") != day:
+                    state = {"day": day, "calls": 0, "cost": 0.0}
+                state["cost"] = round(float(state.get("cost", 0.0)) + float(cost or 0.0), 6)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(_json.dumps(state), encoding="utf-8")
+                self._bg_llm_usage = state
+        except Exception:
+            pass
+
     async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None):
         if not self._llm_allowed(kind):
             return None
@@ -4276,16 +4661,37 @@ class BioCorePlugin(Star):
         if provider is None:
             self._record_llm_telemetry(kind, "no_provider")
             return None
+        if str(kind) in LLM_BACKGROUND_KINDS:
+            try:
+                if not self._bg_budget_reserve(kind):
+                    self._record_llm_telemetry(kind, "budget_blocked")
+                    return None
+            except Exception:
+                pass
         try:
+            _tmo = float(getattr(self, "outbound_timeout_ms", 3000)) / 1000.0
             if system_prompt:
-                resp = await provider.text_chat(prompt=prompt, system_prompt=system_prompt)
+                resp = await asyncio.wait_for(
+                    provider.text_chat(prompt=prompt, system_prompt=system_prompt),
+                    timeout=_tmo)
             else:
-                resp = await provider.text_chat(prompt=prompt)
+                resp = await asyncio.wait_for(
+                    provider.text_chat(prompt=prompt), timeout=_tmo)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
+            if str(kind) in LLM_BACKGROUND_KINDS:
+                try:
+                    _in = max(1, int(len(prompt) / 2.2))
+                    _out = max(1, int(len(raw) / 2.2))
+                    self._bg_budget_add_cost(self._cost_for(_in, _out))
+                except Exception:
+                    pass
             if not raw:
                 self._record_llm_telemetry(kind, "empty")
                 return None
             return parser(raw)
+        except asyncio.TimeoutError:
+            self._record_llm_telemetry(kind, "timeout")
+            return None
         except Exception as exc:
             logger.warning("[biocore] llm v2 call/paser failed (%s): %s", kind, exc)
             self._record_llm_telemetry(kind, "call_error", str(exc))
@@ -4746,6 +5152,19 @@ class BioCorePlugin(Star):
             core.anchor_weight = float(getattr(self, "anchor_weight", 0.25) or 0.25)
             core.sycophancy_check_enabled = bool(
                 getattr(self, "sycophancy_check_enabled", True))
+            core.expression_chain_enabled = bool(
+                getattr(self, "expression_chain_enabled", False))
+            core.relationship_chain_enabled = bool(
+                getattr(self, "relationship_chain_enabled", False))
+            core.gottman_enabled = bool(getattr(self, "gottman_enabled", False))
+            core.big5_effect_enabled = bool(
+                getattr(self, "big5_effect_enabled", False))
+            core.learning_bandit_enabled = bool(
+                getattr(self, "learning_bandit_enabled", False))
+            core.learning_relationship_enabled = bool(
+                getattr(self, "learning_relationship_enabled", False))
+            core.learning_worthiness_enabled = bool(
+                getattr(self, "learning_worthiness_enabled", False))
             core.bio_feedback_loops = bool(
                 getattr(self, "bio_feedback_loops", False))
             core.bio_learning = bool(getattr(self, "bio_learning", True))
@@ -5474,13 +5893,15 @@ class BioCorePlugin(Star):
                                                     stderr=subprocess.DEVNULL,
                                                     creationflags=flags)
                 logger.info("[biocore] image service starting pid=%s", self._image_proc.pid)
-                for _ in range(60):
+                # P0-4: never block the reply path >5s; background start continues.
+                for _ in range(20):
                     if await self._image_health_ok():
                         self._image_last_used = time.time()
                         self._image_idle_watch()
                         return True
-                    await asyncio.sleep(1)
-                logger.warning("[biocore] image service did not become ready")
+                    await asyncio.sleep(0.25)
+                self._image_fail_count = int(getattr(self, "_image_fail_count", 0)) + 1
+                logger.warning("[biocore] image service did not become ready (5s)")
                 await self._stop_image_service()
                 return False
             except Exception as exc:
@@ -6153,6 +6574,76 @@ class BioCorePlugin(Star):
             record, core, relationship, **kw)
         return worth
 
+    # ---- task-59: reevaluate evidence guard (insufficient / protected) ----
+    _REEVALUATE_PROTECT_CUES = ("表白", "喜欢", "爱上", "承诺", "发誓", "誓言",
+                                "纪念日", "求婚", "身份", "我是谁")
+    _REEVALUATE_TOOL_CUES = ("翻译", "查询", "天气", "现在几点", "计算", "命令",
+                             "帮我查", "搜索", "提醒我", "定时")
+
+    @staticmethod
+    def _reevaluate_text(record) -> str:
+        rec = record if isinstance(record, dict) else {}
+        return " ".join(str(rec.get(k) or "") for k in
+                        ("title", "event", "big_summary", "small_summary")).strip()
+
+    def _reevaluate_tool_cue(self, record) -> bool:
+        rec = record if isinstance(record, dict) else {}
+        text = self._reevaluate_text(rec)
+        return any(cue in text for cue in self._REEVALUATE_TOOL_CUES)
+
+    def _reevaluate_protection_reason(self, record) -> str:
+        """Relationship/self/milestone events must not vanish on low W.
+
+        P2: a tool-Q&A whitelist wins over the weaker keyword list (a weather
+        query must not be "protected" just because it contains a common word);
+        explicit relationship/self markers still always protect.
+        """
+        rec = record if isinstance(record, dict) else {}
+        text = self._reevaluate_text(rec)
+        markers = (rec.get("relationship_event") or rec.get("self_defining")
+                   or rec.get("milestone") or rec.get("identity_relevant"))
+        kind = str(rec.get("event_type") or rec.get("type") or "").lower()
+        if markers or kind in ("relationship", "self", "milestone", "identity"):
+            return "type_marker"
+        if self._reevaluate_tool_cue(rec):
+            return ""
+        if any(cue in text for cue in self._REEVALUATE_PROTECT_CUES):
+            return "keyword"
+        return ""
+
+    def _reevaluate_insufficient_reason(self, record, inputs, source) -> str:
+        """Do not rewrite when evidence is absent/degenerate (or test data)."""
+        rec = record if isinstance(record, dict) else {}
+        text = self._reevaluate_text(rec)
+        if not text:
+            return "no_text"
+        sess = str(rec.get("session") or "").lower()
+        if "test" in sess or "测试" in text:
+            return "test_event"
+        if source == "recomputed":
+            return "missing_inputs"
+        if not isinstance(inputs, dict):
+            return "missing_fields"
+        required = ("I", "S", "C", "G", "PE", "R", "P", "N")
+        if not all(k in inputs for k in required):
+            return "missing_fields"
+        try:
+            strong = sum(1 for k in ("I", "S", "G", "PE", "R")
+                         if float(inputs.get(k) or 0.0) >= 0.05)
+        except Exception:
+            return "bad_inputs"
+        if strong == 0:
+            # All evidence dimensions are ~zero: this is missing evidence, not
+            # a genuine "not worth remembering" judgement.
+            return "degenerate_inputs"
+        return ""
+
+    def _reevaluate_tool_only(self, record) -> bool:
+        rec = record if isinstance(rec := record, dict) else {}
+        if self._reevaluate_protection_reason(rec):
+            return False
+        return self._reevaluate_tool_cue(rec)
+
     def _reevaluate_worthiness(self, record, core=None):
         """task-34: recompute worthiness from stored inputs/parts + core proxies.
 
@@ -6232,18 +6723,43 @@ class BioCorePlugin(Star):
         data = body if isinstance(body, dict) else {}
         if action not in MEMORY_POINT_FEEDBACK_ACTIONS:
             return False
+        if action in ("important", "unimportant") and getattr(
+                self, "learning_worthiness_enabled", False):
+            try:
+                self._learning_worthiness_step(
+                    None, str(record.get("session") or record.get("user_id") or "default"),
+                    action == "important")
+            except Exception:
+                pass
         if action == "reevaluate":
             # Handled by _apply_memory_point_reevaluate (needs the verdict).
             return False
         if action == "restore":
-            prev = record.get("feedback_prev")
-            if not isinstance(prev, dict):
+            # Prefer the most recent pre-change snapshot: reevaluate_prev (with
+            # its ts) over a manual feedback_prev; restore supports both.
+            _cands = []
+            _hist = record.get("reevaluate_history")
+            if isinstance(_hist, list) and _hist and isinstance(_hist[0], dict)                     and isinstance(_hist[0].get("snapshot"), dict):
+                _cands.append((float(_hist[0].get("ts") or 0.0),
+                               _hist[0]["snapshot"]))
+            _re = record.get("reevaluate_prev")
+            if isinstance(_re, dict) and isinstance(_re.get("snapshot"), dict):
+                _cands.append((float(_re.get("ts") or 0.0), _re["snapshot"]))
+            _fb = record.get("feedback_prev")
+            if isinstance(_fb, dict):
+                _cands.append((float(_fb.get("ts") or 0.0), _fb))
+            if not _cands:
                 return False
+            prev = max(_cands, key=lambda item: item[0])[1]
             for key in ("importance", "user_marked", "title", "small_summary",
                         "memory_point", "worthiness"):
                 if key in prev:
                     record[key] = prev[key]
             record.pop("downgraded_by_reevaluate", None)
+            if isinstance(_hist, list) and _hist and isinstance(_hist[0], dict):
+                record["reevaluate_history"] = _hist[1:]
+            else:
+                record.pop("reevaluate_prev", None)
             record["reevaluate_restored_ts"] = round(time.time(), 3)
             record["last_feedback_action"] = "restore"
             record["feedback_ts"] = round(time.time(), 3)
@@ -6292,10 +6808,21 @@ class BioCorePlugin(Star):
         if not isinstance(worth, dict) or not isinstance(verdict, dict):
             return False
         before = self._memory_point_snapshot(record)
-        if not isinstance(record.get("feedback_prev"), dict):
-            record["feedback_prev"] = before
-        decision = str(verdict.get("decision") or worth.get("decision") or "archive_only")
         now = round(time.time(), 3)
+        # Always keep a dedicated reevaluate snapshot; never overwrite a manual
+        # feedback_prev (that one belongs to the user's earlier edit).
+        # P1-7: keep the FIRST reevaluate snapshot; append newest to history.
+        if not isinstance(record.get("reevaluate_prev"), dict):
+            record["reevaluate_prev"] = {"snapshot": dict(before), "ts": now,
+                                         "source": "reevaluate"}
+        _hist = record.get("reevaluate_history")
+        _hist = _hist if isinstance(_hist, list) else []
+        record["reevaluate_history"] = (
+            [{"snapshot": dict(before), "ts": now}]
+            + [x for x in _hist if isinstance(x, dict)])[:5]
+        if not isinstance(record.get("feedback_prev"), dict):
+            record["feedback_prev"] = dict(before)
+        decision = str(verdict.get("decision") or worth.get("decision") or "archive_only")
         record["worthiness"] = dict(worth)
         if isinstance(inputs, dict):
             record["worthiness_inputs"] = dict(inputs)
@@ -6340,7 +6867,17 @@ class BioCorePlugin(Star):
     def _memory_point_public(self, record) -> dict:
         rec = record if isinstance(record, dict) else {}
         worth = rec.get("worthiness") if isinstance(rec.get("worthiness"), dict) else None
+        _re_prev = rec.get("reevaluate_prev")
         return {"event_id": str(rec.get("id") or ""),
+                "downgraded_by_reevaluate": bool(
+                    rec.get("downgraded_by_reevaluate", False)),
+                "can_restore": bool(isinstance(rec.get("feedback_prev"), dict)
+                                    or isinstance(_re_prev, dict)
+                                    or (isinstance(rec.get("reevaluate_history"), list)
+                                        and bool(rec.get("reevaluate_history")))),
+                "reevaluate_verdict": (dict(rec.get("reevaluate_verdict"))
+                                       if isinstance(rec.get("reevaluate_verdict"), dict)
+                                       else None),
                 "title": str(rec.get("title") or "")[:80],
                 "small_summary": str(rec.get("small_summary") or "")[:80],
                 "big_summary": str(rec.get("big_summary") or "")[:EVENT_SUMMARY_HARD_MAX],
@@ -6376,6 +6913,28 @@ class BioCorePlugin(Star):
         if not isinstance(worth, dict):
             return {"status": "error",
                     "message": "判定关闭（memory_worthiness_enabled=false），未修改记录"}
+        # P0: insufficient evidence or protected/test event => never rewrite.
+        _insufficient = self._reevaluate_insufficient_reason(record, worth, source)
+        if _insufficient:
+            verdict = {"decision": "insufficient_data",
+                       "W": worth.get("W", 0.0), "W_her": worth.get("W_her", 0.0),
+                       "K": worth.get("K", 0.0), "source": source,
+                       "reason": _insufficient,
+                       "reasons": [_insufficient]}
+            return {"status": "ok",
+                    "data": {"record": self._memory_point_public(record),
+                             "verdict": verdict, "changed": False,
+                             "message": "证据不足，未修改"}}
+        _protect = self._reevaluate_protection_reason(record)
+        if _protect and str(worth.get("decision") or "") in ("archive_only", "skip")                 and not self._reevaluate_tool_only(record):
+            verdict = {"decision": "retained_protected",
+                       "W": worth.get("W", 0.0), "W_her": worth.get("W_her", 0.0),
+                       "K": worth.get("K", 0.0), "source": source,
+                       "reason": _protect, "reasons": [_protect]}
+            return {"status": "ok",
+                    "data": {"record": self._memory_point_public(record),
+                             "verdict": verdict, "changed": False,
+                             "message": "关系/自我相关事件，已保留（待人工确认）"}}
         verdict = {"decision": str(worth.get("decision") or "archive_only"),
                    "W": worth.get("W", 0.0),
                    "W_her": worth.get("W_her", 0.0),
@@ -6430,7 +6989,9 @@ class BioCorePlugin(Star):
                 return {"status": "error", "message": "标题不能超过 80 字"}
             if len(small) > 80:
                 return {"status": "error", "message": "小标签不能超过 80 字"}
-        if action == "restore" and not isinstance(record.get("feedback_prev"), dict):
+        if (action == "restore"
+                and not isinstance(record.get("feedback_prev"), dict)
+                and not isinstance(record.get("reevaluate_prev"), dict)):
             return {"status": "error", "message": "没有可恢复的反馈前版本"}
         try:
             changed = self._rewrite_jsonl_atomic(
@@ -8315,9 +8876,18 @@ class BioCorePlugin(Star):
                 if provider is not None:
                     for ref in missing[:3]:
                         try:
-                            resp = await provider.text_chat(prompt=prompt, image_urls=[ref])
+                            _ctmo = max(2000, min(20000, int(
+                                getattr(self, "image_caption_timeout_ms", 8000) or 8000))) / 1000.0
+                            resp = await asyncio.wait_for(
+                                provider.text_chat(prompt=prompt, image_urls=[ref]),
+                                timeout=_ctmo)
                             caption = interpretation.parse_image_caption(
                                 str(getattr(resp, "completion_text", "") or ""))
+                        except asyncio.TimeoutError:
+                            self._image_caption_timeouts = int(
+                                getattr(self, "_image_caption_timeouts", 0) or 0) + 1
+                            logger.warning("[biocore] image caption timeout (%sms)", _ctmo * 1000)
+                            caption = ""
                         except Exception as exc:
                             logger.warning("[biocore] image caption failed: %s", exc)
                             caption = ""
@@ -8641,8 +9211,17 @@ class BioCorePlugin(Star):
                          "BioCore model list")
                 register("/astrbot_plugin_biocore/page/kb_config", self.page_kb_config, ["POST"],
                          "BioCore knowledge base config")
-                register("/astrbot_plugin_biocore/page/backup", self.page_backup, ["GET"],
-                         "BioCore core backup")
+                register("/astrbot_plugin_biocore/page/backup", self.page_backup, ["POST"],
+                         "BioCore safe backup (POST + confirm)")
+                register("/astrbot_plugin_biocore/page/download/<token>",
+                         self.page_download, ["GET"], "BioCore one-time backup download")
+                register("/astrbot_plugin_biocore/page/data_export",
+                         self.page_data_export, ["POST"], "BioCore JSON export")
+                register("/astrbot_plugin_biocore/page/data_delete_token",
+                         self.page_data_delete_token, ["POST"],
+                         "BioCore one-time delete confirmation token")
+                register("/astrbot_plugin_biocore/page/data_delete",
+                         self.page_data_delete, ["POST"], "BioCore hard delete")
                 register("/astrbot_plugin_biocore/page/restore", self.page_restore, ["POST"],
                          "BioCore core restore")
                 register("/astrbot_plugin_biocore/page/insight", self.page_insight, ["POST"],
@@ -8690,38 +9269,222 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] kb list failed: %s", exc)
             return []
 
-    async def page_backup(self):
-        import datetime
-        buf = io.BytesIO()
+    # ---- P0-1/P0-2: safe backup / export / hard delete ----
+    def _page_is_local_admin(self) -> bool:
+        """Local request or explicit admin token (X-BioCore-Admin)."""
         try:
-            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-                root = PLUGIN_DIR
-                for name in ("main.py", "metadata.yaml", "README.md", "UPDATE.md",
-                             "_conf_schema.json", "preview.png"):
-                    f = root / name
-                    if f.is_file():
-                        z.write(f, "astrbot_plugin_biocore_standalone/" + name)
-                pages = root / "pages"
-                if pages.is_dir():
-                    for f in pages.rglob("*"):
-                        if f.is_file() and "__pycache__" not in f.parts:
-                            z.write(f, "astrbot_plugin_biocore_standalone/pages/" + str(f.relative_to(pages)))
-                for f in DATA_DIR.rglob("*"):
-                    if f.is_file() and "__pycache__" not in f.parts:
-                        z.write(f, "data/" + str(f.relative_to(DATA_DIR)))
-                info = ("BioCore core backup\n"
-                        "Contains plugin code + data/ (persona, memory, states, API config).\n"
-                        "Do not share: api_config.json may contain API keys.\n")
-                z.writestr("BACKUP_INFO.txt", info)
+            from quart import request
+            remote = str(request.remote_addr or "")
+            if remote in ("127.0.0.1", "::1", "localhost", ""):
+                return True
+            token = str(getattr(self, "data_admin_token", "") or "")
+            return bool(token and request.headers.get("X-BioCore-Admin") == token)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_secret_name(name) -> bool:
+        low = str(name or "").lower()
+        return any(x in low for x in ("api_config", ".env", "secret", "credential",
+                                      "token.json", "private.key", "id_rsa"))
+
+    def _redact_secrets(self, obj):
+        if isinstance(obj, dict):
+            out = {}
+            for k, v in obj.items():
+                if any(x in str(k).lower() for x in ("api_key", "apikey", "token",
+                                                     "secret", "password", "api_secret")):
+                    out[k] = "***"
+                else:
+                    out[k] = self._redact_secrets(v)
+            return out
+        if isinstance(obj, list):
+            return [self._redact_secrets(v) for v in obj]
+        return obj
+
+    def _safe_backup_zip(self) -> bytes:
+        """Backup WITHOUT api_config/keys; JSON key fields redacted."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            root = PLUGIN_DIR
+            for name in ("main.py", "metadata.yaml", "README.md", "UPDATE.md",
+                         "_conf_schema.json", "preview.png"):
+                path = root / name
+                if path.is_file() and not self._is_secret_name(name):
+                    z.write(path, "astrbot_plugin_biocore_standalone/" + name)
+            pages = root / "pages"
+            if pages.is_dir():
+                for path in pages.rglob("*"):
+                    if path.is_file() and "__pycache__" not in path.parts                             and not self._is_secret_name(path.name):
+                        z.write(path, "astrbot_plugin_biocore_standalone/pages/" +
+                                str(path.relative_to(pages)))
+            for path in DATA_DIR.rglob("*"):
+                if not path.is_file() or "__pycache__" in path.parts:
+                    continue
+                if self._is_secret_name(path.name):
+                    continue
+                rel = "data/" + str(path.relative_to(DATA_DIR))
+                if path.suffix.lower() == ".json":
+                    try:
+                        data = self._redact_secrets(json.loads(path.read_text(encoding="utf-8")))
+                        z.writestr(rel, json.dumps(data, ensure_ascii=False, indent=1))
+                        continue
+                    except Exception:
+                        pass
+                z.write(path, rel)
+            z.writestr("BACKUP_INFO.txt",
+                       "BioCore safe backup\n"
+                       "api_config.json / secret / token files are EXCLUDED; JSON key "
+                       "fields are redacted to ***.\n")
+        return buf.getvalue()
+
+    async def page_backup(self):
+        """P0-1: POST + explicit confirm; returns a one-time download token."""
+        from quart import request
+        if not self._page_is_local_admin():
+            return {"status": "error", "message": "仅本地管理端可备份"}
+        body = await request.get_json(silent=True) or {}
+        if not body.get("confirm"):
+            return {"status": "error",
+                    "message": "需要二次确认：备份含记忆/状态，但不含 API Key"}
+        try:
+            data = self._safe_backup_zip()
         except Exception as exc:
-            logger.warning("[biocore] backup failed: %s", exc)
-            return {"status": "error", "message": str(exc)}
-        stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+            return {"status": "error", "message": str(exc)[:180]}
+        stamp = time.strftime("%Y%m%d_%H%M")
+        filename = "biocore_safe_" + stamp + ".zip"
+        token = _sha256(str(time.time()) + "|" + str(len(data)) + "|" + filename)[:24]
+        store = getattr(self, "_download_tokens", {}) or {}
+        store[token] = (data, filename, time.time())
+        self._download_tokens = dict(list(store.items())[-5:])
         return {"status": "ok", "data": {
-            "filename": "biocore_core_" + stamp + ".zip",
-            "mime": "application/zip",
-            "base64": base64.b64encode(buf.getvalue()).decode("ascii"),
-        }}
+            "token": token, "filename": filename, "size": len(data),
+            "download_url": "/astrbot_plugin_biocore/page/download/" + token}}
+
+    async def page_download(self, token: str):
+        try:
+            from quart import Response
+        except Exception:
+            Response = None
+        item = (getattr(self, "_download_tokens", {}) or {}).pop(token, None)
+        if not item:
+            return {"status": "error", "message": "token invalid or already used"}
+        data, filename, ts = item
+        if time.time() - float(ts or 0) > 300:
+            return {"status": "error", "message": "token expired"}
+        if Response is None:
+            return {"status": "error", "message": "server cannot stream"}
+        return Response(data, mimetype="application/zip", headers={
+            "Content-Disposition": "attachment; filename=" + filename,
+            "Cache-Control": "no-store"})
+
+    def _data_export_payload(self) -> dict:
+        out = {"exported_at": time.time(), "plugin": "astrbot_plugin_biocore",
+               "data": {}}
+        for path in DATA_DIR.rglob("*"):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            if self._is_secret_name(path.name):
+                continue
+            rel = str(path.relative_to(DATA_DIR))
+            if path.suffix.lower() == ".json":
+                try:
+                    out["data"][rel] = self._redact_secrets(
+                        json.loads(path.read_text(encoding="utf-8")))
+                    continue
+                except Exception:
+                    pass
+            out["data"][rel] = "<binary>"
+        return out
+
+    async def page_data_export(self):
+        from quart import request
+        if not self._page_is_local_admin():
+            return {"status": "error", "message": "仅本地管理端可导出"}
+        body = await request.get_json(silent=True) or {}
+        if not body.get("confirm"):
+            return {"status": "error", "message": "需要二次确认（导出含个人记忆）"}
+        return {"status": "ok", "data": self._data_export_payload()}
+
+    async def page_data_delete_token(self):
+        """P2: one-time token for hard-delete confirmation (not a boolean)."""
+        if not self._page_is_local_admin():
+            return {"status": "error", "message": "仅本地管理端可删除"}
+        token = _sha256(str(time.time()) + "|" + str(id(self)))[:24]
+        store = getattr(self, "_delete_tokens", {}) or {}
+        store[token] = time.time()
+        self._delete_tokens = dict(list(store.items())[-5:])
+        return {"status": "ok", "data": {"token": token, "expires_in": 300}}
+
+    def _delete_data_scopes(self, scopes):
+        """P1-4: hard-delete the requested scopes; tombstone zip first."""
+        import shutil
+        scopes = scopes or ["memory", "events", "insights", "state",
+                            "learning_state", "archives", "persona",
+                            "self_model", "image_cache"]
+        if isinstance(scopes, str):
+            scopes = [scopes]
+        mapping = {"memory": ("memory", "users", "sessions"),
+                   "events": ("events", "event_archive"),
+                   "insights": ("insights", "insight_archive"),
+                   "state": ("state", "states"),
+                   "learning_state": ("learning", "learning_state"),
+                   "archives": ("archives",),
+                   "persona": ("persona_profile.json",),
+                   "self_model": ("self_model.json",),
+                   "image_cache": ("image_cache.json",)}
+        removed = []
+        tomb_dir = DATA_DIR.parent / "tombstones"
+        tomb_dir.mkdir(parents=True, exist_ok=True)
+        tomb = tomb_dir / ("deleted_" + time.strftime("%Y%m%d_%H%M%S") + ".zip")
+        try:
+            with zipfile.ZipFile(tomb, "w", zipfile.ZIP_DEFLATED) as z:
+                for scope in scopes:
+                    for name in mapping.get(str(scope), (str(scope),)):
+                        target = DATA_DIR / name
+                        if target.is_file():
+                            z.write(target, "data/" + name)
+                        elif target.is_dir():
+                            for p in target.rglob("*"):
+                                if p.is_file():
+                                    z.write(p, "data/" + str(p.relative_to(DATA_DIR)))
+            with zipfile.ZipFile(tomb, "r") as z:
+                if not z.namelist():
+                    tomb.unlink(missing_ok=True)
+            for scope in scopes:
+                for name in mapping.get(str(scope), (str(scope),)):
+                    target = DATA_DIR / name
+                    if not target.exists():
+                        continue
+                    if target.is_dir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    else:
+                        target.unlink(missing_ok=True)
+                    removed.append(name)
+            return {"status": "ok", "data": {
+                "scopes": list(scopes), "removed": removed,
+                "tombstone": str(tomb) if tomb.exists() else "",
+                "tombstone_is_backup": True}}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)[:180],
+                    "data": {"tombstone": str(tomb) if tomb.exists() else ""}}
+        return {"status": "error", "message": "delete failed"}
+
+    async def page_data_delete(self):
+        from quart import request
+        if not self._page_is_local_admin():
+            return {"status": "error", "message": "仅本地管理端可删除"}
+        body = await request.get_json(silent=True) or {}
+        token = str(body.get("token") or "")
+        store = getattr(self, "_delete_tokens", {}) or {}
+        issued = store.get(token)
+        if not token or issued is None:
+            return {"status": "error",
+                    "message": "需要一次性删除确认 token（先调用 data_delete_token）"}
+        if time.time() - float(issued or 0) > 300:
+            return {"status": "error", "message": "删除 token 已过期"}
+        self._delete_tokens.pop(token, None)
+        return self._delete_data_scopes(scopes)
 
     async def page_restore(self):
         from quart import request
@@ -8754,6 +9517,9 @@ class BioCorePlugin(Star):
         try:
             for name in names:
                 rel = name[len("data/"):]
+                if self._is_secret_name(rel.split("/")[-1]) or                         rel.lower().endswith("api_config.json"):
+                    # P2: never overwrite the live API keys from a backup.
+                    continue
                 parts = [x for x in rel.split("/") if x not in ("", ".", "..")]
                 if not parts:
                     continue
@@ -9163,8 +9929,50 @@ class BioCorePlugin(Star):
                            "output_per_1m": float(getattr(self, "cost_output_per_1m", 8.0) or 0.0),
                            "cache_per_1m": float(getattr(self, "cost_cache_per_1m", 0.5) or 0.0)},
                 "savings_mode": bool(getattr(self, "savings_mode", False))}
+        if any(getattr(self, k, False) for k in (
+                "learning_bandit_enabled", "learning_relationship_enabled",
+                "learning_worthiness_enabled")):
+            _data["learning_state"] = {str(k)[:80]: dict(v) for k, v in
+                                         (getattr(self, "_learning", {}) or {}).items()
+                                         if isinstance(v, dict)}
+        if (getattr(self, "relationship_chain_enabled", False)
+                or getattr(self, "gottman_enabled", False)):
+            _rd = getattr(cores[0], "relationship_dynamics", None) if cores else None
+            if isinstance(_rd, dict):
+                _data["relationship_dynamics"] = dict(_rd)
+        if (getattr(self, "big5_effect_enabled", False) and cores
+                and isinstance(getattr(cores[0], "big5_effect", None), dict)):
+            _data["big5_effect"] = dict(cores[0].big5_effect)
         if getattr(self, "rerank_enabled", False):
             _data["rerank_stats"] = dict(getattr(self, "_rerank_stats", {}) or {})
+        # P0-3 / P1-7: security + migration notices (read-only banners).
+        if not getattr(self, "safety_enabled", False):
+            _data["security_notice"] = {
+                "safety_enabled": False,
+                "message": "safety_enabled=false：公开部署请开启 safety_enabled；"
+                           "敏感记忆/图片/危机边界依赖该开关。"}
+        try:
+            _marker = DATA_DIR / "migration_seen.json"
+            if not _marker.exists():
+                self._migration_note = (
+                    "1.3.1 默认变化：memory_worthiness / memory_pin / "
+                    "bc_budget(浪费治理) / F1 trace 默认开启；可在插件配置逐项关闭。")
+                _marker.parent.mkdir(parents=True, exist_ok=True)
+                _marker.write_text(json.dumps({"seen": True, "ts": time.time()}),
+                                   encoding="utf-8")
+        except Exception:
+            pass
+        if self._migration_note:
+            _data["migration_note"] = self._migration_note
+        _bg = getattr(self, "_bg_llm_usage", {}) or {}
+        _data["background_budget"] = {
+            "day": str(_bg.get("day") or ""),
+            "calls": int(_bg.get("calls", 0) or 0),
+            "cost": round(float(_bg.get("cost", 0.0) or 0.0), 6),
+            "daily_calls": int(getattr(self, "bg_llm_daily_calls", 200) or 200),
+            "daily_cost": float(getattr(self, "bg_llm_daily_cost", 2.0) or 2.0)}
+        if int(getattr(self, "_corrupt_backups", 0) or 0):
+            _data["corrupt_backups"] = int(self._corrupt_backups)
         return {"status": "ok", "data": _data}
 
     async def page_self_model(self):
@@ -9415,7 +10223,9 @@ class BioCorePlugin(Star):
         Privacy filtering belongs to the safety switch (default OFF), so the
         1.2.98 behaviour stays a bitwise no-op unless ``safety_enabled`` is on.
         """
-        return bool(sensitive) and bool(getattr(self, "safety_enabled", False))
+        # P1-2: sensitive text is withheld from external embeddings by default.
+        return bool(sensitive) and not bool(
+            getattr(self, "embedding_sensitive_allowed", False))
 
     async def _embed_text_guarded(self, text: str, sensitive: bool = False):
         """Embedding for already-stored memory/event text (M1 privacy gate).
@@ -9461,8 +10271,14 @@ class BioCorePlugin(Star):
         _target = _provs[0] if _provs else None
         if _target is None:
             return None
+        if getattr(self, "safety_enabled", False):
+            # P1-2: safety on => no rerank payload leaves the process.
+            return None
         try:
-            _results = await _target.rerank(query, [str(d) for d in documents], top_n=len(documents))
+            _results = await asyncio.wait_for(
+                _target.rerank(query, [str(d) for d in documents],
+                               top_n=len(documents)),
+                timeout=float(getattr(self, "outbound_timeout_ms", 3000)) / 1000.0)
             out = {}
             for _r in (_results or []):
                 try:
@@ -9480,6 +10296,14 @@ class BioCorePlugin(Star):
         text = (text or "").strip()
         if not text or sensitive:
             return None
+        # P1-5: direct callers often omit the sensitive flag; classify at the
+        # single entry point so sensitive payloads never leave by default.
+        if not bool(getattr(self, "embedding_sensitive_allowed", False)):
+            try:
+                if memory_meta.classify_sensitivity(text).get("sensitive"):
+                    return None
+            except Exception:
+                pass
         conf = self._embedding_runtime_config()
         if not conf:
             return None
@@ -9488,14 +10312,20 @@ class BioCorePlugin(Star):
         # truncation constant for both), so two texts that only differ after the
         # truncation point can never share a stale vector.
         payload_text = text[:EMBED_TEXT_MAX_CHARS]
-        cache_key = (model, _sha256(payload_text))
+        # P1-1: cache key includes base_url + model + configured dimension.
+        base = str(conf.get("base_url") or "").rstrip("/")
+        if base.endswith("/embeddings"):
+            base = base[:-11]
+        _dim_hint = str(conf.get("dimensions") or conf.get("dim") or "")
+        _sig = (base + "|" + model + "|" + _dim_hint)
+        if getattr(self, "_embed_cache_sig", None) != _sig:
+            EMBED_CACHE.clear()
+            self._embed_cache_sig = _sig
+        cache_key = (base, model, _dim_hint, _sha256(payload_text))
         _cache_on = bool(getattr(self, "embedding_cache_enabled", True))
         if _cache_on and cache_key in EMBED_CACHE:
             EMBED_CACHE.move_to_end(cache_key)
             return EMBED_CACHE[cache_key]
-        base = str(conf.get("base_url") or "").rstrip("/")
-        if base.endswith("/embeddings"):
-            base = base[:-11]
         url = base + "/embeddings"
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if conf.get("api_key"):
@@ -9516,6 +10346,17 @@ class BioCorePlugin(Star):
             vec = data["data"][0]["embedding"]
             if not isinstance(vec, list) or not vec:
                 return None
+            # P2: dimension mismatch is REJECTED (not logged-and-used).
+            try:
+                _expected_dim = int(conf.get("dimensions") or conf.get("dim") or 0)
+            except Exception:
+                _expected_dim = 0
+            if _expected_dim and len(vec) != _expected_dim:
+                global EMBED_DIM_MISMATCH
+                EMBED_DIM_MISMATCH += 1
+                logger.warning("[biocore] embedding dimension rejected: got %d expected %d",
+                               len(vec), _expected_dim)
+                return None
             if _cache_on:
                 EMBED_CACHE[cache_key] = vec
                 EMBED_CACHE.move_to_end(cache_key)
@@ -9528,7 +10369,14 @@ class BioCorePlugin(Star):
 
     @staticmethod
     def _cosine(a, b) -> float:
-        if not a or not b or len(a) != len(b):
+        if not a or not b:
+            return 0.0
+        if len(a) != len(b):
+            # P1-1: dimension mismatch is an anomaly, never a silent zero.
+            global EMBED_DIM_MISMATCH
+            EMBED_DIM_MISMATCH += 1
+            logger.warning("[biocore] embedding dimension mismatch: %d vs %d",
+                           len(a), len(b))
             return 0.0
         dot = sum(x * y for x, y in zip(a, b))
         na = math.sqrt(sum(x * x for x in a))
@@ -9616,7 +10464,15 @@ class BioCorePlugin(Star):
                     pass
                 return d
         except Exception:
-            pass
+            try:
+                _p = self._memory_path(event)
+                if _p.exists():
+                    _bak = _p.with_suffix(_p.suffix + ".corrupt.bak")
+                    _bak.write_bytes(_p.read_bytes())
+                    self._corrupt_backups = int(getattr(self, "_corrupt_backups", 0) or 0) + 1
+                    logger.warning("[biocore] memory JSON corrupt; backup saved to %s", _bak)
+            except Exception:
+                pass
         return {"entries": []}
 
     def _merge_memory_doc(self, doc, latest) -> dict:
@@ -11424,6 +12280,27 @@ class BioCorePlugin(Star):
                 _brevity = "normal"
             if _brevity != "normal" and _strategy_hint:
                 _strategy_hint = _strategy_hint[:60 if _brevity == "short" else 90]
+                _learn_session = str(getattr(event, "unified_msg_origin", "default") or "default")
+        if getattr(self, "learning_bandit_enabled", False):
+            try:
+                _pending = (getattr(self, "_learning_pending", {}) or {}).pop(_learn_session, None)
+                if isinstance(_pending, dict):
+                    _same_emo = str(_pending.get("emotion") or "") == str(
+                        (getattr(core, "labels", {}) or {}).get("emotion") or "")
+                    _reward = self._learning_reward(
+                        _pending.get("reply_len", 0), len(str(text or "")),
+                        same_emotion=_same_emo)
+                    self._learning_bandit_update(core, _learn_session, _reward)
+            except Exception:
+                pass
+        self._last_user_text = str(text or "")
+        if any(getattr(self, k, False) for k in (
+                "learning_bandit_enabled", "learning_relationship_enabled",
+                "learning_worthiness_enabled")):
+            try:
+                self._learning_publish(core, _learn_session)
+            except Exception:
+                pass
         # 1.3.1: consume last round's F3/F2 hints (bounded, inside strategy_hint).
         # P1-1: the F1 "avoid X" hint is separate (only when hint switch is ON)
         # and is NOT merged into strategy_hint.
@@ -11438,6 +12315,14 @@ class BioCorePlugin(Star):
         self._reverse_check_hint = ""
         self._repeat_hint = ""
         self._reflect_hint = ""
+        if getattr(self, "expression_chain_enabled", False):
+            try:
+                _expr_hint = self._expression_hint(core, _learn_session, text)
+                if _expr_hint:
+                    _strategy_hint = interpretation.combine_strategy_hint(
+                        _strategy_hint, _expr_hint)
+            except Exception:
+                pass
         _kb = ""
         if getattr(self, "kb_enabled", False) and getattr(self, "kb_names", None) and self._usable_memory_text(text):
             try:
@@ -11650,7 +12535,23 @@ class BioCorePlugin(Star):
                 core.sycophancy_check = _syco
             except Exception:
                 pass
-        # task-37 token/cost measurement (read-only; real usage else estimate).
+                # task-54/55: relationship chain + Big5 effect + bandit pending (default OFF).
+        try:
+            if (getattr(self, "relationship_chain_enabled", False)
+                    or getattr(self, "gottman_enabled", False)
+                    or getattr(self, "big5_effect_enabled", False)
+                    or getattr(self, "learning_relationship_enabled", False)):
+                self._apply_relationship_chain(
+                    event, core, str(getattr(self, "_last_user_text", "") or ""), _reply)
+            if getattr(self, "learning_bandit_enabled", False):
+                self._learning_pending[_umo] = {
+                    "reply_len": len(_reply),
+                    "emotion": str((getattr(core, "labels", {}) or {}).get("emotion") or ""),
+                    "ts": time.time()}
+                self._learning_publish(core, _umo)
+        except Exception:
+            pass
+# task-37 token/cost measurement (read-only; real usage else estimate).
         if getattr(self, "token_budget_enabled", True):
             try:
                 _usage = self._extract_token_usage(response)

@@ -510,6 +510,26 @@
       renderSessionMemory();
     }
   }
+  // task-45: restore a downgraded memory point from the session list.
+  async function _sessRestore(eventId) {
+    const id = String(eventId || "");
+    if (!id || _sessBusy[id]) return;
+    _sessBusy[id] = true;
+    _sessSetMsg(id, "恢复中…", false);
+    renderSessionMemory();
+    try {
+      await _focusApi({ event_id: id, action: "restore" }, "page/memory_point_feedback");
+      _sessBusy[id] = false;
+      _sessSetMsg(id, "已恢复", false);
+      renderSessionMemory();
+      await _focusReloadData();
+      renderSessionMemory();
+    } catch (err) {
+      _sessBusy[id] = false;
+      _sessSetMsg(id, String((err && err.message) || err), true);
+      renderSessionMemory();
+    }
+  }
   function _sessEditForm(ev) {
     const draft = _sessEdit || {};
     const busy = !!draft.busy;
@@ -560,10 +580,19 @@
       '<div class="memory-event-big"><div class="memory-event-big-head"><small>大总结</small>' +
       '<span class="memory-status-badge ' + badgeCls + '">' + esc(badge) + '</span></div>' +
       '<p class="memory-event-text">' + esc(bigText || "—") + '</p></div>');
+    // task-45: downgraded points stay listed with a visible 「恢复」 action.
+    const downgraded = _isDowngraded(ev);
+    const downgradedFlag = downgraded
+      ? '<span class="mem-flag mem-flag-warn" title="被重新判定降级为归档，可点「恢复」撤销">已降级</span>'
+      : "";
     const opsRow = isEdit ? "" : ('<div class="memory-card-ops">' +
       '<button type="button" class="btn mini js-sess-regen" data-event-id="' + esc(eventId) + '"' +
       (busy ? " disabled" : "") + '>' + (busy ? "重新总结中…" : "重新总结") + '</button>' +
       '<button type="button" class="btn mini js-sess-edit" data-event-id="' + esc(eventId) + '">编辑总结</button>' +
+      (downgraded
+        ? '<button type="button" class="btn mini is-restore js-sess-restore" data-event-id="' +
+          esc(eventId) + '"' + (busy ? " disabled" : "") + '>恢复</button>'
+        : '') +
       '<span class="sess-card-msg' + (msg && msg.error ? " is-error" : "") + '">' +
       esc(msg ? msg.text : "") + '</span></div>');
     const hasMsgs = msgs.length > 0;
@@ -571,7 +600,7 @@
       '<div class="memory-card-head"><span class="memory-level-tag">总结</span>' +
       '<b>' + esc(_clipText(ev.title || "重要事件", 80)) + '</b>' +
       '<span class="hint">' + esc(when) + '</span>' +
-      '<span class="mem-session-tag">' + esc(sessionLabelText) + '</span>' + warnFlags + emoBadges + '</div>' +
+      '<span class="mem-session-tag">' + esc(sessionLabelText) + '</span>' + warnFlags + downgradedFlag + emoBadges + '</div>' +
       nuanceHtml +
       readBody + opsRow +
       '<div class="memory-scores"><small>重要度 ' + imp + '</small><small>centrality ' + cent + '</small>' +
@@ -637,6 +666,8 @@
         if (regen) { _sessRegenerate(regen.dataset.eventId); return; }
         const edit = target.closest(".js-sess-edit");
         if (edit) { _sessBeginEdit(edit.dataset.eventId); return; }
+        const restore = target.closest(".js-sess-restore");
+        if (restore) { _sessRestore(restore.dataset.eventId); return; }
         const save = target.closest(".js-sess-save");
         if (save) { _sessSaveEdit(); return; }
         const cancel = target.closest(".js-sess-cancel");
@@ -747,11 +778,31 @@
   // before archiving), so they are valid "summarized" balls even when the raw
   // memory cluster has not been consolidated yet. This restores e.g. the
   // late-night confession-clarification ball.
+  // task-45: a memory point downgraded by 「重新判定（archive_only/skip）」.
+  // Prefer the backend fields (downgraded_by_reevaluate / reevaluate_verdict);
+  // while a projection does not expose downgraded_by_reevaluate, fall back to
+  // the documented combination memory_point=false + user_marked=false +
+  // importance==0.15 (the forced floor written by the downgrade path). Switch
+  // to the backend field only once it reaches every projection.
+  function _isDowngraded(detail){
+    const d=detail||{};
+    if(d.downgraded_by_reevaluate===true) return true;
+    const verdict=(d.reevaluate_verdict&&typeof d.reevaluate_verdict==="object")?d.reevaluate_verdict:null;
+    if(d.memory_point===false&&verdict){
+      const decision=String(verdict.decision||"").toLowerCase();
+      if(decision==="archive_only"||decision==="skip") return true;
+    }
+    const imp=Number(d.importance);
+    return d.memory_point===false&&d.user_marked!==true
+      &&Number.isFinite(imp)&&Math.abs(imp-0.15)<=0.001;
+  }
   function eventBallsFromArchive(){
     const evs=Array.isArray(data.events)?data.events:[];
     // task-33: archive-only rows (memory_point=false) stay in the archive for
     // retrieval but are NOT memory points, so they get no ball.
-    return evs.filter(e=>e&&typeof e==="object"&&e.memory_point!==false).map(e=>{
+    // task-45: downgraded points stay visible so the 「恢复」 action is reachable.
+    return evs.filter(e=>e&&typeof e==="object"
+        &&(e.memory_point!==false||_isDowngraded(e))).map(e=>{
       const text=String(e.event||e.title||"").trim();
       if(!text) return null;
       return {_kind:"event", id:String(e.id||("evt_"+Number(e.ts||0))),
@@ -770,6 +821,9 @@
         worthiness:(e.worthiness&&typeof e.worthiness==="object")?e.worthiness:null,
         user_marked:e.user_marked===true,
         memory_point:e.memory_point!==false,
+        downgraded:_isDowngraded(e),
+        downgraded_by_reevaluate:e.downgraded_by_reevaluate===true,
+        reevaluate_verdict:(e.reevaluate_verdict&&typeof e.reevaluate_verdict==="object")?e.reevaluate_verdict:null,
         last_recall:Number(e.last_recall||e.ts||0), summarized:true, role:"event"};
     }).filter(Boolean).sort((a,b)=>Number(b.importance||0)-Number(a.importance||0)||Number(b.ts||0)-Number(a.ts||0)).slice(0,10);
   }
@@ -1388,6 +1442,17 @@
   // 1.3.1: opt-in read-only model-layer panel (absent fields => stays hidden).
   // task-44: L1 thinking-precursor rows (conflict / rumination / anchor /
   // sycophancy) live in a collapsed <details>; each one hides when missing.
+  // P0-3/P1-7: one-time safety + migration banners (read-only).
+  function renderSafetyBanners(){
+    try {
+      const sec=(data&&data.security_notice&&typeof data.security_notice==="object")?data.security_notice:null;
+      const el=$("secBanner");
+      if(el&&sec){el.hidden=false;el.textContent="⚠ "+String(sec.message||"");}
+      const mig=(data&&typeof data.migration_note==="string")?data.migration_note:"";
+      const mb=$("migBanner");
+      if(mb&&mig&&!localStorage.getItem("biocore_mig_seen_131")){mb.hidden=false;mb.textContent="升级提示："+mig;localStorage.setItem("biocore_mig_seen_131","1");}
+    } catch(e) {}
+  }
   function renderModelTracePanels(snap){
     const panel=$("panelModelTrace");
     if(!panel) return;
@@ -1436,6 +1501,7 @@
     if(tb){const d=tb.today||{};const est=(d.estimated||Number(d.estimated_calls||0)>0)?" · 估算":"";set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4)+est);}
   }
   function renderRecallMeta(core){
+    try { renderSafetyBanners(); } catch (e) {}
     const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
     const trace=(data&&data.last_memory_trace&&typeof data.last_memory_trace==="object")?data.last_memory_trace:null;
     const ws=(core&&core.working_set&&typeof core.working_set==="object")?core.working_set:null;
@@ -2073,7 +2139,7 @@
     try {
       const raw = await bridge.apiGet("page/backup", {});
       const payload = raw && raw.data ? raw.data : raw;
-      if (!payload || !payload.base64) throw new Error((payload && payload.message) || "empty backup");
+      if(!payload || !payload.token) throw new Error((payload && payload.message) || "empty backup");
       const bin = atob(payload.base64);
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -2572,6 +2638,11 @@
       importance: body.importance == null ? Number(d.importance == null ? .5 : d.importance) : Number(body.importance),
       user_marked: body.user_marked == null ? !!d.user_marked : body.user_marked === true,
       memory_point: body.memory_point == null ? (d.memory_point !== false) : body.memory_point !== false,
+      downgraded_by_reevaluate: body.downgraded_by_reevaluate != null
+        ? body.downgraded_by_reevaluate === true
+        : ((body.memory_point === true) ? false : !!d.downgraded_by_reevaluate),
+      reevaluate_verdict: (body.reevaluate_verdict && typeof body.reevaluate_verdict === "object")
+        ? body.reevaluate_verdict : (d.reevaluate_verdict || null),
       label_edited: body.label_edited == null ? !!d.label_edited : body.label_edited === true,
       worthiness: (body.worthiness && typeof body.worthiness === "object")
         ? body.worthiness : (d.worthiness || null)
@@ -2628,13 +2699,16 @@
     if (!result) return;
     const verdict = (result && result.verdict) || {};
     const rec = (result && result.record) || {};
-    const label = verdict.decision === "memory_point" ? "仍是记忆点"
+    let label = verdict.decision === "memory_point" ? "仍是记忆点"
       : (verdict.decision === "archive_only" ? "已降级为归档" : "不是记忆点");
+    if (verdict.decision === "insufficient_data") label = "证据不足，未修改";
+    else if (verdict.decision === "retained_protected") label = "关系/自我相关，已保留";
     const detail = " · W " + _focusNum2(verdict.W) + " · W_her " +
       _focusNum2(verdict.W_her) + " · K " + _focusNum2(verdict.K);
     _focusApplyFeedbackResult(rec);
     _renderHeroMemoryRead();
-    _focusShowMsg(label + detail, false);
+    const _reevalMsg = String((result && result.message) || "");
+    _focusShowMsg((_reevalMsg || label) + detail, false);
     await _focusReloadData();
     if (_heroFocusSaved && _heroFocusDetail) {
       _focusApplyFeedbackResult(rec);
@@ -2666,6 +2740,11 @@
       importance: body.importance == null ? Number(d.importance == null ? .5 : d.importance) : Number(body.importance),
       user_marked: body.user_marked == null ? !!d.user_marked : body.user_marked === true,
       memory_point: body.memory_point == null ? (d.memory_point !== false) : body.memory_point !== false,
+      downgraded_by_reevaluate: body.downgraded_by_reevaluate != null
+        ? body.downgraded_by_reevaluate === true
+        : ((body.memory_point === true) ? false : !!d.downgraded_by_reevaluate),
+      reevaluate_verdict: (body.reevaluate_verdict && typeof body.reevaluate_verdict === "object")
+        ? body.reevaluate_verdict : (d.reevaluate_verdict || null),
       label_edited: body.label_edited == null ? !!d.label_edited : body.label_edited === true,
       worthiness: (body.worthiness && typeof body.worthiness === "object")
         ? body.worthiness : (d.worthiness || null)
@@ -2699,6 +2778,9 @@
           importance: Number(ev.importance == null ? .5 : ev.importance),
           user_marked: ev.user_marked === true,
           memory_point: ev.memory_point !== false,
+          downgraded_by_reevaluate: ev.downgraded_by_reevaluate === true,
+          reevaluate_verdict: (ev.reevaluate_verdict && typeof ev.reevaluate_verdict === "object")
+            ? ev.reevaluate_verdict : null,
           label_edited: ev.label_edited === true,
           worthiness: (ev.worthiness && typeof ev.worthiness === "object") ? ev.worthiness : null
         };
@@ -2960,11 +3042,24 @@
         '" id="heroMemPin" aria-pressed="' + (pinned ? 'true' : 'false') +
         '" title="钉住后这条事实不会被容量淘汰">' + (pinned ? '取消钉住' : '钉住') + '</button>'
       : "";
+    // task-45: a point downgraded by 重新判定 must expose 「恢复」 in the action
+    // row (the same action that used to be buried in the 修正记忆点 menu).
+    // Guarded like the nuance helper: the focus-panel evals extract this
+    // renderer without the whole file, so keep the predicate optional there.
+    let downgraded = false;
+    try { downgraded = (typeof _isDowngraded === "function") ? _isDowngraded(d) : false; }
+    catch (e) { downgraded = false; }
+    const downgradedHtml = downgraded
+      ? '<span class="hero-mem-badge is-downgraded">已降级</span>' : "";
+    const restoreHtml = downgraded
+      ? '<button type="button" class="btn mini is-restore" id="heroMemRestore"' +
+        ' title="把这条记忆点从归档恢复为记忆点（撤销重新判定降级）">恢复</button>'
+      : "";
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
       '<div class="hero-mem-head"><h2 id="heroMemTitle">' + esc(title) + '</h2>' +
       '<span class="hero-mem-badge ' + badgeClass + '">' + esc(badge) + '</span>' +
-      markedHtml + '</div>' +
+      markedHtml + downgradedHtml + '</div>' +
       '<div class="hero-mem-grid">' +
         '<span>主情绪 <b>' + esc(primary) + '</b></span>' +
         '<span>次情绪 <b>' + esc(secondary) + '</b></span>' +
@@ -2978,6 +3073,7 @@
         '<button type="button" class="btn mini" id="heroMemReeval">重新判定</button>' +
         '<button type="button" class="btn mini" id="heroMemEdit">编辑总结</button>' +
         pinHtml +
+        restoreHtml +
         '<span class="hero-mem-fixwrap">' +
           '<button type="button" class="btn mini" id="heroMemFix">修正记忆点</button>' +
           '<span class="hero-mem-fixmenu" id="heroMemFixMenu" hidden>' +
@@ -2999,6 +3095,8 @@
     if (edit) edit.addEventListener("click", () => { _renderHeroMemoryEdit(); });
     const pin = panel.querySelector("#heroMemPin");
     if (pin) pin.addEventListener("click", () => { _focusTogglePin(); });
+    const restoreBtn = panel.querySelector("#heroMemRestore");
+    if (restoreBtn) restoreBtn.addEventListener("click", () => { _focusFeedback("restore"); });
     const fix = panel.querySelector("#heroMemFix");
     const fixMenu = panel.querySelector("#heroMemFixMenu");
     if (fix && fixMenu) {
