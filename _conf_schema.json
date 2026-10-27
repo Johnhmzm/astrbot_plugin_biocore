@@ -494,19 +494,13 @@
   },
   "bc_budget_enabled": {
     "description": "注入总预算（默认开）",
-    "hint": "默认开：按优先级 意图>情绪>记忆>hint 截断 [BC]；空块不渲染，只减不增。",
+    "hint": "默认开：只消除浪费（空块/重复行/无消费者 hint/过期旧摘要），不裁剪有价值内容；700 仅为目标提示，超出记 size。",
     "type": "bool",
     "default": true
   },
-  "bc_budget_tokens": {
-    "description": "[BC] token 预算（legacy，默认 400）",
-    "hint": "兼容旧配置；实际默认使用 bc_budget_chars。仅影响截断，不增加默认 token。",
-    "type": "int",
-    "default": 400
-  },
   "bc_budget_chars": {
     "description": "[BC] 总预算字符数（默认 700，480–800）",
-    "hint": "§6 工程值：单块 [BC] 总字符预算；截断顺序 continuity→loops→event→hint→其他，不裁头部与 memory evidence。",
+    "hint": "task-51：700 仅为目标/提示，不裁剪有价值内容（头部/意图/承诺/记忆证据/事件/关系变化全部保留）；只删除无效项（空块/重复行/无消费者 hint/过期旧摘要）并记 wasted 计数；超目标只写 injection_trace.size，Dashboard 显示字数与浪费项。",
     "type": "int",
     "default": 700
   },
@@ -540,11 +534,17 @@
     "type": "bool",
     "default": false
   },
-  "think_selfcheck_enabled": {
-    "description": "确定性反向检查 F1（默认开，0 LLM）",
-    "hint": "默认开：只读检查绝对承诺/否定感受/越界建议/复读/模板重复，命中写 state.reverse_check 并在下一轮 [BC] 加 ≤140 字避免提示；不改回复。",
+  "think_selfcheck_trace_enabled": {
+    "description": "F1 反向检查 trace（默认开，0 LLM，不注入）",
+    "hint": "默认开：只读检查绝对承诺/否定感受/越界建议/复读/模板重复，命中仅写 state.reverse_check 只读投影；不增加任何 prompt token。",
     "type": "bool",
     "default": true
+  },
+  "think_selfcheck_hint_enabled": {
+    "description": "F1 反向检查提示（默认关）",
+    "hint": "默认关。开启后命中才把 ≤140 字「避免X」并入下一轮 [BH]；该行计入 bc_budget_chars 总预算，不再预算外。",
+    "type": "bool",
+    "default": false
   },
   "think_repeat_guard_enabled": {
     "description": "复读检测 F3（默认关，只标记）",

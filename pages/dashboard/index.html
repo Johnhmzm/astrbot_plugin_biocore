@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=20261027-1840" />
+<link rel="stylesheet" href="./styles.css?v=20261027-1325" />
 </head>
 <body>
 <div class="shell">
@@ -111,12 +111,22 @@
         <div class="panel-head"><h3>本轮注入 / 模型层只读</h3><span class="hint">INJECTION TRACE · REVERSE CHECK · COST · READ-ONLY</span></div>
         <div class="signal-grid" id="modelTraceGrid">
           <div><small>[BC] 字符 / 估算 token</small><b id="mtInj">--</b></div>
-          <div><small>截断 / 去重段</small><b id="mtCut">--</b></div>
+          <div><small>注入字数 / 浪费项</small><b id="mtCut">--</b></div>
           <div><small>F1 反向检查</small><b id="mtReverse">--</b></div>
           <div><small>复读检测 F3</small><b id="mtRepeat">--</b></div>
           <div><small>路径依赖监控</small><b id="mtPath">--</b></div>
           <div><small>今日 token / 费用</small><b id="mtCost">--</b></div>
         </div>
+        <details class="mt-l1" id="mtL1Block" hidden>
+          <summary>L1 新信号 · 折叠（冲突 / 反刍 / 锚定 / 谄媚检查）</summary>
+          <div class="signal-grid" id="mtL1Grid">
+            <div><small>conflict_ema / 冲突</small><b id="mtConflict">--</b><div class="bar"><i id="bConflict"></i></div></div>
+            <div><small>rumination_ema / 反刍</small><b id="mtRumination">--</b><div class="bar"><i id="bRumination"></i></div></div>
+            <div><small>anchor_weight / 锚定</small><b id="mtAnchor">--</b><div class="bar"><i id="bAnchor"></i></div></div>
+            <div><small>sycophancy_check / 谄媚</small><b id="mtSyco">--</b></div>
+          </div>
+          <p class="api-note" id="mtL1Note">只读投影：L1 思维前兆信号（冲突 EMA / 反刍 EMA / 锚定权重 / 谄媚检查）只用于观察，不改变回复，也不写生物层；字段缺失时整块隐藏。</p>
+        </details>
         <p class="api-note" id="modelTraceNote">只读投影：注入 trace / 反向检查 / 路径依赖 / 费用估算只用于观察，不改变回复，也不写生物层。</p>
       </div>
       <div class="panel" id="panelAutonomy">
@@ -580,5 +590,5 @@
     <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
   </main>
 </div>
-<script src="./orb_math.js?v=20261027-1840"></script><script src="./app.js?v=20261027-1840"></script><script src="./orb.js?v=20261027-1840"></script>
+<script src="./orb_math.js?v=20261027-1325"></script><script src="./app.js?v=20261027-1325"></script><script src="./orb.js?v=20261027-1325"></script>
 </body></html>

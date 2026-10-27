@@ -719,6 +719,8 @@
         if(!(e.summarized===true || role==="summary")) return;
         out.push({
           _kind:"memory", id:String(e.id||text.slice(0,12)),
+          session:String(session.session||""),
+          pinned:_isPinned(session.session, e.id, e.pinned),
           title:text.slice(0,28), event:text.slice(0,140),
           meaning_to_her:text.slice(0,140), central_details:text.slice(0,140),
           ts:Number(e.ts||0), importance:Number(e.importance||0.5),
@@ -828,7 +830,8 @@
       // (last_recall) and the assoc map are present, never by guessing.
       effectiveImportance:Number(src.effective_importance==null?NaN:Number(src.effective_importance)),
       effectiveAssoc:Number(src.effective_assoc==null?NaN:Number(src.effective_assoc)),
-      lastRecall:Number(src.last_recall||0)};
+      lastRecall:Number(src.last_recall||0),
+      pinned:src.pinned===true};
   }
   function renderMemoryMeta(){
     const sel=$("memSessionFilter"), list=$("memEntryList"), empty=$("memEmpty"),
@@ -921,7 +924,9 @@
       const confW=(e.confidence==null?0:clamp(e.confidence))*100;
       const lowConf=e.confidence!=null&&e.confidence<0.6;
       const unknownSrc=e.source==="unknown"||e.source==="inferred";
+      const pinnedRow=_isPinned(rowSession,e.id,e.pinned);
       const flags=[
+        pinnedRow?'<span class="mem-flag mem-flag-ok mem-flag-pin" title="已钉住：固定事实，不参与容量淘汰">已钉住</span>':"",
         lowConf?'<span class="mem-flag mem-flag-warn">低置信</span>':"",
         unknownSrc?'<span class="mem-flag mem-flag-warn">'+esc(memSourceLabel(e.source))+'</span>':"",
         e.conflict?'<span class="mem-flag mem-flag-danger">冲突已更新</span>':"",
@@ -1381,26 +1386,54 @@
   // last_memory_trace + last_strategy_hint. Calibration and the refusal posture
   // are labels only: they never act as reply gates here.
   // 1.3.1: opt-in read-only model-layer panel (absent fields => stays hidden).
-  function renderModelTracePanels(){
+  // task-44: L1 thinking-precursor rows (conflict / rumination / anchor /
+  // sycophancy) live in a collapsed <details>; each one hides when missing.
+  function renderModelTracePanels(snap){
     const panel=$("panelModelTrace");
     if(!panel) return;
     const set=(id,v)=>{const el=$(id); if(el) el.textContent=v;};
+    const s=(snap&&typeof snap==="object")?snap:{};
     const inj=(data&&data.injection_trace&&typeof data.injection_trace==="object")?data.injection_trace:null;
     const rev=(data&&data.reverse_check&&typeof data.reverse_check==="object")?data.reverse_check:null;
     const rep=(data&&data.repeat_guard&&typeof data.repeat_guard==="object")?data.repeat_guard:null;
     const path=(data&&data.path_monitor&&typeof data.path_monitor==="object")?data.path_monitor:null;
     const tb=(data&&data.token_budget&&typeof data.token_budget==="object")?data.token_budget:null;
-    panel.hidden=!(inj||rev||rep||path||tb);
+    const syco=(data&&data.sycophancy_check&&typeof data.sycophancy_check==="object")?data.sycophancy_check:null;
+    const hasL1=(s.conflict_ema!=null||s.rumination_ema!=null||s.anchor_weight!=null);
+    panel.hidden=!(inj||rev||rep||path||tb||hasL1||syco);
+    const l1=$("mtL1Block");
+    if(l1) l1.hidden=!hasL1;
     if(panel.hidden) return;
+    const bar=(id,v)=>{const el=$(id); if(el) el.style.width=pct(clamp(v));};
+    if(hasL1){
+      const c=Number(s.conflict_ema||0), rum=Number(s.rumination_ema||0), anchor=Number(s.anchor_weight||0);
+      set("mtConflict",c.toFixed(2)+" / 1.00");
+      bar("bConflict",c);
+      set("mtRumination",rum.toFixed(2)+" / 1.00"+(s.rumination_suppress?" · 抑制中":""));
+      bar("bRumination",rum);
+      set("mtAnchor",anchor.toFixed(2)+" / 0.90 上限");
+      bar("bAnchor",Math.min(1,anchor/0.9));
+    }
+    if(syco){
+      const agrees=Array.isArray(syco.agree)?syco.agree.filter(x=>x):[];
+      const risks=Array.isArray(syco.risky)?syco.risky.filter(x=>x):[];
+      set("mtSyco",(syco.flag?"⚠ 同意风险":"通过")
+        +" · intensity "+Number(syco.intensity||0).toFixed(2)
+        +(agrees.length?(" · 同意词 "+agrees.slice(0,2).join("/")):"")
+        +(risks.length?(" · 风险词 "+risks.slice(0,2).join("/")):""));
+    } else {
+      set("mtSyco","—");
+    }
     if(inj){
       set("mtInj",String(inj.chars==null?"—":Number(inj.chars))+" 字 / "+String(inj.tokens_estimate==null?"—":Number(inj.tokens_estimate)));
       const cut=(Array.isArray(inj.truncated)?inj.truncated.length:0)+(Array.isArray(inj.dropped_duplicates)?inj.dropped_duplicates.length:0);
-      set("mtCut",String(cut)+(inj.budget_tokens?(" / 预算 "+Number(inj.budget_tokens)):""));
+      const al=inj.alert?(" · ⚠ "+String(inj.alert)):"";
+      set("mtCut","字数 "+Number(inj.size==null?inj.chars:inj.size)+" · 浪费项 "+(Number((inj.wasted||{}).empty_blocks||0)+Number((inj.wasted||{}).duplicates||0)+Number((inj.wasted||{}).stale||0)+Number((inj.wasted||{}).unvalued_hint||0))+(inj.over_target?" · 超目标":""));
     }
     if(rev){const v=Array.isArray(rev.violations)?rev.violations:[];set("mtReverse",(rev.score==null?"—":Number(rev.score).toFixed(2))+" · "+(v.length?v.slice(0,2).join(","):"通过"));}
     if(rep) set("mtRepeat",String(rep.flag||"—")+" · J "+Number(rep.jaccard||0).toFixed(2));
     if(path) set("mtPath",(path.warning?"⚠ 可能路径依赖":"sim")+" "+Number(path.self_similarity||0).toFixed(2)+" · autocorr "+Number(path.label_autocorr||0).toFixed(2)+" · drift "+Number(path.summary_drift||0).toFixed(2));
-    if(tb){const d=tb.today||{};set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4));}
+    if(tb){const d=tb.today||{};const est=(d.estimated||Number(d.estimated_calls||0)>0)?" · 估算":"";set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4)+est);}
   }
   function renderRecallMeta(core){
     const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
@@ -1436,7 +1469,7 @@
         hintEl.textContent="策略提示："+hint+(posture?("（"+posture+" 是姿态 token，不是 gate：不决定是否回复）"):"");
       }
     }
-    try { renderModelTracePanels(); } catch (e) {}
+    try { renderModelTracePanels(core && core.snapshot); } catch (e) {}
   }
   // Extract the G2/L9 refusal posture token from the bounded strategy hint.
   function _postureFromHint(hint){
@@ -2433,6 +2466,36 @@
     const d = detail || {};
     return String(d.event_id || d.key || "").trim();
   }
+  // task-44: pinned-fact toggle for memory focus. page_status does not expose
+  // entry.pinned yet, so keep a small local override cache; a backend value
+  // (entry.pinned / detail.pinned) always wins when present. Display only.
+  const _PIN_CACHE_KEY = "bio_mem_pin_cache";
+  function _pinCache(){
+    try {
+      const raw = storeGet(_PIN_CACHE_KEY, "{}");
+      const obj = JSON.parse(String(raw || "{}"));
+      return (obj && typeof obj === "object") ? obj : {};
+    } catch (e) { return {}; }
+  }
+  function _pinKey(session, id){ return String(session || "") + "|" + String(id || ""); }
+  function _isPinned(session, id, pinnedField){
+    if (pinnedField === true) return true;
+    if (pinnedField === false) return false;
+    const key = _pinKey(session, id);
+    if (key === "|") return false;
+    return _pinCache()[key] === true;
+  }
+  function _setPinned(session, id, value){
+    try {
+      const cache = _pinCache();
+      cache[_pinKey(session, id)] = !!value;
+      storeSet(_PIN_CACHE_KEY, JSON.stringify(cache));
+    } catch (e) {}
+  }
+  function _pinSupported(detail){
+    const d = detail || {};
+    return d._kind === "memory" && !!String(d.id || "").trim() && !!String(d.session || "").trim();
+  }
   function _focusShowMsg(text, isError){
     const panel = _heroPanelEl();
     const msg = panel && panel.querySelector("#heroMemMsg");
@@ -2466,6 +2529,37 @@
   }
   async function _focusFixApi(payload){
     return _focusApi(payload, "page/memory_point_feedback");
+  }
+  async function _focusTogglePin(){
+    const d = _heroFocusDetail || {};
+    if (!_pinSupported(d)) { _focusShowMsg("这条记忆不是可钉住的内存条目", true); return; }
+    const session = String(d.session || "");
+    const id = String(d.id || "");
+    const next = !_isPinned(session, id, d.pinned);
+    _focusSetBusy(true, next ? "钉住中…" : "取消钉住中…");
+    let body = null, failure = null;
+    try {
+      body = await _focusApi({ pin: next },
+        "page/memory/pin/" + encodeURIComponent(session) + "/" + encodeURIComponent(id));
+    } catch (err) {
+      failure = err;
+    } finally {
+      _focusSetBusy(false);
+    }
+    if (failure) { _focusShowMsg(String((failure && failure.message) || failure), true); return; }
+    const applied = (body && body.pin != null) ? body.pin === true : next;
+    _setPinned(session, id, applied);
+    if (_heroFocusSaved && _heroFocusDetail) {
+      _heroFocusDetail = Object.assign({}, _heroFocusDetail, { pinned: applied });
+      _renderHeroMemoryRead();
+      _focusShowMsg(applied ? "已钉住（固定事实，不参与容量淘汰）" : "已取消钉住", false);
+    }
+    await _focusReloadData();
+    if (_heroFocusSaved && _heroFocusDetail) {
+      _heroFocusDetail = Object.assign({}, _heroFocusDetail, { pinned: applied });
+      _renderHeroMemoryRead();
+      _focusShowMsg(applied ? "已钉住" : "已取消钉住", false);
+    }
   }
   // task-33: merge a feedback API row into the open focus detail.
   function _focusApplyFeedbackResult(data){
@@ -2858,6 +2952,14 @@
     const marked = d.user_marked === true;
     const markedHtml = marked ? '<span class="hero-mem-badge is-marked">已修正</span>' : "";
     const worthHtml = _focusWorthinessHtml(d);
+    // task-44: pin toggle only for memory-entry balls (events have no pin API).
+    const pinOk = _pinSupported(d);
+    const pinned = pinOk ? _isPinned(d.session, d.id, d.pinned) : false;
+    const pinHtml = pinOk
+      ? '<button type="button" class="btn mini' + (pinned ? ' is-pinned' : '') +
+        '" id="heroMemPin" aria-pressed="' + (pinned ? 'true' : 'false') +
+        '" title="钉住后这条事实不会被容量淘汰">' + (pinned ? '取消钉住' : '钉住') + '</button>'
+      : "";
     panel.innerHTML =
       '<div class="eyebrow">MEMORY FOCUS · 记忆聚焦</div>' +
       '<div class="hero-mem-head"><h2 id="heroMemTitle">' + esc(title) + '</h2>' +
@@ -2875,6 +2977,7 @@
         '<button type="button" class="btn mini" id="heroMemRegen">重新总结</button>' +
         '<button type="button" class="btn mini" id="heroMemReeval">重新判定</button>' +
         '<button type="button" class="btn mini" id="heroMemEdit">编辑总结</button>' +
+        pinHtml +
         '<span class="hero-mem-fixwrap">' +
           '<button type="button" class="btn mini" id="heroMemFix">修正记忆点</button>' +
           '<span class="hero-mem-fixmenu" id="heroMemFixMenu" hidden>' +
@@ -2894,6 +2997,8 @@
     if (regen) regen.addEventListener("click", () => { _focusRegenerate(); });
     if (reeval) reeval.addEventListener("click", () => { _focusReevaluate(); });
     if (edit) edit.addEventListener("click", () => { _renderHeroMemoryEdit(); });
+    const pin = panel.querySelector("#heroMemPin");
+    if (pin) pin.addEventListener("click", () => { _focusTogglePin(); });
     const fix = panel.querySelector("#heroMemFix");
     const fixMenu = panel.querySelector("#heroMemFixMenu");
     if (fix && fixMenu) {
