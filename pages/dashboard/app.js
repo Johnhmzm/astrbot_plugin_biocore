@@ -1342,12 +1342,39 @@
     set("sIntero",intero.label?(_interoLabel(intero.label)+(intero.signal==null?"":" "+Number(intero.signal).toFixed(2))):"—");
     set("sBoundary",s&&s.boundary_pressure!=null?Number(s.boundary_pressure).toFixed(2):"—");
     set("sRefusalLevel",s&&s.refusal_readiness!=null?Number(s.refusal_readiness).toFixed(2):"—");
+    // task-36: opt-in reply-consistency projection (read-only; default off).
+    const rc=(s&&s.reply_consistency&&typeof s.reply_consistency==="object")?s.reply_consistency:null;
+    set("sReplyConsistency",rc&&rc.score!=null
+      ? (Number(rc.score).toFixed(2)+((rc.checks&&rc.checks.length)?(" ("+rc.checks.slice(0,2).join(",")+")"):""))
+      : "—");
     const note=$("steadyNote");
     if(note){
       const hasBody=Object.keys(body).length>0;
-      note.textContent=hasBody
+      // task-36 read-only telemetry / token usage (never affects behavior).
+      let extra="";
+      const tel=(data&&data.llm_telemetry&&typeof data.llm_telemetry==="object")?data.llm_telemetry:null;
+      if(tel){
+        const counters=tel.counters||{};
+        let fails=0;
+        Object.keys(counters).forEach(k=>{
+          if(/:(error|fallback|empty|no_provider|provider_error|call_error)$/.test(k)) fails+=Number(counters[k]||0);
+        });
+        extra+=" · LLM 失败/降级 "+fails+" 次";
+      }
+      const tok=(data&&data.token_usage&&typeof data.token_usage==="object")?data.token_usage:null;
+      if(tok){
+        if(tok.available){
+          const ss=tok.sessions||{};
+          let total=0,calls=0;
+          Object.keys(ss).forEach(k=>{const it=ss[k]||{}; total+=Number(it.total_tokens||0); calls+=Number(it.calls||0);});
+          extra+=" · token "+total+"（"+calls+" 次调用）";
+        } else {
+          extra+=" · token 不可用（provider 未返回 usage）";
+        }
+      }
+      note.textContent=(hasBody
         ? "只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。"
-        : "只读投影：当前状态文件没有 homeostasis（旧数据或该能力未开启），缺失项显示 —；不会补算，也不写回。";
+        : "只读投影：当前状态文件没有 homeostasis（旧数据或该能力未开启），缺失项显示 —；不会补算，也不写回。")+extra;
     }
   }
   // Read-only recall metadata: page/status.last_memory_meta + working_set +
@@ -2249,7 +2276,7 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.2.99";
+  const BIO_VERSION = "v1.3.0";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
@@ -2461,6 +2488,43 @@
       if (latest) _heroFocusDetail = Object.assign({}, _heroFocusDetail, latest);
       _renderHeroMemoryRead();
       _focusShowMsg(okText, false);
+    }
+  }
+  function _focusNum2(value){
+    return Number.isFinite(Number(value)) ? Number(value).toFixed(2) : "—";
+  }
+  // task-34: deterministic re-evaluation by W/W_her/K; shows verdict + numbers.
+  async function _focusReevaluate(){
+    const d = _heroFocusDetail || {};
+    const eventId = _focusEventId(d);
+    if (!eventId) { _focusShowMsg("这条记忆没有可重判的事件 id", true); return; }
+    _focusSetBusy(true, "重新判定中…");
+    let result = null, failure = null;
+    try {
+      result = await _focusFixApi({ event_id: eventId, action: "reevaluate" });
+    } catch (err) {
+      failure = err;
+    } finally {
+      _focusSetBusy(false);
+    }
+    if (failure) { _focusShowMsg(String((failure && failure.message) || failure), true); return; }
+    if (!result) return;
+    const verdict = (result && result.verdict) || {};
+    const rec = (result && result.record) || {};
+    const label = verdict.decision === "memory_point" ? "仍是记忆点"
+      : (verdict.decision === "archive_only" ? "已降级为归档" : "不是记忆点");
+    const detail = " · W " + _focusNum2(verdict.W) + " · W_her " +
+      _focusNum2(verdict.W_her) + " · K " + _focusNum2(verdict.K);
+    _focusApplyFeedbackResult(rec);
+    _renderHeroMemoryRead();
+    _focusShowMsg(label + detail, false);
+    await _focusReloadData();
+    if (_heroFocusSaved && _heroFocusDetail) {
+      _focusApplyFeedbackResult(rec);
+      const latest = _focusLatestDetail(_focusEventId(_heroFocusDetail));
+      if (latest) _heroFocusDetail = Object.assign({}, _heroFocusDetail, latest);
+      _renderHeroMemoryRead();
+      _focusShowMsg(label + detail, false);
     }
   }
   function _focusApplyApiResult(data){
@@ -2786,6 +2850,7 @@
       '</div>' + worthHtml + nuanceHtml + summaries + historyHtml +
       '<div class="hero-mem-actions hero-mem-actions-fix">' +
         '<button type="button" class="btn mini" id="heroMemRegen">重新总结</button>' +
+        '<button type="button" class="btn mini" id="heroMemReeval">重新判定</button>' +
         '<button type="button" class="btn mini" id="heroMemEdit">编辑总结</button>' +
         '<span class="hero-mem-fixwrap">' +
           '<button type="button" class="btn mini" id="heroMemFix">修正记忆点</button>' +
@@ -2801,8 +2866,10 @@
       (updated ? '<p class="hero-mem-updated">更新于 ' + esc(updated) + '</p>' : '') +
       '<p class="hero-mem-hint">再次点击记忆球 / 点空白 / Esc / “退出聚焦”恢复当前情绪</p>';
     const regen = panel.querySelector("#heroMemRegen");
+    const reeval = panel.querySelector("#heroMemReeval");
     const edit = panel.querySelector("#heroMemEdit");
     if (regen) regen.addEventListener("click", () => { _focusRegenerate(); });
+    if (reeval) reeval.addEventListener("click", () => { _focusReevaluate(); });
     if (edit) edit.addEventListener("click", () => { _renderHeroMemoryEdit(); });
     const fix = panel.querySelector("#heroMemFix");
     const fixMenu = panel.querySelector("#heroMemFixMenu");

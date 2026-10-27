@@ -2,8 +2,26 @@
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
 
-## [1.2.99] - 2026-10-27
+## [1.3.0] - 2026-10-27
 
+### Added
+- 记忆聚焦「重新判定」：按 W/W_her/K 重算已归档事件；结论为只归档/不该记时降级（importance 0.15、memory_point=false），不物理删除，可用「恢复」撤销；关闭判定开关时不修改记录。
+- 未接线项补齐（默认关）：relationship_impression / tom_probe / diary / relationship_narrative 进入 [BC] hint；多跳召回 `memory_chain_multihop`（hop≤2/fan≤3/新增≤6）；`refusal_brevity_enabled` 降低回复长度与主动度；`workspace_token` 仅在自主循环开启时注入 [BC]。
+- 回复侧只读统计：`reply_consistency`（回复与意图一致性）、`llm_telemetry`（各函数失败/降级/回退计数）、`token_usage`（provider 提供则累计，否则标记不可用）。
+- 新增 eval_wire_fixes.py（56 checks）；全量 eval 76/76。
+
+### Changed
+- 默认行为不变：新增功能默认关；telemetry/token 只读不影响回复；默认 [BC] 无新增 token、无新增默认 LLM 调用。
+- 流式：本 AstrBot 版本不向插件暴露 partial/streaming 回调，不实现假流式，限制写入文档。
+
+### Fixed
+- 修复 Windows 下 `node -e` 命令过长导致 WinError 206 的 eval harness 失败（改用临时文件执行）。
+
+### 兼容性
+- 配置/数据向后兼容；关闭新增开关即回到 1.2.99 行为。
+- 「重新判定」只改事件标记与重要度，不删除、不改原文；旧事件无 worthiness_inputs 时用 worthiness_from_parts 兜底。
+
+## [1.2.99] - 2026-10-27
 ### Added
 - 记忆点判定：W / W_her / K 多角度加权 + 三向闸门（生成记忆点 / 只归档 / 不生成），默认开启；事件记录写入 worthiness 明细（I/S/C/G/PE/R/P/N）。
 - Dashboard「修正记忆点」：标记重要 / 标记不重要 / 编辑标签 / 恢复，原子写回、不物理删除。

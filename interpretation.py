@@ -362,7 +362,8 @@ def _return_contract(memory_meta) -> str:
 def render_compact(core, memory="", events="", self_model=None, user=None,
                    image="", kb="", speaker="", voice="", memory_meta=None,
                    open_loops=None, open_loops_due=0, answer_confidence=None,
-                   strategy_hint="", continuity=None, prompt_mode="telemetry") -> str:
+                   strategy_hint="", continuity=None, prompt_mode="telemetry",
+                   workspace_token="", brevity="normal") -> str:
     """Render biological state into the single compact block the LLM sees.
 
     The interpretation layer owns this string; callers pass raw state/data and
@@ -383,6 +384,14 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
         float(core.v), float(core.a), float(core.d), float(core.social), float(core.trust),
         it.get("emotion") or "neutral", it.get("compound") or "-",
         it.get("need") or "talk", plan(core), it.get("regulation") or "none"))
+    try:
+        # task-35: workspace token from the minimal autonomy loop. Only the
+        # caller passes it when autonomy_loop_enabled (default OFF => "").
+        _ws = str(workspace_token or "").strip()[:16]
+        if _ws and all(ch.isalnum() or ch == "_" for ch in _ws):
+            cp += " ws=" + _ws
+    except Exception:
+        pass
     try:
         if float(getattr(core, "boredom", 0.0) or 0.0) >= 0.7:
             cp += " bored"
@@ -498,10 +507,20 @@ def render_compact(core, memory="", events="", self_model=None, user=None,
         cp += " | spk=" + str(speaker)[:60]
     if voice:
         cp += " | voice=" + str(voice)[:120]
+    _brevity = str(brevity or "normal").strip().lower()
+    _hint_cap = 120
+    if _brevity == "short":
+        _hint_cap = 60
+    elif _brevity == "medium":
+        _hint_cap = 90
     if strategy_hint:
         # L-T02..L-T12: one bounded strategy/cause/receipt token (never a
-        # second line; the interpretation layer owns the text).
-        cp += " | hint=" + _hint(strategy_hint, 120)
+        # second line; the interpretation layer owns the text). task-35:
+        # refusal posture may shorten the hint cap (default "normal" = 120).
+        cp += " | hint=" + _hint(strategy_hint, _hint_cap)
+    _btok = brevity_token(_brevity)
+    if _btok:
+        cp += " | " + _btok
     if continuity:
         # A4 continuity opener: at most one bounded "last talk" fragment on
         # the same [BC] line. No line is added and no empty placeholder is
@@ -1140,6 +1159,46 @@ def cause_trace_block(trace, limit=3) -> str:
     if not parts:
         return ""
     return _hint("cause=" + ",".join(parts), 120)
+
+
+def proposal_hint_block(impression=None, tom=None, diary=None,
+                        narrative=None) -> str:
+    """task-35: deterministic [BC] consumer for proposal-only outputs.
+
+    Only called when the corresponding per-function switch is ON, so the
+    default (all proposal functions OFF) renders nothing and the [BC] line is
+    byte-identical to 1.2.99. No LLM, bounded (<=140 chars), never a second line.
+    """
+    parts = []
+    imp = _dict(impression)
+    traits = []
+    for item in (imp.get("annotations") or []):
+        if isinstance(item, dict) and str(item.get("kind") or "") == "trait":
+            text = str(item.get("text") or "").strip()[:24]
+            if text and text not in traits:
+                traits.append(text)
+    if traits:
+        parts.append("imp=" + "|".join(traits[:2]))
+    tom_data = _dict(tom)
+    beliefs = [str(x).strip()[:24] for x in (tom_data.get("beliefs") or [])
+               if str(x or "").strip()]
+    if beliefs:
+        parts.append("tom=" + beliefs[-1])
+    if diary:
+        parts.append("diary=" + str(diary).strip()[:12])
+    if narrative:
+        parts.append("narr=" + str(narrative).strip()[:40])
+    if not parts:
+        return ""
+    return _hint(" ".join(parts), 140)
+
+
+def brevity_token(brevity) -> str:
+    """task-35: bounded refusal-brevity token (only when the switch is on)."""
+    mode = str(brevity or "normal").strip().lower()
+    if mode not in ("short", "medium"):
+        return ""
+    return _hint("brevity=" + mode, 24)
 
 
 def combine_strategy_hint(*parts) -> str:
