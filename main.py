@@ -3211,9 +3211,15 @@ class BioCorePlugin(Star):
         self.reply_consistency_enabled = bool(
             self.config.get("reply_consistency_enabled", False))
         self.llm_telemetry_enabled = bool(
-            self.config.get("llm_telemetry_enabled", True))
+            self.config.get("llm_telemetry_enabled", False))
         self.token_usage_enabled = bool(
-            self.config.get("token_usage_enabled", True))
+            self.config.get("token_usage_enabled", False))
+        # P1-3: real reply truncation cap (only active with refusal_brevity_enabled).
+        try:
+            self.refusal_brevity_max_chars = max(40, min(400, int(
+                self.config.get("refusal_brevity_max_chars", 160) or 160)))
+        except Exception:
+            self.refusal_brevity_max_chars = 160
         # Stage-2: C8+C9 goal<->appraisal closed loop (default OFF = 1.2.98).
         self.bio_feedback_loops = bool(self.config.get("bio_feedback_loops", False))
         # Task-20: L1 learning defaults ON with small steps + hard bounds.
@@ -3591,9 +3597,29 @@ class BioCorePlugin(Star):
     #   * no function writes core v/a/d/trust/goals or generates a reply;
     #   * strict/legacy mode (_llm_allowed) skips every extra call.
     # ------------------------------------------------------------------
+    @staticmethod
+    def _truncate_at_sentence(text, cap) -> str:
+        """P1-3: bounded sentence-boundary truncation for refusal brevity."""
+        value = str(text or "").strip()
+        try:
+            limit = max(1, int(cap or 0))
+        except Exception:
+            limit = 160
+        if len(value) <= limit:
+            return value
+        head = value[:limit]
+        idx = -1
+        for boundary in ("。", "！", "？", "；", "…", "\n", ".", "!", "?"):
+            pos = head.rfind(boundary)
+            if pos > idx:
+                idx = pos
+        if idx >= max(1, int(limit * 0.4)):
+            return head[:idx + 1].strip()
+        return head.rstrip()
+
     def _record_llm_telemetry(self, kind, outcome, detail="") -> None:
         """task-36: bounded read-only LLM failure/fallback telemetry."""
-        if not getattr(self, "llm_telemetry_enabled", True):
+        if not getattr(self, "llm_telemetry_enabled", False):
             return
         try:
             tele = self._llm_telemetry if isinstance(
@@ -3650,7 +3676,7 @@ class BioCorePlugin(Star):
         return None
 
     def _record_token_usage(self, session, usage) -> None:
-        if not getattr(self, "token_usage_enabled", True) or not isinstance(usage, dict):
+        if not getattr(self, "token_usage_enabled", False) or not isinstance(usage, dict):
             return
         try:
             store = self._token_usage if isinstance(
@@ -5487,9 +5513,11 @@ class BioCorePlugin(Star):
         persistence = self._worth_num(
             0.40 + 0.60 * max(intensity, drives_delta, self_delta,
                               self._worth_num(rel_delta, 0.0)))
+        # NOTE (P1-1): this helper is K-only on purpose. Re-evaluation must keep
+        # the archived intensity (stored inputs) instead of overwriting it with
+        # the live core value; intensity here only feeds the persistence factor.
         return {"pad_delta": pad_delta, "self_delta": self_delta,
-                "drives_delta": drives_delta, "persistence": persistence,
-                "intensity": self._worth_num(intensity)}
+                "drives_delta": drives_delta, "persistence": persistence}
 
     def _event_worthiness_bundle(self, record, core, relationship=None, *,
                                  text: str = "", title: str = "",
@@ -5522,8 +5550,14 @@ class BioCorePlugin(Star):
         if isinstance(stored, dict):
             inputs = self._worthiness_inputs_public(stored)
             if core is not None:
-                inputs.update(self._worth_k_proxies(
-                    core, self._worth_num(inputs.get("rel_delta"), 0.0)))
+                # P1-1: refresh ONLY the K proxies (pad/self/drives/persistence);
+                # the archived I/S/C/G/PE/R/P/N must stay exactly as stored.
+                _k = self._worth_k_proxies(
+                    core, self._worth_num(inputs.get("rel_delta"), 0.0))
+                for _key in ("pad_delta", "self_delta", "drives_delta",
+                             "persistence"):
+                    if _key in _k:
+                        inputs[_key] = _k[_key]
             return (memory_meta.compute_worthiness(**inputs),
                     self._worthiness_inputs_public(inputs), "inputs")
         parts = rec.get("worthiness")
@@ -8366,7 +8400,7 @@ class BioCorePlugin(Star):
                     })
                 except Exception:
                     continue
-        return {"status": "ok", "data": {
+        _data = {
             "enabled": self.enabled,
             "inject_intent": self.inject_intent,
             "proactive_reply": self.proactive_reply,
@@ -8409,24 +8443,8 @@ class BioCorePlugin(Star):
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
             "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],
-            # task-36 read-only projections: LLM failure/fallback counters,
-            # provider token usage (available=false when the provider omits it),
-            # and the opt-in reply-consistency score.
-            "llm_telemetry": {
-                "enabled": bool(getattr(self, "llm_telemetry_enabled", True)),
-                "counters": dict(((getattr(self, "_llm_telemetry", {}) or {}).get("counters") or {})),
-                "recent": [dict(x) for x in (((getattr(self, "_llm_telemetry", {}) or {}).get("recent") or []))[:10]
-                           if isinstance(x, dict)]},
-            "token_usage": {
-                "enabled": bool(getattr(self, "token_usage_enabled", True)),
-                "available": bool(((getattr(self, "_token_usage", {}) or {}).get("available", False))),
-                "sessions": {str(k)[:80]: dict(v) for k, v in
-                             list((((getattr(self, "_token_usage", {}) or {}).get("sessions") or {})).items())[:10]
-                             if isinstance(v, dict)}},
-            "reply_consistency": (
-                dict(cores[0].reply_consistency)
-                if cores and isinstance(getattr(cores[0], "reply_consistency", None), dict)
-                else None),
+            # task-36 read-only projections are appended ONLY when their opt-in
+            # switches are ON (P1-2: default OFF => no new page/status fields).
             "kb_config": {"enabled": bool(getattr(self, "kb_enabled", False)),
                           "names": list(getattr(self, "kb_names", []))},
             "kb_available": await self._kb_available(),
@@ -8442,7 +8460,25 @@ class BioCorePlugin(Star):
                        for _ev in self._event_archive(30, read_only=True)
                        if isinstance(_ev, dict)],
             "insights": self._insights(5),
-        }}
+        }
+        # P1-2: default-OFF telemetry/token/consistency add no keys at all.
+        if getattr(self, "llm_telemetry_enabled", False):
+            _data["llm_telemetry"] = {
+                "enabled": True,
+                "counters": dict(((getattr(self, "_llm_telemetry", {}) or {}).get("counters") or {})),
+                "recent": [dict(x) for x in (((getattr(self, "_llm_telemetry", {}) or {}).get("recent") or []))[:10]
+                           if isinstance(x, dict)]}
+        if getattr(self, "token_usage_enabled", False):
+            _data["token_usage"] = {
+                "enabled": True,
+                "available": bool(((getattr(self, "_token_usage", {}) or {}).get("available", False))),
+                "sessions": {str(k)[:80]: dict(v) for k, v in
+                             list((((getattr(self, "_token_usage", {}) or {}).get("sessions") or {})).items())[:10]
+                             if isinstance(v, dict)}}
+        if (getattr(self, "reply_consistency_enabled", False)
+                and cores and isinstance(getattr(cores[0], "reply_consistency", None), dict)):
+            _data["reply_consistency"] = dict(cores[0].reply_consistency)
+        return {"status": "ok", "data": _data}
 
     async def page_self_model(self):
         from quart import request
@@ -10636,6 +10672,26 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _reply = _clean
+        # P1-3: opt-in REAL truncation when the L1 refusal posture is active.
+        # Default OFF => the reply/result_chain are untouched (1.2.99 parity).
+        if getattr(self, "refusal_brevity_enabled", False):
+            try:
+                _posture = core.refusal_posture(
+                    self._relationship_of(self._user_record(event)))
+                if str(_posture.get("mode") or "comply") in ("negotiate", "decline"):
+                    _cap = max(40, min(400, int(
+                        getattr(self, "refusal_brevity_max_chars", 160) or 160)))
+                    _cut = self._truncate_at_sentence(_reply, _cap)
+                    if _cut != _reply:
+                        _reply = _cut
+                        response.completion_text = _reply
+                        _chain = getattr(response, "result_chain", None)
+                        if _chain is not None and getattr(_chain, "chain", None):
+                            for _comp in _chain.chain:
+                                if hasattr(_comp, "text"):
+                                    _comp.text = _reply
+            except Exception:
+                pass
         # task-36: opt-in read-only reply-consistency projection (default OFF).
         if getattr(self, "reply_consistency_enabled", False):
             try:
@@ -10644,7 +10700,7 @@ class BioCorePlugin(Star):
                 pass
         # task-36: provider usage counters (only when the provider reports it;
         # otherwise the projection stays "available": false -- never guessed).
-        if getattr(self, "token_usage_enabled", True):
+        if getattr(self, "token_usage_enabled", False):
             try:
                 _usage = self._extract_token_usage(response)
                 if _usage:

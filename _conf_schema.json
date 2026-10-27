@@ -464,9 +464,15 @@
   },
   "refusal_brevity_enabled": {
     "description": "拒绝姿态缩短回复（默认关）",
-    "hint": "默认关=旧行为。开启后当 L1 refusal 姿态为 negotiate/decline 时，[BC] 策略提示按 brevity=medium/short 缩短，主动发送门槛同步收紧；不改变是否回复的判定。",
+    "hint": "默认关=旧行为。开启后当 L1 refusal 姿态为 negotiate/decline 时：① 对最终回复做句界内真实截断（上限见 refusal_brevity_max_chars，同步 completion_text/result_chain）；② [BC] 策略提示按 brevity=medium/short 缩短；③ 主动发送门槛收紧。不改变是否回复的判定。",
     "type": "bool",
     "default": false
+  },
+  "refusal_brevity_max_chars": {
+    "description": "拒绝姿态回复上限（字符，默认 160）",
+    "hint": "仅在 refusal_brevity_enabled 开启且 refusal 姿态生效时用于最终回复截断；尽量在句界截断，范围 40–400。",
+    "type": "int",
+    "default": 160
   },
   "reply_consistency_enabled": {
     "description": "回复一致性只读评分（默认关）",
@@ -475,15 +481,15 @@
     "default": false
   },
   "llm_telemetry_enabled": {
-    "description": "LLM 失败/降级 telemetry（默认开，只读）",
-    "hint": "默认开：只统计各 LLM 功能的失败/降级次数与最近 20 条记录，写 page_status.llm_telemetry 供 Dashboard 只读；不改变调用、不写 prompt。",
+    "description": "LLM 失败/降级 telemetry（默认关，只读）",
+    "hint": "默认关=page/status 无新增字段、不记录任何东西（旧行为）。开启后只统计各 LLM 功能的失败/降级次数与最近 20 条记录，写 page_status.llm_telemetry 供 Dashboard 只读；不改变调用、不写 prompt。",
     "type": "bool",
-    "default": true
+    "default": false
   },
   "token_usage_enabled": {
-    "description": "token 用量记录（默认开，只读）",
-    "hint": "默认开：仅当 provider 在响应里返回 usage 时按会话累计 prompt/completion/total；拿不到则 available=false（不估算）。只读投影，不参与判定。",
+    "description": "token 用量记录（默认关，只读）",
+    "hint": "默认关=不读 usage、page/status 无新增字段。开启后仅当 provider 在响应里返回 usage 时按会话累计 prompt/completion/total；拿不到则 available=false（不估算）。只读投影，不参与判定。",
     "type": "bool",
-    "default": true
+    "default": false
   }
 }
