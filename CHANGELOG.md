@@ -2,6 +2,17 @@
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
 
+## 1.3.2 - 2026-10-28
+
+### Added
+- `text` 提示词模式（`bc_prompt_mode=text`，默认仍 `telemetry`）：数值转档位词、标签 e/c/n/plan/reg 保留、顺序固定（她此刻→对你→这一轮）、≤150 字；多情绪（1 主 + 1 次 + 强度）、事件联系（事件链边最强 1–2 条，写成「A → B，她读成同一件事」）、边界小数仅在阈值±0.05 或 0.5/0.75 附近给出；固定图例（≤2 行）只进 system 固定前缀，可用 `bc_text_legend_enabled=false` 关闭。
+- 模型层模块化：渲染迁入 `biocore_model/render.py`（telemetry/semantic 与 1.3.1 逐字节一致），新增 `biocore_model/services.py` 统一外部调用超时/计数网关；`interpretation.py` 保留同名薄 wrapper，旧 import/eval 不变。
+- 增量 eval 基建：`scripts/run_evals.py` 按 8 组 + 文件哈希只跑受影响组（失败组必重跑，`.eval_cache.json` 本地缓存）；`scripts/_eval_common.py` 统一 eval bootstrapping；`scripts/eval_render.py` 57 checks。
+
+### Changed
+- **物理删除 tombstone 脱敏**：硬删除的 tombstone 只保留 `路径 + sha256 + 字节数 + 已删除`，不再包含原文/二进制；软删除 tombstone 同样只保留 id/status/sha256；Dashboard 墓碑投影不再返回原文；删除后不可从 tombstone 还原。
+- 默认提示词模式不变（`telemetry`）；关闭新增开关即回到 1.3.1 渲染行为。
+
 ## 1.3.1
 
 - 上架合规：注入改为临时 content part（TextPart.mark_as_temp），不再修改 req.system_prompt；数据目录统一为 astrbot_plugin_biocore（含旧目录自动迁移并保留备份）。
