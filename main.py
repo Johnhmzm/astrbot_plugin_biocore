@@ -11,6 +11,17 @@ false. When off, readiness is not computed, no background task starts, no messag
 is sent, and the legacy noise/state trajectory is unchanged. All readiness math
 lives in the L1 BioCore (autonomy_state); the plugin only feeds raw module deltas
 and reads the resulting state for the command/UI. Group chats never trigger.
+
+Task-35/36 wiring (2026-10-27): proposal-only hints (repair/empathy/pragmatics/
+humor/tom/impression/diary/narrative) are consumed through ONE deterministic
+[BC] hint line (interpretation.proposal_hint_block) only when their per-function
+switch is ON; multihop recall (memory_chain_multihop), refusal brevity
+(refusal_brevity_enabled), reply consistency (reply_consistency_enabled) and the
+autonomy-loop workspace token are opt-in/default-OFF. LLM failure/fallback
+telemetry and provider token usage are read-only projections.
+Streaming limitation: this AstrBot build exposes no partial/streaming callback
+to plugins (no on_streaming filter), so BioCore cannot consume chunked partial
+replies; it only post-processes the final completion and does not fake streaming.
 """
 from __future__ import annotations
 
@@ -142,7 +153,7 @@ def event_effective_time(record) -> float:
 
 
 EVENT_SUMMARY_ACTIONS = ("regenerate", "update")
-MEMORY_POINT_FEEDBACK_ACTIONS = ("important", "unimportant", "edit_label", "restore")
+MEMORY_POINT_FEEDBACK_ACTIONS = ("important", "unimportant", "edit_label", "restore", "reevaluate")
 EVENT_SUMMARY_HARD_MAX = 20000
 EVENT_SUMMARY_SMALL_MAX = 80
 EVENT_SUMMARY_HISTORY_MAX = 20
@@ -762,6 +773,9 @@ class BioCore:
         self.autonomy_loop_c1 = AUTONOMY_LOOP_C1
         self.autonomy_loop_c2 = AUTONOMY_LOOP_C2
         self.autonomy_loop_token_only = True
+        # task-36: reply consistency is an opt-in read-only projection.
+        self.reply_consistency_enabled = False
+        self.reply_consistency = None
         self._noise_seed = 0
         self._noise_accum = {}
         # Task-20: L1 learning state (deterministic, bounded, auditable).
@@ -2854,6 +2868,71 @@ class BioCore:
                 "effort_debt": state["effort_debt"],
                 "value_ema": dict(state["value_ema"]), "stats": dict(stats)}
 
+    def refusal_posture(self, relationship=None) -> dict:
+        """task-35 L1: deterministic refusal posture -> brevity posture.
+
+        Reads boundary_pressure/trust/conflict only; returns a label used by L2
+        rendering and the proactive gate. Never decides by itself whether a reply
+        is sent here.
+        """
+        rel = relationship if isinstance(relationship, dict) else {}
+        state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
+        try:
+            protocol = relationship_meta.refusal_protocol({
+                "boundary_pressure": float(getattr(self, "boundary_pressure", 0.0) or 0.0),
+                "trust": float(state.get("trust", 0.5) or 0.5),
+                "conflict": float(state.get("conflict", 0.0) or 0.0),
+            })
+        except Exception:
+            protocol = {"mode": "comply"}
+        mode = str(protocol.get("mode") or "comply")
+        brevity = "short" if mode == "decline" else (
+            "medium" if mode == "negotiate" else "normal")
+        return {"mode": mode, "brevity": brevity}
+
+    def evaluate_reply_consistency(self, text, now=None) -> dict:
+        """task-36: deterministic reply/intent consistency (0..1, read-only).
+
+        Heuristic checks only (length bands vs labels need/expression). It never
+        rewrites the reply and is only stored when reply_consistency_enabled.
+        """
+        value = str(text or "").strip()
+        checks = []
+        score = 1.0
+        try:
+            labels = getattr(self, "labels", {}) or {}
+            need = str(labels.get("need") or "talk")
+            expression = str(labels.get("expression") or "normal")
+            if not value:
+                score = 0.0
+                checks.append("empty")
+            else:
+                length = len(value)
+                if length > 240:
+                    score -= 0.20
+                    checks.append("too_long")
+                if length < 2:
+                    score -= 0.30
+                    checks.append("too_short")
+                if need == "space" and length > 60:
+                    score -= 0.20
+                    checks.append("space_but_long")
+                if need == "talk" and length < 4:
+                    score -= 0.10
+                    checks.append("talk_but_short")
+                if expression == "normal" and value.count("！") >= 4:
+                    score -= 0.10
+                    checks.append("too_excited")
+        except Exception:
+            checks.append("error")
+        try:
+            stamp = float(now if now is not None else time.time())
+        except Exception:
+            stamp = time.time()
+        return {"score": round(_clip(score, 0.0, 1.0), 4),
+                "length": len(value), "checks": checks[:6],
+                "ts": round(stamp, 3)}
+
     def autonomy_state(self, relationship=None, now=None, persist: bool = True) -> dict:
         """L1 task-15: deterministic noise -> autonomy readiness.
 
@@ -3048,6 +3127,11 @@ class BioCore:
         if (getattr(self, "autonomy_loop_enabled", False)
                 and isinstance(getattr(self, "autonomy_loop", None), dict)):
             out["autonomy_loop"] = dict(self.autonomy_loop)
+        # task-36: opt-in read-only reply-consistency projection; default OFF
+        # keeps the state file byte-identical to 1.2.99.
+        if (getattr(self, "reply_consistency_enabled", False)
+                and isinstance(getattr(self, "reply_consistency", None), dict)):
+            out["reply_consistency"] = dict(self.reply_consistency)
         return out
 
 
@@ -3074,7 +3158,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.2.99")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.0")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -3120,6 +3204,16 @@ class BioCorePlugin(Star):
             "autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
         self.autonomy_loop_token_only = bool(
             self.config.get("autonomy_loop_token_only", True))
+        # task-35/36: reply-side wiring (all deterministic, default OFF except
+        # read-only telemetry counters which have no behavioural effect).
+        self.refusal_brevity_enabled = bool(
+            self.config.get("refusal_brevity_enabled", False))
+        self.reply_consistency_enabled = bool(
+            self.config.get("reply_consistency_enabled", False))
+        self.llm_telemetry_enabled = bool(
+            self.config.get("llm_telemetry_enabled", True))
+        self.token_usage_enabled = bool(
+            self.config.get("token_usage_enabled", True))
         # Stage-2: C8+C9 goal<->appraisal closed loop (default OFF = 1.2.98).
         self.bio_feedback_loops = bool(self.config.get("bio_feedback_loops", False))
         # Task-20: L1 learning defaults ON with small steps + hard bounds.
@@ -3229,6 +3323,9 @@ class BioCorePlugin(Star):
         self._last_strategy_hint = ""
         self._last_memory_entries = []
         self._llm_v2_last = {}
+        # task-36: bounded read-only telemetry (never feeds prompts or gates).
+        self._llm_telemetry = {"counters": {}, "recent": []}
+        self._token_usage = {"available": False, "sessions": {}}
         # LLM scope: user requirement is "LLM only for reply + summary".
         # When true, BioCore only calls the LLM for event/memory summaries;
         # persona compile / event ranking / reflection / image caption are
@@ -3494,6 +3591,85 @@ class BioCorePlugin(Star):
     #   * no function writes core v/a/d/trust/goals or generates a reply;
     #   * strict/legacy mode (_llm_allowed) skips every extra call.
     # ------------------------------------------------------------------
+    def _record_llm_telemetry(self, kind, outcome, detail="") -> None:
+        """task-36: bounded read-only LLM failure/fallback telemetry."""
+        if not getattr(self, "llm_telemetry_enabled", True):
+            return
+        try:
+            tele = self._llm_telemetry if isinstance(
+                getattr(self, "_llm_telemetry", None), dict) else {"counters": {}, "recent": []}
+            counters = tele.get("counters") if isinstance(tele.get("counters"), dict) else {}
+            key = "%s:%s" % (str(kind or "?")[:24], str(outcome or "?")[:16])
+            counters[key] = min(10 ** 6, int(counters.get(key, 0) or 0) + 1)
+            tele["counters"] = dict(sorted(counters.items(), key=lambda kv: -kv[1])[:20])
+            recent = tele.get("recent") if isinstance(tele.get("recent"), list) else []
+            tele["recent"] = ([{"ts": round(time.time(), 3), "kind": str(kind or "?")[:24],
+                                "outcome": str(outcome or "?")[:16],
+                                "detail": str(detail or "")[:120]}]
+                              + [x for x in recent if isinstance(x, dict)])[:20]
+            self._llm_telemetry = tele
+        except Exception:
+            pass
+
+    @staticmethod
+    def _extract_token_usage(response):
+        """task-36: read provider usage if present; never guess/estimate."""
+        candidates = []
+        try:
+            candidates.append(getattr(response, "usage", None))
+            candidates.append(getattr(response, "usage_metadata", None))
+            candidates.append(getattr(response, "token_usage", None))
+            raw = getattr(response, "raw_completion", None)
+            if isinstance(raw, dict):
+                candidates.append(raw.get("usage"))
+            elif raw is not None:
+                candidates.append(getattr(raw, "usage", None))
+        except Exception:
+            pass
+        for item in candidates:
+            data = item if isinstance(item, dict) else None
+            if data is None and item is not None:
+                try:
+                    data = {"prompt_tokens": getattr(item, "prompt_tokens", None),
+                            "completion_tokens": getattr(item, "completion_tokens", None),
+                            "total_tokens": getattr(item, "total_tokens", None)}
+                except Exception:
+                    data = None
+            if not isinstance(data, dict):
+                continue
+            try:
+                prompt = int(data.get("prompt_tokens") or 0)
+                completion = int(data.get("completion_tokens") or 0)
+                total = int(data.get("total_tokens") or (prompt + completion))
+            except Exception:
+                continue
+            if prompt or completion or total:
+                return {"prompt_tokens": max(0, prompt),
+                        "completion_tokens": max(0, completion),
+                        "total_tokens": max(0, total)}
+        return None
+
+    def _record_token_usage(self, session, usage) -> None:
+        if not getattr(self, "token_usage_enabled", True) or not isinstance(usage, dict):
+            return
+        try:
+            store = self._token_usage if isinstance(
+                getattr(self, "_token_usage", None), dict) else {"available": False, "sessions": {}}
+            sessions = store.get("sessions") if isinstance(store.get("sessions"), dict) else {}
+            key = str(session or "default")[:80]
+            item = sessions.get(key) if isinstance(sessions.get(key), dict) else {}
+            item["calls"] = min(10 ** 6, int(item.get("calls", 0) or 0) + 1)
+            for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                item[field] = min(10 ** 12, int(item.get(field, 0) or 0)
+                                  + int(usage.get(field, 0) or 0))
+            item["last_ts"] = round(time.time(), 3)
+            sessions[key] = item
+            store["sessions"] = sessions
+            store["available"] = True
+            self._token_usage = store
+        except Exception:
+            pass
+
     async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None):
         if not self._llm_allowed(kind):
             return None
@@ -3501,8 +3677,10 @@ class BioCorePlugin(Star):
             provider = await self._provider_for(kind, event)
         except Exception as exc:
             logger.warning("[biocore] llm v2 provider failed (%s): %s", kind, exc)
+            self._record_llm_telemetry(kind, "provider_error", str(exc))
             return None
         if provider is None:
+            self._record_llm_telemetry(kind, "no_provider")
             return None
         try:
             if system_prompt:
@@ -3511,10 +3689,12 @@ class BioCorePlugin(Star):
                 resp = await provider.text_chat(prompt=prompt)
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             if not raw:
+                self._record_llm_telemetry(kind, "empty")
                 return None
             return parser(raw)
         except Exception as exc:
             logger.warning("[biocore] llm v2 call/paser failed (%s): %s", kind, exc)
+            self._record_llm_telemetry(kind, "call_error", str(exc))
             return None
 
     def _llm_v2_cooldown_ok(self, kind):
@@ -3929,6 +4109,8 @@ class BioCorePlugin(Star):
                 "autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
             core.autonomy_loop_token_only = bool(
                 getattr(self, "autonomy_loop_token_only", True))
+            core.reply_consistency_enabled = bool(
+                getattr(self, "reply_consistency_enabled", False))
             core.bio_feedback_loops = bool(
                 getattr(self, "bio_feedback_loops", False))
             core.bio_learning = bool(getattr(self, "bio_learning", True))
@@ -4056,7 +4238,11 @@ class BioCorePlugin(Star):
                 return None, state
             if str(protocol.get("mode") or "comply") == "negotiate":
                 state = dict(state)
-                state["max_chars"] = min(int(state.get("max_chars") or 120), 90)
+                _cap = 90
+                # task-35: opt-in refusal brevity also tightens proactive output.
+                if getattr(self, "refusal_brevity_enabled", False):
+                    _cap = 60
+                state["max_chars"] = min(int(state.get("max_chars") or 120), _cap)
             hour = time.localtime(current).tm_hour
             if AUTONOMY_QUIET_START_HOUR <= hour < AUTONOMY_QUIET_END_HOUR:
                 return None, state
@@ -5185,17 +5371,10 @@ class BioCorePlugin(Star):
             return default
         return max(lo, min(hi, number))
 
-    def _event_worthiness_for(self, record, core, relationship=None, *,
-                              text: str = "", title: str = "",
-                              schema=None):
-        """task-33: deterministic W/W_her/K for one event record (no LLM).
-
-        Returns None when memory_worthiness_enabled is OFF: the caller then
-        archives exactly like 1.2.98 (no worthiness field, no gate). All inputs
-        are existing fields/proxies; the gate never writes biological state.
-        """
-        if not getattr(self, "memory_worthiness_enabled", True):
-            return None
+    def _worthiness_inputs_for(self, record, core, relationship=None, *,
+                               text: str = "", title: str = "",
+                               schema=None) -> dict:
+        """Build the raw deterministic inputs for compute_worthiness (no LLM)."""
         rec = record if isinstance(record, dict) else {}
         body = str(text or rec.get("event") or rec.get("title") or "")
         heading = str(title or rec.get("title") or "")
@@ -5255,18 +5434,122 @@ class BioCorePlugin(Star):
             + 0.30 * conflict + 0.20 * repair)
         persistence = self._worth_num(
             0.40 + 0.60 * max(intensity, drives_delta, self_delta, rel_delta))
-        return memory_meta.compute_worthiness(
-            intensity=intensity, schema_congruence=schema_v,
-            self_defining=self_defining, milestone=milestone,
-            boundary_score=rec.get("boundary_score", 0.0),
-            recall_count=rec.get("recall_count", 0),
-            merge_count=rec.get("merge_count", 0),
-            goal_relevance=appraisal.get("goal_relevance", 0.0),
-            novelty=novelty, rel_trust=trust, rel_closeness=closeness,
-            rel_conflict=conflict, rel_repair=repair, routine=routine,
-            pad_delta=pad_delta, self_delta=self_delta,
-            rel_delta=rel_delta, drives_delta=drives_delta,
-            persistence=persistence)
+        return {
+            "intensity": intensity, "schema_congruence": schema_v,
+            "self_defining": self_defining, "milestone": milestone,
+            "boundary_score": rec.get("boundary_score", 0.0),
+            "recall_count": rec.get("recall_count", 0),
+            "merge_count": rec.get("merge_count", 0),
+            "goal_relevance": appraisal.get("goal_relevance", 0.0),
+            "novelty": novelty, "rel_trust": trust, "rel_closeness": closeness,
+            "rel_conflict": conflict, "rel_repair": repair, "routine": routine,
+            "pad_delta": pad_delta, "self_delta": self_delta,
+            "rel_delta": rel_delta, "drives_delta": drives_delta,
+            "persistence": persistence,
+        }
+
+    @staticmethod
+    def _worthiness_inputs_public(inputs) -> dict:
+        """Bounded JSON-safe raw inputs stored on the event (task-34 re-eval)."""
+        src = inputs if isinstance(inputs, dict) else {}
+        out = {}
+        for key in ("intensity", "schema_congruence", "milestone", "boundary_score",
+                    "goal_relevance", "novelty", "rel_trust", "rel_closeness",
+                    "rel_conflict", "rel_repair", "pad_delta", "self_delta",
+                    "rel_delta", "drives_delta", "persistence"):
+            out[key] = round(BioCorePlugin._worth_num(src.get(key), 0.0), 4)
+        out["self_defining"] = bool(src.get("self_defining", False))
+        out["routine"] = bool(src.get("routine", False))
+        out["recall_count"] = max(0, int(BioCorePlugin._worth_num(
+            src.get("recall_count"), 0.0, 0.0, 10 ** 6)))
+        out["merge_count"] = max(0, int(BioCorePlugin._worth_num(
+            src.get("merge_count"), 0.0, 0.0, 10 ** 6)))
+        return out
+
+    def _worth_k_proxies(self, core, rel_delta: float = 0.0) -> dict:
+        """Live core proxies for K (task-34 re-evaluation); bounded."""
+        momentum = getattr(core, "momentum", None) if core is not None else None
+        momentum = momentum if isinstance(momentum, dict) else {}
+        pad_delta = self._worth_num(
+            2.0 * (abs(self._worth_num(momentum.get("v"), 0.0, -1.0, 1.0))
+                   + abs(self._worth_num(momentum.get("a"), 0.0, -1.0, 1.0))
+                   + abs(self._worth_num(momentum.get("d"), 0.0, -1.0, 1.0))))
+        self_delta = self._worth_num(
+            abs(self._worth_num(getattr(core, "boundary_pressure", 0.0), 0.0))
+            + abs(self._worth_num(getattr(core, "refusal_readiness", 0.0), 0.0)))
+        homeo = getattr(core, "homeostasis", None) if core is not None else None
+        homeo = homeo if isinstance(homeo, dict) else {}
+        drives_delta = self._worth_num(homeo.get("L_int"), 0.0)
+        try:
+            intensity = float(core._intensity()) if core is not None else 0.0
+        except Exception:
+            intensity = 0.0
+        persistence = self._worth_num(
+            0.40 + 0.60 * max(intensity, drives_delta, self_delta,
+                              self._worth_num(rel_delta, 0.0)))
+        return {"pad_delta": pad_delta, "self_delta": self_delta,
+                "drives_delta": drives_delta, "persistence": persistence,
+                "intensity": self._worth_num(intensity)}
+
+    def _event_worthiness_bundle(self, record, core, relationship=None, *,
+                                 text: str = "", title: str = "",
+                                 schema=None):
+        """(worthiness, public raw inputs) or (None, None) when the gate is OFF."""
+        if not getattr(self, "memory_worthiness_enabled", True):
+            return None, None
+        inputs = self._worthiness_inputs_for(
+            record, core, relationship, text=text, title=title, schema=schema)
+        return (memory_meta.compute_worthiness(**inputs),
+                self._worthiness_inputs_public(inputs))
+
+    def _event_worthiness_for(self, record, core, relationship=None, **kw):
+        """task-33/34: deterministic W/W_her/K for one event (None when OFF)."""
+        worth, _inputs = self._event_worthiness_bundle(
+            record, core, relationship, **kw)
+        return worth
+
+    def _reevaluate_worthiness(self, record, core=None):
+        """task-34: recompute worthiness from stored inputs/parts + core proxies.
+
+        Returns (worthiness, public_inputs|None, source) or (None, None, None)
+        when memory_worthiness_enabled=false. Deterministic, never calls an LLM
+        and never writes biological state.
+        """
+        if not getattr(self, "memory_worthiness_enabled", True):
+            return None, None, None
+        rec = record if isinstance(record, dict) else {}
+        stored = rec.get("worthiness_inputs")
+        if isinstance(stored, dict):
+            inputs = self._worthiness_inputs_public(stored)
+            if core is not None:
+                inputs.update(self._worth_k_proxies(
+                    core, self._worth_num(inputs.get("rel_delta"), 0.0)))
+            return (memory_meta.compute_worthiness(**inputs),
+                    self._worthiness_inputs_public(inputs), "inputs")
+        parts = rec.get("worthiness")
+        if isinstance(parts, dict) and all(
+                key in parts for key in ("I", "S", "C", "G", "PE", "R", "P", "N")):
+            k_vals = {"pad_delta": 0.0, "self_delta": 0.0, "rel_delta": 0.0,
+                      "drives_delta": 0.0, "persistence": 0.4}
+            if core is not None:
+                proxies = self._worth_k_proxies(
+                    core, self._worth_num(parts.get("R"), 0.0))
+                k_vals.update(proxies)
+            k_raw = _clip(0.35 * k_vals["pad_delta"] + 0.25 * k_vals["self_delta"]
+                          + 0.20 * k_vals["rel_delta"]
+                          + 0.20 * k_vals["drives_delta"], 0.0, 1.0)
+            k_val = _clip(k_raw * k_vals["persistence"], 0.0, 1.0)
+            worth = memory_meta.worthiness_from_parts(
+                I=parts.get("I", 0.0), S=parts.get("S", 0.0),
+                C=parts.get("C", 0.0), G=parts.get("G", 0.0),
+                PE=parts.get("PE", 0.0), R=parts.get("R", 0.0),
+                P=parts.get("P", 0.0), N=parts.get("N", 0), K=k_val)
+            return worth, None, "parts"
+        inputs = self._worthiness_inputs_for(
+            rec, core, None, text=str(rec.get("event") or ""),
+            title=str(rec.get("title") or ""))
+        return (memory_meta.compute_worthiness(**inputs),
+                self._worthiness_inputs_public(inputs), "recomputed")
 
     def _event_worthiness_decision(self, record, core, relationship=None, **kw):
         """Gate wrapper -> (worthiness|None, decision); OFF => legacy memory_point."""
@@ -5278,10 +5561,14 @@ class BioCorePlugin(Star):
     @staticmethod
     def _memory_point_snapshot(record) -> dict:
         rec = record if isinstance(record, dict) else {}
+        worth = rec.get("worthiness") if isinstance(rec.get("worthiness"), dict) else None
         return {"importance": rec.get("importance", 0.5),
                 "user_marked": bool(rec.get("user_marked", False)),
                 "title": str(rec.get("title") or "")[:80],
-                "small_summary": str(rec.get("small_summary") or "")[:80]}
+                "small_summary": str(rec.get("small_summary") or "")[:80],
+                # task-34: restore must undo a reevaluate downgrade too.
+                "memory_point": bool(rec.get("memory_point", True)),
+                "worthiness": dict(worth) if worth is not None else None}
 
     def _apply_memory_point_feedback(self, record, event_id: str,
                                      action: str, body=None) -> bool:
@@ -5294,13 +5581,19 @@ class BioCorePlugin(Star):
         data = body if isinstance(body, dict) else {}
         if action not in MEMORY_POINT_FEEDBACK_ACTIONS:
             return False
+        if action == "reevaluate":
+            # Handled by _apply_memory_point_reevaluate (needs the verdict).
+            return False
         if action == "restore":
             prev = record.get("feedback_prev")
             if not isinstance(prev, dict):
                 return False
-            for key in ("importance", "user_marked", "title", "small_summary"):
+            for key in ("importance", "user_marked", "title", "small_summary",
+                        "memory_point", "worthiness"):
                 if key in prev:
                     record[key] = prev[key]
+            record.pop("downgraded_by_reevaluate", None)
+            record["reevaluate_restored_ts"] = round(time.time(), 3)
             record["last_feedback_action"] = "restore"
             record["feedback_ts"] = round(time.time(), 3)
             return True
@@ -5337,6 +5630,51 @@ class BioCorePlugin(Star):
         record["feedback_ts"] = round(time.time(), 3)
         return True
 
+    def _apply_memory_point_reevaluate(self, record, event_id: str,
+                                       worth: dict, verdict: dict,
+                                       inputs=None) -> bool:
+        """task-34 atomic mutation: write verdict, downgrade when not a point."""
+        if not isinstance(record, dict):
+            return False
+        if str(record.get("id") or "") != str(event_id or ""):
+            return False
+        if not isinstance(worth, dict) or not isinstance(verdict, dict):
+            return False
+        before = self._memory_point_snapshot(record)
+        if not isinstance(record.get("feedback_prev"), dict):
+            record["feedback_prev"] = before
+        decision = str(verdict.get("decision") or worth.get("decision") or "archive_only")
+        now = round(time.time(), 3)
+        record["worthiness"] = dict(worth)
+        if isinstance(inputs, dict):
+            record["worthiness_inputs"] = dict(inputs)
+        record["reevaluate_ts"] = now
+        record["reevaluate_verdict"] = {
+            "decision": decision,
+            "W": worth.get("W", 0.0),
+            "W_her": worth.get("W_her", 0.0),
+            "K": worth.get("K", 0.0),
+            "reasons": list(verdict.get("reasons") or [worth.get("reason") or ""]),
+            "ts": now,
+        }
+        if decision in ("archive_only", "skip"):
+            # Downgrade in place: keep the row (no physical delete) so 恢复 works.
+            record["memory_point"] = False
+            record["importance"] = 0.15
+            record["user_marked"] = False
+            record["downgraded_by_reevaluate"] = True
+        else:
+            record["memory_point"] = True
+            record["downgraded_by_reevaluate"] = False
+        history = record.get("feedback_history")
+        history = history if isinstance(history, list) else []
+        record["feedback_history"] = ([{"action": "reevaluate", "ts": now,
+                                        "before": before, "decision": decision}]
+                                      + [h for h in history if isinstance(h, dict)])[:20]
+        record["last_feedback_action"] = "reevaluate"
+        record["feedback_ts"] = now
+        return True
+
     @staticmethod
     def _parse_memory_point_feedback_request(body):
         data = body if isinstance(body, dict) else {}
@@ -5361,13 +5699,64 @@ class BioCorePlugin(Star):
                 "label_edited": bool(rec.get("label_edited", False)),
                 "last_feedback_action": str(rec.get("last_feedback_action") or "")[:20],
                 "worthiness": dict(worth) if worth is not None else None,
+                "reevaluate_ts": round(self._worth_num(
+                    rec.get("reevaluate_ts"), 0.0, 0.0, 10 ** 12), 3),
+                "reevaluate_verdict": (dict(rec.get("reevaluate_verdict"))
+                                       if isinstance(rec.get("reevaluate_verdict"), dict)
+                                       else None),
                 "summary_status": str(rec.get("summary_status") or "legacy"),
                 "summary_edited": bool(rec.get("summary_edited", False)),
                 "summary_updated_ts": round(self._worth_num(
                     rec.get("summary_updated_ts"), 0.0, 0.0, 10 ** 12), 3)}
 
+    async def _page_memory_point_reevaluate(self, record, event_id: str):
+        """task-34: recompute W/W_her/K, downgrade/keep, return record+verdict."""
+        if not getattr(self, "memory_worthiness_enabled", True):
+            return {"status": "error",
+                    "message": "判定关闭（memory_worthiness_enabled=false），未修改记录"}
+        core = None
+        try:
+            cores = getattr(self, "cores", None)
+            if isinstance(cores, dict):
+                core = cores.get(str(record.get("session") or ""))
+        except Exception:
+            core = None
+        worth, inputs, source = self._reevaluate_worthiness(record, core)
+        if not isinstance(worth, dict):
+            return {"status": "error",
+                    "message": "判定关闭（memory_worthiness_enabled=false），未修改记录"}
+        verdict = {"decision": str(worth.get("decision") or "archive_only"),
+                   "W": worth.get("W", 0.0),
+                   "W_her": worth.get("W_her", 0.0),
+                   "K": worth.get("K", 0.0),
+                   "reasons": [str(worth.get("reason") or "")],
+                   "source": source}
+        try:
+            changed = self._rewrite_jsonl_atomic(
+                EVENT_ARCHIVE_PATH,
+                lambda obj: self._apply_memory_point_reevaluate(
+                    obj, event_id, worth, verdict, inputs))
+        except Exception as exc:
+            logger.warning("[biocore] memory point reevaluate failed: %s", exc)
+            changed = 0
+        if changed <= 0:
+            return {"status": "error", "message": "事件不存在或写入失败"}
+        try:
+            session = str(record.get("session") or "")
+            if session:
+                self._rewrite_jsonl_atomic(
+                    self._event_session_file(session),
+                    lambda obj: self._apply_memory_point_reevaluate(
+                        obj, event_id, worth, verdict, inputs))
+        except Exception:
+            pass
+        saved = self._find_event_summary_record(event_id) or {}
+        return {"status": "ok",
+                "data": {"record": self._memory_point_public(saved),
+                         "verdict": verdict}}
+
     async def page_memory_point_feedback(self):
-        """POST memory-point feedback: important/unimportant/edit_label/restore."""
+        """POST memory-point feedback: important/unimportant/edit_label/restore/reevaluate."""
         from quart import request
         try:
             body = await request.get_json(silent=True) or {}
@@ -5379,6 +5768,8 @@ class BioCorePlugin(Star):
         record = self._find_event_summary_record(event_id)
         if record is None:
             return {"status": "error", "message": "事件不存在"}
+        if action == "reevaluate":
+            return await self._page_memory_point_reevaluate(record, event_id)
         if action == "edit_label":
             title = str(body.get("title") or "").strip()
             small = str(body.get("small_summary") or "").strip()
@@ -5601,6 +5992,7 @@ class BioCorePlugin(Star):
             status = "fallback"
             nuance = []   # deterministic fallback never fabricates a nuance layer
             summary_layers = []
+            self._record_llm_telemetry("event_summary", "fallback")
         else:
             status = "llm"
         if not new_title:
@@ -6411,6 +6803,35 @@ class BioCorePlugin(Star):
                 return len(q & set(txt))
             same.sort(key=lambda e: (-_overlap(e), -float(e.get("ts", 0) or 0)))
             seed = same[0]
+            # task-35 H2-3: bounded multi-hop expansion (default OFF; hop<=2,
+            # fan<=3, decay .5, new<=6). Off => the legacy 1-hop path below.
+            if getattr(self, "memory_chain_multihop", False):
+                try:
+                    # activation decays 0.5/hop; min_weight 0.2 keeps hop-2
+                    # reachable while hop-3 still fails (hop_limit=2).
+                    # chain_expand consumes memory-entry "links"; archived events
+                    # store the same edges as "chain_links", so map them here.
+                    _nodes = [{
+                        "id": str(e.get("id") or ""),
+                        "text": (str(e.get("title") or "") + " "
+                                 + str(e.get("big_summary") or "")).strip()[:160],
+                        "links": [x for x in (e.get("chain_links") or [])
+                                  if isinstance(x, dict)],
+                    } for e in same]
+                    rows = memory_meta.chain_expand(
+                        _nodes, [str(seed.get("id") or "")], hop_limit=2,
+                        fan_out=3, decay=0.5, min_weight=0.2, max_new=6)
+                except Exception:
+                    rows = []
+                out = []
+                for row in rows:
+                    text = str(row.get("text") or "").strip().replace("\n", " ")
+                    if text:
+                        out.append("- 关联事件(多跳 %.2f)：%s" % (
+                            float(row.get("activation") or 0.0), text[:160]))
+                    if len(out) >= limit:
+                        break
+                return out
             out = []
             for link in (seed.get("chain_links") or [])[:3]:
                 if not isinstance(link, dict):
@@ -6977,14 +7398,17 @@ class BioCorePlugin(Star):
                     _rel = self._relationship_of(self._user_record(event))
                 except Exception:
                     _rel = {}
+                _worth_inputs = None
                 try:
-                    _worth = self._event_worthiness_for(
+                    _worth, _worth_inputs = self._event_worthiness_bundle(
                         record, core, _rel, text=body, title=title, schema=schema)
                 except Exception as exc:
                     logger.warning("[biocore] worthiness failed: %s", exc)
                     _worth = None
                 if _worth is not None:
                     record["worthiness"] = _worth
+                    if _worth_inputs is not None:
+                        record["worthiness_inputs"] = _worth_inputs
                     _memory_point = _worth.get("decision") == "memory_point"
                     record["memory_point"] = bool(_memory_point)
                     if _worth.get("decision") == "skip":
@@ -7101,14 +7525,17 @@ class BioCorePlugin(Star):
                 _rel = self._relationship_of(self._user_record(event))
             except Exception:
                 _rel = {}
+            _worth_inputs = None
             try:
-                _worth = self._event_worthiness_for(
+                _worth, _worth_inputs = self._event_worthiness_bundle(
                     record, core, _rel, text=ev, title=title)
             except Exception as exc:
                 logger.warning("[biocore] worthiness failed: %s", exc)
                 _worth = None
             if _worth is not None:
                 record["worthiness"] = _worth
+                if _worth_inputs is not None:
+                    record["worthiness_inputs"] = _worth_inputs
                 _memory_point = _worth.get("decision") == "memory_point"
                 record["memory_point"] = bool(_memory_point)
                 if _worth.get("decision") == "skip":
@@ -7141,6 +7568,7 @@ class BioCorePlugin(Star):
             logger.info("[biocore] strong event archived: %s mp=%s", title, _memory_point)
         except Exception as exc:
             logger.warning("[biocore] strong event summary failed: %s", exc)
+            self._record_llm_telemetry("event_summary", "error", str(exc))
 
     async def _maybe_archive_events(self, event, core=None):
         """Request-path hook: make deterministic event archive reachable."""
@@ -7981,6 +8409,24 @@ class BioCorePlugin(Star):
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
             "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],
+            # task-36 read-only projections: LLM failure/fallback counters,
+            # provider token usage (available=false when the provider omits it),
+            # and the opt-in reply-consistency score.
+            "llm_telemetry": {
+                "enabled": bool(getattr(self, "llm_telemetry_enabled", True)),
+                "counters": dict(((getattr(self, "_llm_telemetry", {}) or {}).get("counters") or {})),
+                "recent": [dict(x) for x in (((getattr(self, "_llm_telemetry", {}) or {}).get("recent") or []))[:10]
+                           if isinstance(x, dict)]},
+            "token_usage": {
+                "enabled": bool(getattr(self, "token_usage_enabled", True)),
+                "available": bool(((getattr(self, "_token_usage", {}) or {}).get("available", False))),
+                "sessions": {str(k)[:80]: dict(v) for k, v in
+                             list((((getattr(self, "_token_usage", {}) or {}).get("sessions") or {})).items())[:10]
+                             if isinstance(v, dict)}},
+            "reply_consistency": (
+                dict(cores[0].reply_consistency)
+                if cores and isinstance(getattr(cores[0], "reply_consistency", None), dict)
+                else None),
             "kb_config": {"enabled": bool(getattr(self, "kb_enabled", False)),
                           "names": list(getattr(self, "kb_names", []))},
             "kb_available": await self._kb_available(),
@@ -8854,6 +9300,7 @@ class BioCorePlugin(Star):
                             getattr(self, "summary_max_chars", 0))
                     except Exception as exc:
                         logger.warning("[biocore] memory summary failed: %s", exc)
+                        self._record_llm_telemetry("memory_summary", "error", str(exc))
                 else:
                     # Deterministic extractive summary from embedding-grouped and
                     # deduped representatives; no LLM involved.
@@ -10079,6 +10526,52 @@ class BioCorePlugin(Star):
                                         getattr(self, "_last_memory_meta", {}) or {})
         except Exception as exc:
             logger.warning("[biocore] tom probe call failed: %s", exc)
+        # task-35: proposal-only outputs get ONE deterministic [BC] consumer;
+        # only built when the corresponding function switch is ON => the
+        # default (all proposal functions OFF) renders nothing (1.2.99 parity).
+        try:
+            _proposal = {}
+            _rel_data = self._relationship_of(_user_data)
+            if self._llm_allowed("relationship_impression"):
+                _proposal["impression"] = _rel_data
+            if self._llm_allowed("tom_probe"):
+                _proposal["tom"] = (_user_data.get("belief_state")
+                                    if isinstance(_user_data, dict) else {})
+            if self._llm_allowed("diary"):
+                _diary = (self.self_model.get("diary")
+                          if isinstance(getattr(self, "self_model", None), dict) else None)
+                if isinstance(_diary, list) and _diary and isinstance(_diary[-1], dict):
+                    _proposal["diary"] = str(_diary[-1].get("date") or "today")
+            if self._llm_allowed("relationship_narrative"):
+                _narr = (self.self_model.get("relationship_narratives")
+                         if isinstance(getattr(self, "self_model", None), dict) else None)
+                if isinstance(_narr, list) and _narr and isinstance(_narr[-1], dict):
+                    _proposal["narrative"] = str(_narr[-1].get("text") or "")[:40]
+            _proposal_hint = interpretation.proposal_hint_block(**_proposal) if _proposal else ""
+            if _proposal_hint:
+                _strategy_hint = interpretation.combine_strategy_hint(
+                    _strategy_hint, _proposal_hint)
+        except Exception as exc:
+            logger.warning("[biocore] proposal hint failed: %s", exc)
+        # task-35: workspace token only when the autonomy loop is enabled.
+        _ws_token = ""
+        try:
+            if getattr(core, "autonomy_loop_enabled", False):
+                _loop_state = getattr(core, "autonomy_loop", None)
+                if isinstance(_loop_state, dict):
+                    _ws_token = str(_loop_state.get("workspace_token") or "")[:16]
+        except Exception:
+            _ws_token = ""
+        # task-35: refusal posture -> brevity (L2 truncation), default OFF.
+        _brevity = "normal"
+        if getattr(self, "refusal_brevity_enabled", False):
+            try:
+                _brevity = str(core.refusal_posture(
+                    self._relationship_of(_user_data)).get("brevity") or "normal")
+            except Exception:
+                _brevity = "normal"
+            if _brevity != "normal" and _strategy_hint:
+                _strategy_hint = _strategy_hint[:60 if _brevity == "short" else 90]
         _kb = ""
         if getattr(self, "kb_enabled", False) and getattr(self, "kb_names", None) and self._usable_memory_text(text):
             try:
@@ -10112,6 +10605,8 @@ class BioCorePlugin(Star):
             strategy_hint=_strategy_hint,
             continuity=_continuity,
             prompt_mode=getattr(self, "bc_prompt_mode", "telemetry"),
+            workspace_token=_ws_token,
+            brevity=_brevity,
         ).strip()
         if _compact:
             # Keep the system prompt stable (prefix-cache friendly) and attach
@@ -10141,6 +10636,23 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _reply = _clean
+        # task-36: opt-in read-only reply-consistency projection (default OFF).
+        if getattr(self, "reply_consistency_enabled", False):
+            try:
+                core.reply_consistency = core.evaluate_reply_consistency(_reply)
+            except Exception:
+                pass
+        # task-36: provider usage counters (only when the provider reports it;
+        # otherwise the projection stays "available": false -- never guessed).
+        if getattr(self, "token_usage_enabled", True):
+            try:
+                _usage = self._extract_token_usage(response)
+                if _usage:
+                    self._record_token_usage(
+                        str(getattr(event, "unified_msg_origin", "default") or "default"),
+                        _usage)
+            except Exception:
+                pass
         try:
             core.record_reply(_reply, _meta)
         except Exception:

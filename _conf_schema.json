@@ -461,5 +461,29 @@
     "hint": "默认 1500ms；超时返回 None（等同无 embedding），不阻塞回复。范围 100–15000；仅在实测调用侧 p95<200ms 时才建议降到 300ms。",
     "type": "int",
     "default": 1500
+  },
+  "refusal_brevity_enabled": {
+    "description": "拒绝姿态缩短回复（默认关）",
+    "hint": "默认关=旧行为。开启后当 L1 refusal 姿态为 negotiate/decline 时，[BC] 策略提示按 brevity=medium/short 缩短，主动发送门槛同步收紧；不改变是否回复的判定。",
+    "type": "bool",
+    "default": false
+  },
+  "reply_consistency_enabled": {
+    "description": "回复一致性只读评分（默认关）",
+    "hint": "默认关=不写任何字段。开启后按 length/need/expression 的确定性启发式给 0–1 分，写 state.reply_consistency 仅供 Dashboard 只读；不重写回复、不调 LLM。",
+    "type": "bool",
+    "default": false
+  },
+  "llm_telemetry_enabled": {
+    "description": "LLM 失败/降级 telemetry（默认开，只读）",
+    "hint": "默认开：只统计各 LLM 功能的失败/降级次数与最近 20 条记录，写 page_status.llm_telemetry 供 Dashboard 只读；不改变调用、不写 prompt。",
+    "type": "bool",
+    "default": true
+  },
+  "token_usage_enabled": {
+    "description": "token 用量记录（默认开，只读）",
+    "hint": "默认开：仅当 provider 在响应里返回 usage 时按会话累计 prompt/completion/total；拿不到则 available=false（不估算）。只读投影，不参与判定。",
+    "type": "bool",
+    "default": true
   }
 }

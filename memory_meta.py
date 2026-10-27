@@ -2153,17 +2153,38 @@ def compute_worthiness(*, intensity: Any = 0.0, schema_congruence: Any = 0.0,
                + 0.20 * _clamp(rel_repair))
     P = _worthiness_log_norm(merge_count)
     N = 1.0 if routine else 0.0
-    W = _clamp(0.22 * I + 0.20 * S + 0.15 * C + 0.15 * G
-               + 0.10 * PE + 0.13 * R + 0.05 * P - 0.25 * N)
-    W_her = _clamp(0.45 * S + 0.25 * R + 0.20 * G + 0.10 * C)
     K_raw = _clamp(0.35 * _clamp(pad_delta) + 0.25 * _clamp(self_delta)
                    + 0.20 * _clamp(rel_delta) + 0.20 * _clamp(drives_delta))
     K = _clamp(K_raw * _clamp(persistence))
-    decision, reason = worthiness_decision(W, W_her, I, K, routine=N >= 1.0)
-    return {"W": round(W, 4), "W_her": round(W_her, 4), "K": round(K, 4),
-            "I": round(I, 4), "S": round(S, 4), "C": round(C, 4),
-            "G": round(G, 4), "PE": round(PE, 4), "R": round(R, 4),
-            "P": round(P, 4), "N": int(N), "decision": decision,
+    return worthiness_from_parts(I=I, S=S, C=C, G=G, PE=PE, R=R, P=P, N=N, K=K)
+
+
+def worthiness_from_parts(*, I: Any = 0.0, S: Any = 0.0, C: Any = 0.0,
+                          G: Any = 0.0, PE: Any = 0.0, R: Any = 0.0,
+                          P: Any = 0.0, N: Any = 0, K: Any = 0.0) -> dict[str, Any]:
+    """Recompute W / W_her / K + verdict from already-derived parts.
+
+    task-34: used by 「重新判定」 when an archived event only carries the
+    stored worthiness parts (records created before raw inputs were persisted).
+    Reuses the same formula constants and gate as compute_worthiness.
+    """
+    i = _clamp(I)
+    s = _clamp(S)
+    c = _clamp(C)
+    g = _clamp(G)
+    pe = _clamp(PE)
+    rel = _clamp(R)
+    p = _clamp(P)
+    n = 1.0 if bool(N) else 0.0
+    k = _clamp(K)
+    w = _clamp(0.22 * i + 0.20 * s + 0.15 * c + 0.15 * g
+               + 0.10 * pe + 0.13 * rel + 0.05 * p - 0.25 * n)
+    w_her = _clamp(0.45 * s + 0.25 * rel + 0.20 * g + 0.10 * c)
+    decision, reason = worthiness_decision(w, w_her, i, k, routine=n >= 1.0)
+    return {"W": round(w, 4), "W_her": round(w_her, 4), "K": round(k, 4),
+            "I": round(i, 4), "S": round(s, 4), "C": round(c, 4),
+            "G": round(g, 4), "PE": round(pe, 4), "R": round(rel, 4),
+            "P": round(p, 4), "N": int(n), "decision": decision,
             "reason": reason}
 
 
