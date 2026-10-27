@@ -14,6 +14,13 @@ import math
 import re
 
 try:
+    from .biocore_model import sanitize as _bc_sanitize
+except Exception:
+    try:
+        from biocore_model import sanitize as _bc_sanitize
+    except Exception:  # pragma: no cover
+        _bc_sanitize = None
+try:
     from .biocore_model import render as _bc_render
 except Exception:
     try:
@@ -114,48 +121,14 @@ def _repair_json_payload(payload) -> dict | None:
     return None
 
 
-def parse_response(raw: str, whitelist=None):
-    """Parse LLM output and return (clean_text, validated_update|None).
+_BARE_UPDATE_KEYS = {"e", "emotion", "i", "intensity", "n", "need",
+                    "x", "expression"}
+_BARE_KEY_RE = re.compile(r'"(?:e|emotion|i|intensity|n|need|x|expression)"\s*:')
+_BC_OPEN_RE = re.compile(r"<bc\b[^>]*>?", re.I)
+_FENCE_RE = re.compile(r"`{3}(?:json)?\s*(\{.*?\})\s*`{3}", re.S | re.I)
 
-    task-39 hardening: one deterministic repair attempt for bad JSON; unknown
-    keys/labels are counted; residual <bc> variants are always stripped from the
-    visible reply (parse failure must not leak the hidden tag). A configurable
-    whitelist defaults to the unchanged legacy key set.
-    """
-    text = str(raw or "")
-    PARSE_STATS["calls"] += 1
-    m = _BC_TAG_RE.search(text)
-    if not m:
-        if _BC_RESIDUE_RE.search(text):
-            PARSE_STATS["residual_stripped"] += 1
-            text = _BC_RESIDUE_RE.sub("", text).strip()
-        return text, None
-    clean = (text[:m.start()] + text[m.end():]).strip()
-    payload = str(m.group(1) or "").strip()
-    data = None
-    try:
-        data = json.loads(payload)
-    except Exception:
-        PARSE_STATS["bad_json"] += 1
-        data = _repair_json_payload(payload)
-        if data is None:
-            PARSE_STATS["dropped"] += 1
-            clean = _BC_RESIDUE_RE.sub("", clean).strip()
-            return clean, None
-        PARSE_STATS["repaired"] += 1
-    if not isinstance(data, dict):
-        PARSE_STATS["dropped"] += 1
-        return clean, None
-    keys = whitelist if isinstance(whitelist, (set, list, tuple)) and whitelist \
-        else _ALLOWED_OUTPUT_KEYS
-    allowed = {}
-    for key, value in data.items():
-        if key in keys:
-            allowed[key] = value
-        else:
-            PARSE_STATS["unknown_keys"] += 1
-            PARSE_STATS["whitelist_rejects"] += 1
-    update = _with_label_deltas(allowed)
+
+def _count_unknown_labels(allowed):
     for label_key in ("emotion", "e", "need", "n", "expression", "x"):
         if label_key not in allowed:
             continue
@@ -166,7 +139,86 @@ def parse_response(raw: str, whitelist=None):
             PARSE_STATS["unknown_labels"] += 1
         elif label_key in ("expression", "x") and raw_label not in _ALLOWED_EXPRESSIONS:
             PARSE_STATS["unknown_labels"] += 1
-    return clean, (update or None)
+    return allowed
+
+
+def _payload_to_update(payload, whitelist):
+    data = None
+    try:
+        data = json.loads(payload)
+    except Exception:
+        PARSE_STATS["bad_json"] += 1
+        data = _repair_json_payload(payload)
+        if isinstance(data, dict):
+            PARSE_STATS["repaired"] += 1
+    if not isinstance(data, dict):
+        PARSE_STATS["dropped"] += 1
+        return None
+    keys = whitelist if isinstance(whitelist, (set, list, tuple)) and whitelist \
+        else _ALLOWED_OUTPUT_KEYS
+    allowed = {}
+    for key, value in data.items():
+        if key in keys:
+            allowed[key] = value
+        else:
+            PARSE_STATS["unknown_keys"] += 1
+            PARSE_STATS["whitelist_rejects"] += 1
+    _count_unknown_labels(allowed)
+    return _with_label_deltas(allowed) or None
+
+
+def _strip_bare_json(text, whitelist):
+    raw = str(text or "")
+    if not raw.strip():
+        return raw, None
+    fence = _FENCE_RE.search(raw)
+    if fence and _BARE_KEY_RE.search(fence.group(1)):
+        payload = fence.group(1).strip()
+        clean = (raw[:fence.start()] + raw[fence.end():]).strip()
+        PARSE_STATS["residual_stripped"] += 1
+        return clean, _payload_to_update(payload, whitelist)
+    best = None
+    for m in re.finditer(r"\{[^{}]*\}", raw):
+        candidate = m.group(0)
+        if not _BARE_KEY_RE.search(candidate):
+            continue
+        after = raw[m.end():]
+        before = raw[:m.start()]
+        standalone = ((not after.strip()) or
+                      ((before.endswith("\n") or not before.strip()) and
+                       (not after.strip() or after.lstrip().startswith("\n"))))
+        if after.strip() and not standalone:
+            continue
+        best = m
+    if best is None:
+        return raw, None
+    payload = best.group(0)
+    clean = (raw[:best.start()] + raw[best.end():]).strip()
+    PARSE_STATS["residual_stripped"] += 1
+    return clean, _payload_to_update(payload, whitelist)
+
+
+def parse_response(raw: str, whitelist=None):
+    """Extract hidden contract via the central final-output sanitizer.
+
+    The sanitizer removes closed/unclosed tags, fenced/bare label JSON,
+    [[mood:...]] tags and zero-width chars; the removed JSON payload (if any)
+    is validated here and returned as the state update.
+    """
+    PARSE_STATS["calls"] += 1
+    if _bc_sanitize is None:
+        return str(raw or ""), None
+    before = (_bc_sanitize.STATS["tag_stripped"],
+              _bc_sanitize.STATS["json_stripped"],
+              _bc_sanitize.STATS.get("fenced_stripped", 0))
+    visible, payload = _bc_sanitize.extract(raw)
+    delta = ((_bc_sanitize.STATS["tag_stripped"] - before[0])
+             + (_bc_sanitize.STATS["json_stripped"] - before[1])
+             + (_bc_sanitize.STATS.get("fenced_stripped", 0) - before[2]))
+    if delta > 0:
+        PARSE_STATS["residual_stripped"] += delta
+    update = _payload_to_update(payload, whitelist) if payload else None
+    return visible, update
 
 
 def plan(core) -> str:

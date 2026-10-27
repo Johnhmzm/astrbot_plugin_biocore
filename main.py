@@ -84,6 +84,15 @@ except Exception:
 
 _SERVICES = getattr(_bc_services, "SERVICES", None) if _bc_services is not None else None
 
+def _sanitize_output(text) -> str:
+    """Final exit guard (Phase 3): idempotent, never returns raw artefacts."""
+    try:
+        from biocore_model import sanitize as _san
+        return _san.clean(text)
+    except Exception:
+        return str(text or "")
+
+
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
 _BASE_DATA_DIR = PLUGIN_DIR.parents[1] if len(PLUGIN_DIR.parents) > 1 else PLUGIN_DIR
@@ -3422,7 +3431,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.2")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.3")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -12911,6 +12920,19 @@ class BioCorePlugin(Star):
         if _reply:
             self._recent_replies = ([str(_reply)]
                                     + list(getattr(self, "_recent_replies", []) or []))[:5]
+        # Final exit guard (double insurance): sanitize once more before output.
+        try:
+            _final = _sanitize_output(_reply)
+            if _final != _reply:
+                _reply = _final
+                response.completion_text = _reply
+                _chain = getattr(response, "result_chain", None)
+                if _chain is not None and getattr(_chain, "chain", None):
+                    for _comp in _chain.chain:
+                        if hasattr(_comp, "text"):
+                            _comp.text = _reply
+        except Exception:
+            pass
         try:
             core.record_reply(_reply, _meta)
         except Exception:
