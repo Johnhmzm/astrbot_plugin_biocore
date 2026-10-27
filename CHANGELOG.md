@@ -2,6 +2,10 @@
 
 本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
 
+## 1.3.1
+
+- 上架合规：注入改为临时 content part（TextPart.mark_as_temp），不再修改 req.system_prompt；数据目录统一为 astrbot_plugin_biocore（含旧目录自动迁移并保留备份）。
+
 ## [1.3.0] - 2026-10-27
 
 ### Added
