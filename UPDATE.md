@@ -1,10 +1,10 @@
 # BioCore 插件更新说明
 
-当前版本：以 `metadata.yaml` 为准（当前 **1.3.0**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：以 `metadata.yaml` 为准（当前 **1.3.1**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
 
-> 发版口径：本地 `1.3.0` 为发版目标；公开仓库/市场记录在正式发布前保持 `1.2.99`，发布时再同步。
+> 发版口径：本地 `1.3.1` 为发版目标；公开仓库/市场记录在正式发布前保持 `1.2.99`，发布时再同步。
 
-## 1.3.0 升级提示
+## 1.3.1 升级提示
 
 - 记忆聚焦新增「重新判定」：按多角度 W/W_her/K 重算，结论为只归档/不该记时降级（importance 0.15、memory_point=false），可用「恢复」撤销。
 - 未接线项补齐：impression/tom/diary/narrative 进入 [BC] hint；多跳召回、refusal 降长度、workspace_token 注入均可选（默认关）。

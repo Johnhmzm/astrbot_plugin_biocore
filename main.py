@@ -73,11 +73,33 @@ except Exception:
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
 _BASE_DATA_DIR = PLUGIN_DIR.parents[1] if len(PLUGIN_DIR.parents) > 1 else PLUGIN_DIR
-_PERSIST_DATA_DIR = _BASE_DATA_DIR / "plugin_data" / "astrbot_plugin_biocore_standalone"
+_PERSIST_DATA_DIR = _BASE_DATA_DIR / "plugin_data" / "astrbot_plugin_biocore"
+_OLD_PERSIST_DATA_DIR = (_BASE_DATA_DIR / "plugin_data"
+                         / "astrbot_plugin_biocore_standalone")
+
+
+def _migrate_plugin_data_dir(old_dir: Path, new_dir: Path) -> bool:
+    """First-run migration: copy old plugin_data dir to the new name.
+
+    The old directory is KEPT as a backup; returns True only when a migration
+    actually ran.
+    """
+    try:
+        if old_dir.exists() and not new_dir.exists():
+            new_dir.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(old_dir, new_dir)
+            logger.warning("[biocore] data dir migrated: %s -> %s (old kept as backup)",
+                           old_dir, new_dir)
+            return True
+    except Exception as exc:
+        logger.warning("[biocore] data dir migration failed: %s", exc)
+    return False
 
 
 def _init_data_dir() -> Path:
     target = Path(os.getenv("BIOCORE_DATA_DIR", str(_PERSIST_DATA_DIR)))
+    if not os.getenv("BIOCORE_DATA_DIR"):
+        _migrate_plugin_data_dir(_OLD_PERSIST_DATA_DIR, _PERSIST_DATA_DIR)
     target.mkdir(parents=True, exist_ok=True)
     try:
         if _LEGACY_DATA_DIR.exists() and target.resolve() != _LEGACY_DATA_DIR.resolve():
@@ -3385,7 +3407,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.0")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.1")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -12607,10 +12629,40 @@ class BioCorePlugin(Star):
         if _compact:
             self._bc_history = (list(getattr(self, "_bc_history", []) or [])
                                 + [_compact])[-20:]
-            # §6: single [BC] block appended to the SYSTEM prompt tail (best
-            # utilisation), never split; [BH] hint lines (if any) are already
-            # composed and budgeted inside _compact by compose_bc_block.
-            req.system_prompt = (_base + "\n\n" + _compact).strip()
+            # Market compliance: never mutate req.system_prompt. Inject the
+            # single [BC]/[BH] block as a temporary content part instead.
+            self._attach_compact(req, _compact)
+
+    def _attach_compact(self, req, block) -> bool:
+        """Market compliance: inject via a TEMP content part only.
+
+        Never touches req.system_prompt. If TextPart is unavailable the
+        injection is skipped (warning logged), never falling back to
+        system_prompt mutation.
+        """
+        try:
+            from astrbot.core.agent.message import TextPart
+        except Exception as exc:
+            logger.warning("[biocore] TextPart unavailable; skip [BC] injection: %s", exc)
+            return False
+        try:
+            parts = getattr(req, "extra_user_content_parts", None)
+            if parts is None:
+                req.extra_user_content_parts = []
+                parts = req.extra_user_content_parts
+            if not isinstance(parts, list):
+                logger.warning("[biocore] extra_user_content_parts unsupported; skip [BC]")
+                return False
+            part = TextPart(text=str(block))
+            try:
+                part.mark_as_temp()
+            except Exception:
+                pass
+            parts.append(part)
+            return True
+        except Exception as exc:
+            logger.warning("[biocore] temp content part injection failed: %s", exc)
+            return False
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse):
