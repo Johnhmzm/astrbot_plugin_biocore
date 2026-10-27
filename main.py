@@ -3592,9 +3592,11 @@ class BioCorePlugin(Star):
                 self.config.get("image_caption_timeout_ms", 8000) or 8000)))
         except Exception:
             self.image_caption_timeout_ms = 8000
-        if not bool(getattr(self, "safety_enabled", False)):
-            logger.warning("[biocore] safety_enabled=false: 公开部署建议保持开启；"
-                           "私人使用可关（当前关闭敏感掩码/跨会话隔离/低置信拒答/投毒过滤）")
+        try:
+            self.summary_llm_timeout_ms = max(2000, min(20000, int(
+                self.config.get("summary_llm_timeout_ms", 8000) or 8000)))
+        except Exception:
+            self.summary_llm_timeout_ms = 8000
         # "省钱模式" is an OPTIONAL preset (default off); it only overrides
         # effective caps, never the accuracy-first defaults.
         if self.savings_mode:
@@ -3706,6 +3708,10 @@ class BioCorePlugin(Star):
         self.safety_enabled = bool(self.config.get("safety_enabled", True))
         self.cross_session_memory = not self.safety_enabled
         self.sensitive_memory_protection = self.safety_enabled
+        # P2: warn AFTER the value is assigned (previously logged false always).
+        if not self.safety_enabled:
+            logger.warning("[biocore] safety_enabled=false: 公开部署建议保持开启；"
+                           "私人使用可关（敏感掩码/跨会话隔离/低置信拒答/投毒过滤关闭）")
         # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
         self.hybrid_retrieval = bool(self.config.get("hybrid_retrieval", True))
         self.llm_memory_candidates = bool(self.config.get("llm_memory_candidates", True))
@@ -3755,6 +3761,11 @@ class BioCorePlugin(Star):
         self._image_fail_count = 0
         self._corrupt_backups = 0
         self._migration_note = ""
+        self._restore_fail_inject = False
+        try:
+            self._env_checks = self._run_env_selfcheck()
+        except Exception:
+            self._env_checks = {"warnings": ["selfcheck_failed"]}
         # LLM scope: user requirement is "LLM only for reply + summary".
         # When true, BioCore only calls the LLM for event/memory summaries;
         # persona compile / event ranking / reflection / image caption are
@@ -4507,6 +4518,93 @@ class BioCorePlugin(Star):
         except Exception:
             pass
 
+    # ---- P2: startup self-check + transactional restore ----
+    def _run_env_selfcheck(self) -> dict:
+        warnings = []
+        checks = {}
+        try:
+            probe = DATA_DIR / (".write_probe_" + str(int(time.time())))
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            checks["data_writable"] = True
+        except Exception:
+            checks["data_writable"] = False
+            warnings.append("data 目录不可写")
+        version = ""
+        try:
+            import astrbot as _astrbot
+            version = str(getattr(_astrbot, "__version__", "") or "")
+        except Exception:
+            version = ""
+        version_ok = False
+        try:
+            _parts = [int(x) for x in re.findall(r"\d+", version)[:2]]
+            if len(_parts) >= 2:
+                version_ok = (4, 16) <= (_parts[0], _parts[1]) < (5, 0)
+        except Exception:
+            version_ok = False
+        if not version:
+            warnings.append("AstrBot 版本读取失败")
+        elif not version_ok:
+            warnings.append("AstrBot 版本不在 >=4.16,<5 范围: " + version)
+        persona_present = PROFILE_PATH.exists()
+        missing_config = []
+        if not persona_present:
+            missing_config.append("persona")
+            warnings.append("未设置 persona（persona_profile.json 缺失）")
+        api_ok = False
+        try:
+            _api = json.loads(API_CONFIG_PATH.read_text(encoding="utf-8"))
+            _blob = json.dumps(_api, ensure_ascii=False).lower()
+            api_ok = any(k in _blob for k in ("api_key", "apikey")) and "****" not in _blob
+        except Exception:
+            api_ok = False
+        if not api_ok:
+            missing_config.append("api_key")
+            warnings.append("未配置 API Key（api_config.json 缺失或为空）")
+        checks.update({"astrbot_version": version, "version_ok": version_ok,
+                       "persona_present": persona_present, "api_key_present": api_ok,
+                       "missing_config": missing_config, "warnings": warnings})
+        try:
+            (DATA_DIR / "env_checks.json").write_text(
+                json.dumps(checks, ensure_ascii=False, indent=1), encoding="utf-8")
+        except Exception:
+            pass
+        return checks
+
+    def _commit_restore(self, staged_files, rollback_files) -> tuple:
+        """P2: replace files via os.replace; on failure roll back and report."""
+        import os as _os
+        import shutil as _shutil
+        done = []
+        created = []
+        try:
+            for rel, staged in staged_files.items():
+                dest = DATA_DIR / rel
+                existed = dest.exists()
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if getattr(self, "_restore_fail_inject", False):
+                    raise RuntimeError("injected restore failure")
+                _os.replace(str(staged), str(dest))
+                done.append(rel)
+                if not existed:
+                    created.append(rel)
+            return len(done), ""
+        except Exception as exc:
+            for rel in done:
+                backup = rollback_files.get(rel)
+                dest = DATA_DIR / rel
+                if backup and backup.exists():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    _shutil.copyfile(str(backup), str(dest))
+            # P2: remove files newly created by this failed restore.
+            for rel in created:
+                try:
+                    (DATA_DIR / rel).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return len(done), str(exc)
+
     def _record_llm_telemetry(self, kind, outcome, detail="") -> None:
         """task-36: bounded read-only LLM failure/fallback telemetry."""
         if not getattr(self, "llm_telemetry_enabled", False):
@@ -4649,6 +4747,33 @@ class BioCorePlugin(Star):
                 self._bg_llm_usage = state
         except Exception:
             pass
+
+    async def _bg_llm_direct(self, kind, provider, prompt, timeout_ms=None):
+        """P1-5: budget + timeout wrapper for direct provider.text_chat paths."""
+        try:
+            if not self._bg_budget_reserve(kind):
+                self._record_llm_telemetry(kind, "budget_blocked")
+                return None
+        except Exception:
+            pass
+        try:
+            _tmo = max(2.0, min(20.0, float(
+                timeout_ms or getattr(self, "summary_llm_timeout_ms", 8000)) / 1000.0))
+            resp = await asyncio.wait_for(provider.text_chat(prompt=prompt),
+                                          timeout=_tmo)
+        except asyncio.TimeoutError:
+            self._record_llm_telemetry(kind, "timeout")
+            return None
+        except Exception:
+            self._record_llm_telemetry(kind, "call_error")
+            return None
+        raw = str(getattr(resp, "completion_text", "") or "")
+        try:
+            self._bg_budget_add_cost(self._cost_for(
+                max(1, int(len(prompt) / 2.2)), max(1, int(len(raw) / 2.2))))
+        except Exception:
+            pass
+        return resp
 
     async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None):
         if not self._llm_allowed(kind):
@@ -7171,7 +7296,9 @@ class BioCorePlugin(Star):
                 provider = await self._provider_for("event_summary", None)
                 if provider is not None:
                     prompt = interpretation.event_summary_prompt(texts or [source_text])
-                    resp = await provider.text_chat(prompt=prompt)
+                    resp = await self._bg_llm_direct(
+                        "event_summary", provider, prompt,
+                        timeout_ms=getattr(self, "summary_llm_timeout_ms", 8000))
                     raw = str(getattr(resp, "completion_text", "") or "").strip()
                     data = interpretation.parse_event_summary(
                         raw, getattr(self, "summary_max_chars", 0))
@@ -7872,7 +7999,9 @@ class BioCorePlugin(Star):
             if provider is None:
                 return False
             prompt = interpretation.insight_prompt(events[:6])
-            resp = await provider.text_chat(prompt=prompt)
+            resp = await self._bg_llm_direct(
+                "insight", provider, prompt,
+                timeout_ms=getattr(self, "summary_llm_timeout_ms", 8000))
             raw = str(getattr(resp, "completion_text", "") or "").strip()
             insight = interpretation.parse_insight(raw)
             if not insight:
@@ -8673,12 +8802,21 @@ class BioCorePlugin(Star):
         texts = [self._mask_if_safety(t) for t in texts if str(t).strip()]
         try:
             provider = await self._provider_for("event_summary", event)
-            if provider is None:
-                return
-            prompt = interpretation.event_summary_prompt(texts)
-            resp = await provider.text_chat(prompt=prompt)
-            raw = str(getattr(resp, "completion_text", "") or "").strip()
-            data = interpretation.parse_event_summary(raw, getattr(self, "summary_max_chars", 0))
+            data = {}
+            if provider is not None:
+                prompt = interpretation.event_summary_prompt(texts)
+                resp = await self._bg_llm_direct(
+                    "event_summary", provider, prompt,
+                    timeout_ms=getattr(self, "summary_llm_timeout_ms", 8000))
+                raw = str(getattr(resp, "completion_text", "") or "").strip()
+                data = interpretation.parse_event_summary(
+                    raw, getattr(self, "summary_max_chars", 0))
+            else:
+                # P2: provider missing => deterministic fallback record, never drop.
+                _fb_big, _fb_small = self._dual_event_summary_fallback(
+                    " ".join(texts), str(summary or ""))
+                data = {"big_summary": _fb_big, "small_summary": _fb_small}
+                self._record_llm_telemetry("event_summary", "fallback_no_provider")
             _llm_big = str(data.get("big_summary") or "").strip()
             _llm_small = str(data.get("small_summary") or "").strip()
             title = str(data.get("title") or summary or "重要事件").strip()[:80]
@@ -9271,15 +9409,28 @@ class BioCorePlugin(Star):
             return []
 
     # ---- P0-1/P0-2: safe backup / export / hard delete ----
-    def _page_is_local_admin(self) -> bool:
-        """Local request or explicit admin token (X-BioCore-Admin)."""
+    def _page_is_local_admin(self, body=None) -> bool:
+        """Local request, X-BioCore-Admin header, or body admin_token.
+
+        The host bridge apiPost accepts only (path, body), so the body token is
+        the primary remote channel; the header path remains for compatibility.
+        """
         try:
             from quart import request
             remote = str(request.remote_addr or "")
             if remote in ("127.0.0.1", "::1", "localhost", ""):
                 return True
             token = str(getattr(self, "data_admin_token", "") or "")
-            return bool(token and request.headers.get("X-BioCore-Admin") == token)
+            if not token:
+                return False
+            try:
+                if request.headers.get("X-BioCore-Admin") == token:
+                    return True
+            except Exception:
+                pass
+            if isinstance(body, dict) and str(body.get("admin_token") or "") == token:
+                return True
+            return False
         except Exception:
             return False
 
@@ -9342,9 +9493,9 @@ class BioCorePlugin(Star):
     async def page_backup(self):
         """P0-1: POST + explicit confirm; returns a one-time download token."""
         from quart import request
-        if not self._page_is_local_admin():
-            return {"status": "error", "message": "仅本地管理端可备份"}
         body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可备份"}
         if not body.get("confirm"):
             return {"status": "error",
                     "message": "需要二次确认：备份含记忆/状态，但不含 API Key"}
@@ -9400,16 +9551,21 @@ class BioCorePlugin(Star):
 
     async def page_data_export(self):
         from quart import request
-        if not self._page_is_local_admin():
-            return {"status": "error", "message": "仅本地管理端可导出"}
         body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可导出"}
         if not body.get("confirm"):
             return {"status": "error", "message": "需要二次确认（导出含个人记忆）"}
         return {"status": "ok", "data": self._data_export_payload()}
 
     async def page_data_delete_token(self):
         """P2: one-time token for hard-delete confirmation (not a boolean)."""
-        if not self._page_is_local_admin():
+        from quart import request
+        try:
+            body = await request.get_json(silent=True) or {}
+        except Exception:
+            body = {}
+        if not self._page_is_local_admin(body):
             return {"status": "error", "message": "仅本地管理端可删除"}
         token = _sha256(str(time.time()) + "|" + str(id(self)))[:24]
         store = getattr(self, "_delete_tokens", {}) or {}
@@ -9473,9 +9629,9 @@ class BioCorePlugin(Star):
 
     async def page_data_delete(self):
         from quart import request
-        if not self._page_is_local_admin():
-            return {"status": "error", "message": "仅本地管理端可删除"}
         body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可删除"}
         token = str(body.get("token") or "")
         store = getattr(self, "_delete_tokens", {}) or {}
         issued = store.get(token)
@@ -9485,12 +9641,15 @@ class BioCorePlugin(Star):
         if time.time() - float(issued or 0) > 300:
             return {"status": "error", "message": "删除 token 已过期"}
         self._delete_tokens.pop(token, None)
+        scopes = body.get("scopes")
         return self._delete_data_scopes(scopes)
 
     async def page_restore(self):
         from quart import request
         import datetime
         body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可恢复"}
         raw_b64 = str(body.get("base64") or "")
         if not raw_b64:
             return {"status": "error", "message": "empty backup"}
@@ -9515,23 +9674,47 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] restore safety backup failed: %s", exc)
         count = 0
+        skipped_api_config = False
+        import tempfile
+        _stage = Path(tempfile.mkdtemp(prefix="biocore_restore_stage_"))
+        _rollback = Path(tempfile.mkdtemp(prefix="biocore_restore_rollback_"))
+        staged_files = {}
+        rollback_files = {}
         try:
             for name in names:
                 rel = name[len("data/"):]
                 if self._is_secret_name(rel.split("/")[-1]) or                         rel.lower().endswith("api_config.json"):
                     # P2: never overwrite the live API keys from a backup.
+                    skipped_api_config = True
                     continue
                 parts = [x for x in rel.split("/") if x not in ("", ".", "..")]
                 if not parts:
                     continue
-                dest = DATA_DIR.joinpath(*parts)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                with z.open(name) as src, open(dest, "wb") as out:
+                rel_clean = "/".join(parts)
+                staged = _stage.joinpath(*parts)
+                staged.parent.mkdir(parents=True, exist_ok=True)
+                with z.open(name) as src, open(staged, "wb") as out:
                     shutil.copyfileobj(src, out)
-                count += 1
+                staged_files[rel_clean] = staged
+                dest = DATA_DIR.joinpath(*parts)
+                if dest.exists():
+                    snap = _rollback.joinpath(*parts)
+                    snap.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(str(dest), str(snap))
+                    rollback_files[rel_clean] = snap
+            count, _err = self._commit_restore(staged_files, rollback_files)
+            if _err:
+                return {"status": "error",
+                        "message": "restore failed, 已回滚: %s" % _err}
         except Exception as exc:
             logger.warning("[biocore] restore failed: %s", exc)
-            return {"status": "error", "message": "restore failed: %s" % exc}
+            return {"status": "error", "message": "restore failed, 已回滚: %s" % exc}
+        finally:
+            try:
+                shutil.rmtree(_stage, ignore_errors=True)
+                shutil.rmtree(_rollback, ignore_errors=True)
+            except Exception:
+                pass
         try:
             self._load_profile()
             self._load_settings()
@@ -9540,7 +9723,10 @@ class BioCorePlugin(Star):
         except Exception:
             pass
         logger.info("[biocore] restored %s data files", count)
-        return {"status": "ok", "data": {"files": count}}
+        return {"status": "ok", "data": {
+            "files": count,
+            "api_config_skipped": skipped_api_config,
+            "message": ("已恢复 %d 个文件；已跳过 api_config（保留当前 Key）" % count)}}
 
     def _memory_doc_for_session(self, session_key: str) -> tuple[Path, dict]:
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(session_key or "default"))[:80]
@@ -9956,7 +10142,7 @@ class BioCorePlugin(Star):
             _marker = DATA_DIR / "migration_seen.json"
             if not _marker.exists():
                 self._migration_note = (
-                    "1.3.1 默认变化：memory_worthiness / memory_pin / "
+                    "1.3.0 默认变化：memory_worthiness / memory_pin / "
                     "bc_budget(浪费治理) / F1 trace 默认开启；可在插件配置逐项关闭。")
                 _marker.parent.mkdir(parents=True, exist_ok=True)
                 _marker.write_text(json.dumps({"seen": True, "ts": time.time()}),
@@ -9974,6 +10160,7 @@ class BioCorePlugin(Star):
             "daily_cost": float(getattr(self, "bg_llm_daily_cost", 2.0) or 2.0)}
         if int(getattr(self, "_corrupt_backups", 0) or 0):
             _data["corrupt_backups"] = int(self._corrupt_backups)
+        _data["env_checks"] = dict(getattr(self, "_env_checks", {}) or {})
         return {"status": "ok", "data": _data}
 
     async def page_self_model(self):
@@ -10924,7 +11111,9 @@ class BioCorePlugin(Star):
                 if _summary_use_llm and provider is not None:
                     prompt = interpretation.memory_summary_prompt(texts)
                     try:
-                        resp = await provider.text_chat(prompt=prompt)
+                        resp = await self._bg_llm_direct(
+                            "memory_summary", provider, prompt,
+                            timeout_ms=getattr(self, "summary_llm_timeout_ms", 8000))
                         payload = interpretation.parse_memory_summary_payload(
                             str(getattr(resp, "completion_text", "") or ""),
                             getattr(self, "summary_max_chars", 0))
@@ -12159,6 +12348,8 @@ class BioCorePlugin(Star):
                     if isinstance(c, str):
                         text = c
                         break
+        # P1-2: unconditional before any branch that reads it.
+        _learn_session = str(getattr(event, "unified_msg_origin", "default") or "default")
         # The core must observe the incoming message; otherwise v/a/stress and
         # fallback labels only change when the model emits a hidden <biocore> tag.
         _query_vec = None
@@ -12281,7 +12472,6 @@ class BioCorePlugin(Star):
                 _brevity = "normal"
             if _brevity != "normal" and _strategy_hint:
                 _strategy_hint = _strategy_hint[:60 if _brevity == "short" else 90]
-                _learn_session = str(getattr(event, "unified_msg_origin", "default") or "default")
         if getattr(self, "learning_bandit_enabled", False):
             try:
                 _pending = (getattr(self, "_learning_pending", {}) or {}).pop(_learn_session, None)
