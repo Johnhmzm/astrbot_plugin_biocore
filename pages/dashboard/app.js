@@ -874,7 +874,7 @@
       return;
     }
     if(shown.every(b=>b._kind==="event")){
-      el.textContent="事件总结球 ×"+shown.length+"：已归档的重要事件（如“深夜表白澄清”）· 球大小=重要度 · 记忆总结后会追加记忆球 · 悬停查看";
+      el.textContent="事件总结球 ×"+shown.length+"：已归档的重要事件 · 球大小=重要度 · 记忆总结后追加 · 悬停查看";
       return;
     }
     const suffix=visual.memoryBallsImportant?"总结后重要记忆（重要度≥0.60 或自指）":"总结后记忆（最多 10）";

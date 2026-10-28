@@ -93,6 +93,16 @@ def _sanitize_output(text) -> str:
         return str(text or "")
 
 
+try:
+    from biocore_memory import MemoryEngine, MemoryEvent
+except Exception:  # pragma: no cover - package always ships
+    try:
+        from .biocore_memory import MemoryEngine, MemoryEvent
+    except Exception:
+        MemoryEngine = None
+        MemoryEvent = None
+
+
 PLUGIN_DIR = Path(__file__).resolve().parent
 _LEGACY_DATA_DIR = PLUGIN_DIR / "data"
 _BASE_DATA_DIR = PLUGIN_DIR.parents[1] if len(PLUGIN_DIR.parents) > 1 else PLUGIN_DIR
@@ -3746,6 +3756,10 @@ class BioCorePlugin(Star):
         # D5: stable default shape even before the first recall fills it.
         self._last_memory_trace = dict(DEFAULT_MEMORY_TRACE)
         self.memory_dedup_embedding = bool(self.config.get("memory_dedup_embedding", True))
+        # M1 memory module: default OFF; enabled = shadow engine (no behaviour change).
+        self.memory_module_enabled = bool(self.config.get("memory_module_enabled", False))
+        self._memory_module_engines = {}
+        self._memory_module_last_recall = None
         # task-33: deterministic memory-point worthiness gate (default ON).
         # OFF = exact legacy behaviour (archive every candidate, no new fields).
         self.memory_worthiness_enabled = bool(
@@ -10709,6 +10723,22 @@ class BioCorePlugin(Star):
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         return MEMORY_DIR / (safe + ".json")
 
+    def _memory_module_engine(self, event):
+        """Thin AstrBot adapter: per-session shadow engine (default OFF)."""
+        if not getattr(self, "memory_module_enabled", False) or MemoryEngine is None:
+            return None
+        try:
+            key = str(getattr(event, "unified_msg_origin", "default") or "default")
+            engine = getattr(self, "_memory_module_engines", {}).get(key)
+            if engine is None:
+                base = self._memory_path(event)
+                path = base.with_suffix(base.suffix + ".module.json")
+                engine = MemoryEngine(path=path, affect=None, embedder=None)
+                self._memory_module_engines[key] = engine
+            return engine
+        except Exception:
+            return None
+
     def _load_memory(self, event):
         try:
             d = json.loads(self._memory_path(event).read_text(encoding="utf-8"))
@@ -11662,6 +11692,14 @@ class BioCorePlugin(Star):
             vec = await self._embed_text(text)
         if not vec:
             return ""
+        # M1 shadow adapter (default OFF): engine recall is read-only trace.
+        _mod_engine = self._memory_module_engine(event)
+        if _mod_engine is not None:
+            try:
+                self._memory_module_last_recall = _mod_engine.recall(
+                    text, budget=3, vector=vec)
+            except Exception:
+                self._memory_module_last_recall = None
         scored = []
         retrieval_pairs = []
         duplicate = None
@@ -12202,6 +12240,16 @@ class BioCorePlugin(Star):
         vec = await self._embed_text(text)
         if not vec:
             return
+        # M1 shadow adapter (default OFF): same event into the module engine.
+        _mod_engine = self._memory_module_engine(event)
+        if _mod_engine is not None:
+            try:
+                _mod_engine.remember(MemoryEvent(
+                    text=text, role=role,
+                    session=str(getattr(event, "unified_msg_origin", "") or ""),
+                    ts=time.time(), vector=list(vec), importance=0.5))
+            except Exception:
+                pass
         doc = self._load_memory(event)
         entries = doc.get("entries")
         if not isinstance(entries, list):

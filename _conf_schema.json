@@ -840,5 +840,11 @@
     "hint": "event_summary/memory_summary 直连 provider 的 wait_for 超时（2–8s），超时降级确定性 fallback 并计数。",
     "type": "int",
     "default": 8000
+  },
+  "memory_module_enabled": {
+    "description": "记忆模块 v1（默认关）",
+    "hint": "默认关=完全现状。开启后使用 biocore_memory 纯 Python 引擎影子适配（独立 .module.json，只读/不影响现有记忆）；后续 M2。",
+    "type": "bool",
+    "default": false
   }
 }
