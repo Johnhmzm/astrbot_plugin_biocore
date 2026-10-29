@@ -38,6 +38,26 @@ def _one_line(text: str, limit: int = 160) -> str:
 
 
 _ALLOWED = {"joy", "sadness", "anger", "fear", "loneliness", "neutral"}
+# Compatibility aliases: models sometimes emit near-miss labels (shy/calm/happy).
+# Mapping them keeps the affect update instead of silently dropping it.
+_LABEL_ALIASES = {
+    "happy": "joy", "glad": "joy", "excited": "joy", "content": "joy",
+    "care": "joy", "affection": "joy", "love": "joy", "warmth": "joy",
+    "gratitude": "joy", "relief": "joy", "hope": "joy",
+    "contentment": "joy", "pleased": "joy", "cheerful": "joy",
+    "sad": "sadness", "down": "sadness", "sorrow": "sadness",
+    "depressed": "sadness", "unhappy": "sadness",
+    "angry": "anger", "mad": "anger", "annoyed": "anger", "irritated": "anger",
+    "anxious": "fear", "nervous": "fear", "scared": "fear", "afraid": "fear",
+    "shy": "fear", "embarrassed": "fear", "worried": "fear", "uneasy": "fear", "concern": "fear", "concerned": "fear",
+    "lonely": "loneliness", "alone": "loneliness", "isolated": "loneliness",
+    "calm": "neutral", "fine": "neutral", "ok": "neutral", "okay": "neutral",
+    "normal": "neutral",
+}
+_NEED_ALIASES = {"comfort": "be_heard", "listen": "be_heard", "support": "be_heard",
+                 "rest": "space", "quiet": "space", "talk_to_you": "talk"}
+_EXPR_ALIASES = {"open": "open", "normal": "normal", "short": "short",
+                 "brief": "short", "long": "open"}
 _ALLOWED_NEEDS = {"share", "space", "vent", "be_heard", "talk"}
 _ALLOWED_EXPRESSIONS = {"open", "normal", "short"}
 # The model may only emit these compact keys. Numeric deltas are derived by
@@ -142,6 +162,26 @@ def _count_unknown_labels(allowed):
     return allowed
 
 
+def _remap_labels(allowed: dict) -> dict:
+    """Map near-miss label values onto the whitelist before validation."""
+    if not isinstance(allowed, dict):
+        return allowed
+    out = dict(allowed)
+    for key in ("e", "emotion"):
+        value = str(out.get(key) or "").strip().lower()
+        if value and value not in _ALLOWED and value in _LABEL_ALIASES:
+            out[key] = _LABEL_ALIASES[value]
+    for key in ("n", "need"):
+        value = str(out.get(key) or "").strip().lower()
+        if value and value not in _ALLOWED_NEEDS and value in _NEED_ALIASES:
+            out[key] = _NEED_ALIASES[value]
+    for key in ("x", "expression"):
+        value = str(out.get(key) or "").strip().lower()
+        if value and value not in _ALLOWED_EXPRESSIONS and value in _EXPR_ALIASES:
+            out[key] = _EXPR_ALIASES[value]
+    return out
+
+
 def _payload_to_update(payload, whitelist):
     data = None
     try:
@@ -163,6 +203,7 @@ def _payload_to_update(payload, whitelist):
         else:
             PARSE_STATS["unknown_keys"] += 1
             PARSE_STATS["whitelist_rejects"] += 1
+    allowed = _remap_labels(allowed)
     _count_unknown_labels(allowed)
     return _with_label_deltas(allowed) or None
 

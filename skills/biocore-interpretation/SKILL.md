@@ -59,7 +59,7 @@ img= 图片描述  kb= 知识库          spk= 说话人   voice= 语音转写
 <bc>{"e":"joy","i":0.65}</bc>
 ```
 
-字段：
+字段（e 只允许下列七个值，写错会被丢弃；拿不准用 neutral）：
 
 ```text
 e 情绪：joy|sadness|anger|fear|loneliness|neutral
@@ -112,3 +112,11 @@ loops/due/soon → 可自然提一句待办/承诺，但不要复述字段名
 - 每轮 prompt 里只保留极短 fallback：`[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；不解释、不输出任何数值 delta。`
 - 完整字段含义、可选字段、翻译规则与输出格式以本 skill 为准，不要要求把长规则塞回每轮 prompt。
 - 可选字段只在需要时出现：`ansc` 仅置信度 <0.65，`memsrc` 仅 inferred/unknown，`memwho` 仅多人来源，`loops/due/soon` 仅存在前瞻记忆。
+
+## 硬规则（必须遵守）
+
+1. 正文只写自然回复；**不要输出任何推理、候选比较、自述或“这样写对不对”的讨论**。
+2. 回复末尾**只输出一个** <bc>{"e":...,"i":...}</bc>；字段只用 e/i（可选 n/x）。
+3. e 只能是：joy / sadness / anger / fear / loneliness / neutral；拿不准就用 neutral。
+4. i 是 0..1 的小数；不要输出任何 delta、分数解释或额外 JSON。
+5. 标签是隐藏元数据，永远不要向用户解释它、提及它，或用它开玩笑。

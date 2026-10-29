@@ -124,13 +124,6 @@ class ReplySanitizer:
         keep = []
         def _bare(match):
             candidate = match.group(0)
-            after = text[match.end():]
-            before = text[:match.start()]
-            standalone = ((not after.strip()) or
-                          ((before.endswith('\n') or not before.strip())
-                           and (not after.strip() or after.lstrip().startswith('\n'))))
-            if after.strip() and not standalone:
-                return candidate
             parsed = self._payload(candidate)
             if parsed is None and not _BARE_KEY_RE.search(candidate):
                 return candidate
