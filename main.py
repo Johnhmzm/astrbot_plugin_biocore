@@ -3441,7 +3441,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.3")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.4")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         super().__init__(context)
@@ -12811,6 +12811,9 @@ class BioCorePlugin(Star):
         _clean, _meta = interpretation.parse_response(_reply)
         if _meta:
             core.apply_affect(_meta)
+        # 1.3.4: always write the cleaned text back. Unknown labels drop the
+        # affect update, but the visible reply must still be sanitized.
+        if _clean != _reply:
             try:
                 response.completion_text = _clean
                 chain = getattr(response, "result_chain", None)

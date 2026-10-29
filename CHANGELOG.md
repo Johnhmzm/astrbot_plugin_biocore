@@ -1,8 +1,14 @@
-# Changelog
+# 1.3.4
 
-本项目的重要变更记录。版本号以 `metadata.yaml` 为准。
+修复「情绪标签 + 内容泄露」仍复现的根因（1.3.3 的守卫只覆盖部分路径）：
 
-## 1.3.3 - 2026-10-28
+- **回写条件错误**：on_llm_response 只在解析出 update 时才把 cleaned 文本写回 response；模型输出未知标签（如 care）→ update 为 None → 原始文本（含标签/裸 JSON）照常发送。现在无论 update 是否存在，只要 cleaned 变化就回写 completion_text 与 result_chain。
+- **裸 JSON 只在句尾剥离**：{"e":...} 夹在正文中间时不会被 sanitize 清理；现在任意位置的裸标签 JSON 都会剥离。
+- **标签别名校验**：shy/embarrassed/calm/happy/care/concern 等近似值映射到白名单（fear/neutral/joy…），避免 affect 更新被静默丢弃。
+- 协议强化：e 只允许 6 个白名单值；禁止输出推理/候选比较/自述；标签只出现一次且必须隐藏。
+- 版本号同步：metadata / main register / dashboard / README / UPDATE / 市场记录。
+
+# 1.3.3 - 2026-10-28
 
 ### Fixed
 - 修复模型输出的裸 JSON（如 {"e":"care","i":0.68}）与未闭合 <bc> 标签泄漏到用户可见回复：新增最终出口守卫 biocore_model/sanitize.py（声明式模式清单 + 保护 URL/媒体标签 + 固定兜底 + 幂等 + Traceback 守卫）。
