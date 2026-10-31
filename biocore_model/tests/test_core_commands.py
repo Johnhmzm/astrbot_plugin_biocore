@@ -1,8 +1,34 @@
+class _Recorder:
+    """Logger stub so tests never import the stdlib logging module."""
+
+    def __init__(self):
+        self.lines = []
+        self.level = 0
+
+    def _log(self, msg, *args, **kwargs):
+        try:
+            self.lines.append(str(msg) % args if args else str(msg))
+        except Exception:
+            self.lines.append(str(msg))
+
+    def setLevel(self, *_a, **_k):
+        return None
+
+    def addHandler(self, *_a, **_k):
+        return None
+
+    def removeHandler(self, *_a, **_k):
+        return None
+
+    debug = info = warning = error = exception = critical = _log
+
+
 # -*- coding: utf-8 -*-
 """Chat commands /biocore_core and /biocore_rollback (admin only, thin over core_mode)."""
 import unittest
 
-from biocore_model import core_commands, core_mode
+from biocore_model import core_commands
+from biocore_model import core_mode, core_mode
 
 
 class FakeEvent:
@@ -103,9 +129,14 @@ class RunTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_log_via_command(self):
         plugin = FakePlugin()
-        with self.assertLogs("astrbot", level="INFO") as logs:
+        rec = _Recorder()
+        saved = core_mode.LOGGER
+        core_mode.LOGGER = rec
+        try:
             await core_commands.run_core_command(plugin, "/biocore_core shadow", FakeEvent())
-        joined = "\n".join(logs.output)
+        finally:
+            core_mode.LOGGER = saved
+        joined = "\n".join(rec.lines)
         self.assertIn("core_mode_changed from=off to=shadow via=command", joined)
 
     async def test_pending_restart_reply(self):

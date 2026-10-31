@@ -1,7 +1,31 @@
+class _Recorder:
+    """Logger stub so tests never import the stdlib logging module."""
+
+    def __init__(self):
+        self.lines = []
+        self.level = 0
+
+    def _log(self, msg, *args, **kwargs):
+        try:
+            self.lines.append(str(msg) % args if args else str(msg))
+        except Exception:
+            self.lines.append(str(msg))
+
+    def setLevel(self, *_a, **_k):
+        return None
+
+    def addHandler(self, *_a, **_k):
+        return None
+
+    def removeHandler(self, *_a, **_k):
+        return None
+
+    debug = info = warning = error = exception = critical = _log
+
+
 # -*- coding: utf-8 -*-
 """ui_settings single-authority tests: path, migration, idempotency, roundtrip."""
 import json
-import logging
 import os
 import tempfile
 import unittest
@@ -87,19 +111,15 @@ class MigrationTest(unittest.TestCase):
 
     def test_migration_logged_once(self):
         self.legacy.write_text(json.dumps({"reply_soft": {"max_chars": 40}}), encoding="utf-8")
-        records = []
-        handler = logging.Handler()
-        handler.emit = lambda record: records.append(record.getMessage())
-        old_level = ui.logger.level
-        ui.logger.setLevel(logging.INFO)
-        ui.logger.addHandler(handler)
+        rec = _Recorder()
+        saved = ui.logger
+        ui.logger = rec
         try:
             ui.load(FakePlugin(self.tmp.name))
             ui.load(FakePlugin(self.tmp.name))
         finally:
-            ui.logger.removeHandler(handler)
-            ui.logger.setLevel(old_level)
-        self.assertEqual(records.count(ui.MIGRATION_LOG), 1)
+            ui.logger = saved
+        self.assertEqual(rec.lines.count(ui.MIGRATION_LOG), 1)
 
     def test_migration_idempotent(self):
         self.legacy.write_text(json.dumps({"reply_soft": {"max_chars": 55}}), encoding="utf-8")

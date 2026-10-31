@@ -15,3 +15,5 @@ self_model.json
 backups/
 main.py.bak_*
 *.bak_*
+
+main.py.broken_*

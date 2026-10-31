@@ -1,3 +1,28 @@
+class _Recorder:
+    """Logger stub so tests never import the stdlib logging module."""
+
+    def __init__(self):
+        self.lines = []
+        self.level = 0
+
+    def _log(self, msg, *args, **kwargs):
+        try:
+            self.lines.append(str(msg) % args if args else str(msg))
+        except Exception:
+            self.lines.append(str(msg))
+
+    def setLevel(self, *_a, **_k):
+        return None
+
+    def addHandler(self, *_a, **_k):
+        return None
+
+    def removeHandler(self, *_a, **_k):
+        return None
+
+    debug = info = warning = error = exception = critical = _log
+
+
 # -*- coding: utf-8 -*-
 """Core mode switch: validation, auth, persist, rebuild semantics, rollback."""
 import unittest
@@ -110,9 +135,14 @@ class ApplyTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_log_records_from_to(self):
         plugin = FakePlugin()
-        with self.assertLogs("astrbot", level="INFO") as logs:
+        rec = _Recorder()
+        saved = core_mode.LOGGER
+        core_mode.LOGGER = rec
+        try:
             await core_mode.apply(plugin, "shadow")
-        joined = "\n".join(logs.output)
+        finally:
+            core_mode.LOGGER = saved
+        joined = "\n".join(rec.lines)
         self.assertIn("core_mode_changed from=off to=shadow", joined)
         self.assertNotIn("api_key", joined.lower())
 
