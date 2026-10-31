@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Release 1.4.0 consistency + autonomy defaults."""
+"""Release consistency + autonomy defaults (version taken from metadata)."""
 import json
 import unittest
 from pathlib import Path
@@ -9,22 +9,26 @@ PLUG = ROOT
 
 
 class VersionTest(unittest.TestCase):
-    def test_all_version_sources_140(self):
+    def test_all_version_sources_match_metadata(self):
         meta = (PLUG / "metadata.yaml").read_text(encoding="utf-8")
-        self.assertIn("version: 1.4.0", meta)
+        version = None
+        for line in meta.splitlines():
+            if line.startswith("version:"):
+                version = line.split(":", 1)[1].strip()
+                break
+        self.assertIsNotNone(version)
         main = (PLUG / "main.py").read_text(encoding="utf-8")
-        self.assertIn('"1.4.0")', main)
+        self.assertIn('"%s")' % version, main)
         app = (PLUG / "pages" / "dashboard" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('BIO_VERSION = "v1.4.0"', app)
+        self.assertIn('BIO_VERSION = "v%s"' % version, app)
         index = (PLUG / "pages" / "dashboard" / "index.html").read_text(encoding="utf-8")
-        self.assertIn('BIO_VERSION = "v1.4.0"', index)
+        self.assertIn('BIO_VERSION = "v%s"' % version, index)
         readme = (PLUG / "README.md").read_text(encoding="utf-8")
-        self.assertIn("1.4.0", readme)
+        self.assertIn(version, readme)
         record = json.loads((ROOT.parent / "docs" / "BIOCORE-MARKET-RECORD-v1.json")
                             .read_text(encoding="utf-8"))
         rec = record["Johnhmzm/astrbot_plugin_biocore"]
-        self.assertEqual(rec["version"], "1.4.0")
-        self.assertTrue(str(rec["updated_at"]).startswith("2026-10-31"))
+        self.assertEqual(rec["version"], version)
 
 
 class AutonomyDefaultTest(unittest.TestCase):
