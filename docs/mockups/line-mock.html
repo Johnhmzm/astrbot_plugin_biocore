@@ -1,0 +1,95 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>主线 · 原型</title>
+<style>
+:root{--bg:#0a0c0f;--panel:#0f1318;--line:#1f262e;--fg:#e8e5de;--muted:#8b8579;--accent:#ff6b00;--faint:#57524a;--req:#3a3f47}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 "Bahnschrift","Segoe UI",system-ui,sans-serif}
+.wrap{padding:26px 28px}
+h1{font-size:19px;margin:0 0 2px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:18px}
+.canvas{position:relative;height:340px;background:
+ linear-gradient(#12171d 1px,transparent 1px) 0 0/26px 26px,
+ linear-gradient(90deg,#12171d 1px,transparent 1px) 0 0/26px 26px,
+ var(--panel);
+ border:1px solid var(--line);overflow:hidden}
+.blk{position:absolute;width:132px;height:88px;background:#141a21;border:1px solid #2a323c;padding:8px 10px;box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+.blk.req{border-color:#37505f}
+.blk.in,.blk.out{background:#101820;border-color:#2d3a46}
+.blk .bh{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.tag{font-family:ui-monospace,Consolas,monospace;font-size:9px;letter-spacing:.12em;color:var(--faint);border:1px solid var(--line);padding:0 3px}
+.lock{font-size:9px;color:var(--req);letter-spacing:.06em}
+.rm{font-size:12px;color:#5c6570;cursor:pointer}
+.bn{font-size:13px;margin-bottom:3px}
+.bs{font-size:10.5px;color:var(--muted)}
+.slot{position:absolute;left:1488px;top:210px;width:120px;height:88px;border:1px dashed #3a424c;display:flex;align-items:center;justify-content:center;color:#4d5661;font-size:11px}
+.panel{background:var(--panel);border:1px solid var(--line);margin-top:16px;padding:14px 16px}
+.head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px}
+.head h2{font-size:12px;margin:0;letter-spacing:.08em;color:var(--fg)}
+.head span{font-family:ui-monospace,Consolas,monospace;font-size:10px;color:var(--faint);letter-spacing:.1em}
+.lib{display:flex;flex-wrap:wrap;gap:8px}
+.chip{display:flex;gap:7px;align-items:center;background:#111720;border:1px solid #242c35;padding:7px 10px;font-size:12px;color:#cfcabf;cursor:grab}
+.legend{display:flex;gap:18px;margin-top:12px;font-size:10.5px;color:var(--faint)}
+.legend i{display:inline-block;width:8px;height:8px;margin-right:5px;border:1px solid #37505f}
+</style></head><body><div class="wrap">
+<h1>主线</h1>
+<div class="sub">把方块拖到线上即可启用 · 点 × 移除 · 必需环节不可移除</div>
+
+<div class="canvas">
+  <svg width="100%" height="100%" style="position:absolute;inset:0">
+    <defs><marker id="a" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#2a313a"/></marker></defs>
+    <path d="M172 254 H 202" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M334 254 H 364" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M496 254 H 526" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M658 254 H 688" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M820 254 H 850" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M982 254 H 1012" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M1144 254 H 1174" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/><path d="M1306 254 H 1336" stroke="#2a313a" stroke-width="1.2" fill="none" marker-end="url(#a)"/>
+  </svg>
+  
+  <div class="blk in" style="left:40px;top:210px">
+    <div class="bh"><span class="tag">IN</span><span class="lock">必需</span></div>
+    <div class="bn">输入</div>
+    <div class="bs">外部消息</div>
+  </div>
+  <div class="blk req" style="left:202px;top:210px">
+    <div class="bh"><span class="tag">L2</span><span class="lock">必需</span></div>
+    <div class="bn">感知</div>
+    <div class="bs">解析文本</div>
+  </div>
+  <div class="blk on" style="left:364px;top:210px">
+    <div class="bh"><span class="tag">L1</span><span class="rm">×</span></div>
+    <div class="bn">取记忆</div>
+    <div class="bs">召回 4 条</div>
+  </div>
+  <div class="blk req" style="left:526px;top:210px">
+    <div class="bh"><span class="tag">L0</span><span class="lock">必需</span></div>
+    <div class="bn">情绪更新</div>
+    <div class="bs">v 0.42→0.44</div>
+  </div>
+  <div class="blk on" style="left:688px;top:210px">
+    <div class="bh"><span class="tag">L4</span><span class="rm">×</span></div>
+    <div class="bn">决定</div>
+    <div class="bs">回复</div>
+  </div>
+  <div class="blk on" style="left:850px;top:210px">
+    <div class="bh"><span class="tag">L3</span><span class="rm">×</span></div>
+    <div class="bn">表达</div>
+    <div class="bs">焦虑 ×0.8</div>
+  </div>
+  <div class="blk req" style="left:1012px;top:210px">
+    <div class="bh"><span class="tag">LLM</span><span class="lock">必需</span></div>
+    <div class="bn">思考</div>
+    <div class="bs">18 字</div>
+  </div>
+  <div class="blk on" style="left:1174px;top:210px">
+    <div class="bh"><span class="tag">FB</span><span class="rm">×</span></div>
+    <div class="bn">反馈</div>
+    <div class="bs">接受 2</div>
+  </div>
+  <div class="blk out" style="left:1336px;top:210px">
+    <div class="bh"><span class="tag">OUT</span><span class="lock">必需</span></div>
+    <div class="bn">输出</div>
+    <div class="bs">已发送</div>
+  </div>
+  <div class="slot">拖到这里</div>
+</div>
+
+<div class="panel">
+  <div class="head"><h2>可添加的模块</h2><span>DRAG TO LINE</span></div>
+  <div class="lib"><div class="chip"><span class="tag">L0</span>心情层</div><div class="chip"><span class="tag">L0</span>依恋动态</div><div class="chip"><span class="tag">L0</span>归因</div><div class="chip"><span class="tag">L0</span>社会疼痛</div><div class="chip"><span class="tag">L4</span>连接邀请</div><div class="chip"><span class="tag">L4</span>信任三层</div><div class="chip"><span class="tag">L4</span>关系阶段</div><div class="chip"><span class="tag">L4</span>挫折曲线</div><div class="chip"><span class="tag">L3</span>自我生活</div><div class="chip"><span class="tag">L1</span>遗忘衰减</div><div class="chip"><span class="tag">L1</span>反刍</div><div class="chip"><span class="tag">L4</span>可变强化</div></div>
+  <div class="legend"><span><i></i>必需</span><span>L0 生物层 · L1 记忆 · L2 解释 · L3 表达 · L4 交互 · LLM · 反馈</span></div>
+</div>
+</div></body></html>

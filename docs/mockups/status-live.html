@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ui5 · 三页接真实数据（本地渲染）</title>
+<link rel="stylesheet" href="../../pages/dashboard/styles.css">
+<style>
+  body{margin:0;background:var(--bg);color:var(--ink)}
+  .harness-shell{max-width:1180px;margin:0 auto;padding:18px 20px 60px}
+  .harness-title{font:600 12px/1.4 "Bahnschrift",system-ui,sans-serif;letter-spacing:.18em;color:var(--faint);text-transform:uppercase;margin:0 0 10px}
+  .harness-views .view{display:block!important;margin-bottom:26px}
+  .harness-note{font-size:10px;color:var(--faint);margin:0 0 14px}
+</style>
+</head><body>
+<div class="harness-shell">
+  <div class="harness-title">UI5 · page/status 真实渲染（status-sample.json）</div>
+  <p class="harness-note">桩：window.AstrBotPluginView.apiGet('page/status') → 本目录 status-sample.json；页面脚本与线上同一份。</p>
+  <div class="harness-views">
+    <section class="view active" id="view-now">
+      <div class="section-title"><div><div class="eyebrow">NOW</div><h2>她现在</h2></div><span class="hint" id="nowHint">读取中…</span></div>
+      <div class="ui3-root" id="nowRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+    <section class="view active" id="view-relationship">
+      <div class="section-title"><div><div class="eyebrow">RELATIONSHIP</div><h2>关系</h2></div><span class="hint" id="relHint">读取中…</span></div>
+      <div class="ui3-root" id="relRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+    <section class="view active" id="view-records">
+      <div class="section-title"><div><div class="eyebrow">RECORDS</div><h2>记录</h2></div><span class="hint" id="recHint">读取中…</span></div>
+      <div class="ui3-root" id="recRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+  </div>
+</div>
+<script>var SAMPLE = {
+  "ok": true,
+  "enabled": true,
+  "proactive_reply": false,
+  "profile": {
+    "name": "default",
+    "v": 0.42,
+    "a": 0.31,
+    "stress": 0.21,
+    "social": 0.36
+  },
+  "circadian_alertness": 0.62,
+  "allostatic_load": 0.18,
+  "homeostasis": {
+    "L_int": 0.14,
+    "L_ext": 0.09
+  },
+  "cores": [
+    {
+      "key": "qq:group:1001",
+      "snapshot": {
+        "v": 0.42,
+        "a": 0.31,
+        "stress": 0.21,
+        "social": 0.36,
+        "energy": 0.61,
+        "trust": 0.62,
+        "closeness": 0.55,
+        "self_esteem": 0.47
+      },
+      "intent": {
+        "emotion": "lonely",
+        "intensity": 0.44,
+        "action": "approach"
+      },
+      "working_set": {
+        "hits": 3
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "user_id": "u_10086",
+      "last_seen": 1793433015,
+      "interactions": 128,
+      "relationship": {
+        "state": {
+          "trust": 0.62,
+          "closeness": 0.55,
+          "conflict": 0.08,
+          "repair": 0.12,
+          "predictability": 0.71
+        },
+        "trajectory": [
+          {
+            "ts": 1792660815,
+            "trust": 0.5
+          },
+          {
+            "ts": 1793434815,
+            "trust": 0.62
+          }
+        ]
+      }
+    }
+  ],
+  "autonomy": {
+    "enabled": true,
+    "send": {
+      "allowed": false,
+      "reason": "not_ready",
+      "quiet_hours": false,
+      "daily_cap_left": 4
+    },
+    "state": {
+      "V": 0.412,
+      "theta": 0.55,
+      "drift": 0.031,
+      "leak": 0.15,
+      "sigma": 0.06,
+      "ticks_since_fire": 7,
+      "to_threshold": 0.138,
+      "eta_hours": 3.7,
+      "parts": {
+        "social_gap": 0.22,
+        "lonely": 0.19,
+        "open_loops": 0.08,
+        "rumination": 0.05
+      },
+      "silence": {
+        "hours": 9.4,
+        "phase": "loss",
+        "drive_mult": 0.8
+      },
+      "motive": {
+        "hours": 9.4,
+        "silence_mult": 0.8,
+        "frust_mult": 1.08,
+        "self_blame": 0.14,
+        "confidence": 0.58
+      },
+      "sleep": {
+        "sleeping": false,
+        "energy": 0.61,
+        "circadian": 0.48,
+        "sleep_debt": 0.23
+      },
+      "mood": {
+        "label": "lonely",
+        "valence": -0.22
+      },
+      "labels": {
+        "lonely": 0.41,
+        "sadness": 0.22,
+        "nostalgia": 0.14,
+        "neutral": 0.23
+      },
+      "self_esteem": {
+        "value": 0.47
+      },
+      "relationship": {
+        "stage": "friend",
+        "hours_total": 128.5,
+        "days": 9
+      },
+      "trust": {
+        "predictability": 0.71,
+        "dependability": 0.64,
+        "faith": 0.58
+      },
+      "loop": {
+        "sent": 14,
+        "responded": 6,
+        "ignored": 5,
+        "response_rate": 0.43,
+        "avg_latency_s": 1640,
+        "last_attempt": {
+          "ts": 1793434815,
+          "code": "lonely"
+        },
+        "per_code": {
+          "lonely": {
+            "sent": 8,
+            "rate": 0.5
+          }
+        }
+      },
+      "limit": {
+        "hourly_cap": 2,
+        "daily_cap": 5,
+        "hour_sent": 1,
+        "hour_blocked": 1,
+        "total_blocked": 3,
+        "window_reset_in": 2100,
+        "frustration": 2,
+        "drive_mult": 1.08
+      },
+      "last_reason": {
+        "ts": 1793434515,
+        "code": "lonely",
+        "text": "想起你上次说周末想去海边，就想问一句带伞了没"
+      },
+      "block_reason": "not_ready"
+    }
+  }
+};
+window.AstrBotPluginView = {
+  apiGet: function (path) {
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        if (path !== 'page/status') { resolve({ ok: false, message: 'unknown ' + path }); return }
+        resolve({ data: JSON.parse(JSON.stringify(SAMPLE)) })
+      }, 40)
+    })
+  }
+}
+</script>
+<script src="../../pages/dashboard/ui_kit.js"></script>
+<script src="../../pages/dashboard/now.js"></script>
+<script src="../../pages/dashboard/relationship.js"></script>
+<script src="../../pages/dashboard/records.js"></script>
+</body></html>

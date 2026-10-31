@@ -44,6 +44,7 @@ import urllib.request
 import zipfile
 from collections import OrderedDict
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from astrbot.api import logger
@@ -72,6 +73,116 @@ except Exception:
     import homeostasis
 
 try:
+    from .biocore_model.bio_state import StateMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_state import StateMixin
+    except Exception:
+        class StateMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_snapshot import SnapshotMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_snapshot import SnapshotMixin
+    except Exception:
+        class SnapshotMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_daily import DailyMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_daily import DailyMixin
+    except Exception:
+        class DailyMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_const import (
+        LEX, EMOTION_SPECTRUM, SENSITIZATION_STRONG_NEG_DV, SENSITIZATION_STEP,
+        SENSITIZATION_MAX, SENSITIZATION_HALF_LIFE_HOURS, SENSITIZATION_HISTORY_MAX,
+        SENSITIZATION_HISTORY_MAX_AGE)
+except Exception:  # pragma: no cover
+    from biocore_model.bio_const import (
+        LEX, EMOTION_SPECTRUM, SENSITIZATION_STRONG_NEG_DV, SENSITIZATION_STEP,
+        SENSITIZATION_MAX, SENSITIZATION_HALF_LIFE_HOURS, SENSITIZATION_HISTORY_MAX,
+        SENSITIZATION_HISTORY_MAX_AGE)
+
+try:
+    from .biocore_model.bio_goal import GoalMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_goal import GoalMixin
+    except Exception:
+        class GoalMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_util import UtilMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_util import UtilMixin
+    except Exception:
+        class UtilMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_emotion import EmotionMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_emotion import EmotionMixin
+    except Exception:
+        class EmotionMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_emotion2 import Emotion2Mixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_emotion2 import Emotion2Mixin
+    except Exception:
+        class Emotion2Mixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_noise import NoiseMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_noise import NoiseMixin
+    except Exception:
+        class NoiseMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_physiology2 import Physiology2Mixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_physiology2 import Physiology2Mixin
+    except Exception:
+        class Physiology2Mixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_identity import IdentityMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_identity import IdentityMixin
+    except Exception:
+        class IdentityMixin:  # type: ignore
+            pass
+
+try:
+    from .biocore_model.bio_autonomy_state import AutonomyStateMixin
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model.bio_autonomy_state import AutonomyStateMixin
+    except Exception:
+        class AutonomyStateMixin:  # type: ignore
+            pass
+
+try:
     from .biocore_model import render as _bc_render
     from .biocore_model import services as _bc_services
 except Exception:
@@ -81,6 +192,19 @@ except Exception:
     except Exception:  # pragma: no cover - package ships with the plugin
         _bc_render = None
         _bc_services = None
+
+try:
+    from .biocore_model import blocks as _bc_blocks
+except Exception:  # pragma: no cover
+    from biocore_model import blocks as _bc_blocks
+
+try:
+    from .biocore_model import bio_tick as _bio_tick
+except Exception:  # pragma: no cover
+    try:
+        from biocore_model import bio_tick as _bio_tick
+    except Exception:
+        _bio_tick = None
 
 _SERVICES = getattr(_bc_services, "SERVICES", None) if _bc_services is not None else None
 
@@ -287,7 +411,7 @@ AUTONOMY_COOLDOWN_SECONDS = 30 * 60
 AUTONOMY_DAILY_CAP = 3
 AUTONOMY_QUIET_START_HOUR = 0
 AUTONOMY_QUIET_END_HOUR = 8
-AUTONOMY_TICK_SECONDS = 300  # P0-1: autonomous generator interval (>=5min)
+AUTONOMY_TICK_SECONDS = 60  # P0-1: autonomous generator interval (>=5min)
 
 # Task-28: minimal autonomy loop (default OFF, private-only, token-only).
 # Deterministic arbiter INSPIRED BY (not an implementation of) the papers below;
@@ -447,12 +571,6 @@ REGULATION_COST = {
 
 # Batch4 A1: sensitization (dual of habituation): strong negative stimuli
 # repeated within the decay window give a bounded gain, half-life 24h.
-SENSITIZATION_STRONG_NEG_DV = -0.12
-SENSITIZATION_STEP = 0.15
-SENSITIZATION_MAX = 1.25
-SENSITIZATION_HALF_LIFE_HOURS = 24.0
-SENSITIZATION_HISTORY_MAX = 12
-SENSITIZATION_HISTORY_MAX_AGE = 2 * 86400.0
 
 # Batch4 B2: affect-labeling trigger thresholds (deterministic).
 AFFECT_LABEL_MIN_TOP_P = 0.60
@@ -491,19 +609,8 @@ SPECTRUM_FAMILY = {
     "loneliness": ("empathic_pain", "disappointment", "nostalgia"),
 }
 
-LEX = {
-    "sadness": ("难过", "伤心", "委屈", "哭", "失望", "累", "撑不住"),
-    "anger": ("生气", "烦", "气死", "骂", "傻逼", "滚", "恶心", "废物", "垃圾", "讨厌", "闭嘴", "没用", "蠢", "去死"),
-    "fear": ("怕", "焦虑", "紧张", "担心", "失眠", "慌"),
-    "joy": ("开心", "高兴", "喜欢", "好耶", "笑死", "可爱", "谢谢"),
-    "loneliness": ("孤独", "一个人", "没人", "空虚"),
-}
 
 
-LEX["sadness"] += ("难受", "委屈", "失落", "低落")
-LEX["anger"] += ("烦", "别烦", "闭嘴", "滚", "讨厌", "气人")
-LEX["fear"] += ("慌", "不安", "怕", "紧张")
-LEX["loneliness"] += ("丢下", "被丢下", "冷落", "忽视", "没人理", "不理我", "抛弃", "一个人", "孤单")
 
 
 def _sha256(text: str) -> str:
@@ -756,35 +863,6 @@ PLUTCHIK_WHEEL = {
     "anticipation": ("anticipation", "anger", "interest", "vigilance"),
 }
 
-EMOTION_SPECTRUM = [
-    ("admiration", "钦佩", 0.40, 0.25, 0.45, 0.55),
-    ("adoration", "爱慕", 0.80, 0.45, 0.40, 0.90),
-    ("aesthetic", "审美欣赏", 0.50, 0.30, 0.45, 0.60),
-    ("amusement", "好笑", 0.80, 0.60, 0.55, 0.60),
-    ("anger", "生气", -0.60, 0.80, 0.85, 0.30),
-    ("anxiety", "焦虑", -0.40, 0.80, 0.20, 0.30),
-    ("awe", "敬畏", 0.60, 0.70, 0.20, 0.60),
-    ("awkwardness", "尴尬", -0.20, 0.50, 0.10, 0.40),
-    ("boredom", "无聊", -0.40, 0.10, 0.40, 0.40),
-    ("calmness", "平静", 0.10, 0.20, 0.50, 0.50),
-    ("confusion", "困惑", -0.10, 0.50, 0.40, 0.50),
-    ("contempt", "轻蔑", -0.50, 0.40, 0.90, 0.30),
-    ("contentment", "满足", 0.60, 0.20, 0.60, 0.70),
-    ("desire", "欲望", 0.60, 0.70, 0.60, 0.60),
-    ("disappointment", "失望", -0.50, 0.30, 0.40, 0.50),
-    ("disgust", "厌恶", -0.60, 0.40, 0.70, 0.40),
-    ("empathic_pain", "共情痛苦", -0.40, 0.40, 0.20, 0.70),
-    ("entrancement", "入迷", 0.50, 0.50, 0.40, 0.60),
-    ("envy", "嫉妒", -0.40, 0.60, 0.30, 0.40),
-    ("excitement", "兴奋", 0.70, 0.90, 0.50, 0.60),
-    ("fear", "害怕", -0.50, 0.80, 0.20, 0.40),
-    ("guilt", "内疚", -0.50, 0.40, 0.30, 0.50),
-    ("horror", "恐惧", -0.80, 0.90, 0.20, 0.40),
-    ("interest", "兴趣", 0.40, 0.50, 0.50, 0.60),
-    ("joy", "快乐", 0.80, 0.60, 0.60, 0.70),
-    ("nostalgia", "怀念", 0.30, 0.30, 0.40, 0.60),
-    ("pride", "自豪", 0.60, 0.50, 0.90, 0.60),
-]
 
 def circadian_alertness(hour: Any) -> float:
     """Deterministic local-hour alertness (0..1); no LLM/network."""
@@ -805,32 +883,9 @@ def circadian_alertness(hour: Any) -> float:
     return 0.25
 
 
-class BioCore:
-    @staticmethod
-    def _word_hit(text: str, word: str) -> bool:
-        idx = text.find(word)
-        while idx >= 0:
-            prefix = text[max(0, idx - 2):idx]
-            if not prefix.endswith(("不", "没", "别", "无")):
-                return True
-            idx = text.find(word, idx + len(word))
-        return False
+class BioCore(UtilMixin, EmotionMixin, GoalMixin, StateMixin, SnapshotMixin, DailyMixin,
+              Emotion2Mixin, NoiseMixin, Physiology2Mixin, IdentityMixin, AutonomyStateMixin):
 
-    def feedback_user(self, text: str) -> None:
-        t = str(text or "")
-        cold_words = ("废物", "垃圾", "讨厌", "滚", "闭嘴", "没用", "蠢", "去死", "别烦", "傻子")
-        warm_words = ("谢谢", "喜欢", "陪", "辛苦", "厉害", "可爱", "抱")
-        cold = sum(1 for w in cold_words if self._word_hit(t, w))
-        warm = sum(1 for w in warm_words if self._word_hit(t, w))
-        if cold:
-            self.trust = _clip(self.trust - 0.055 * cold, 0, 1)
-            self.v = _clip(self.v - 0.035 * cold, -1, 1)
-            self.stress = _clip(self.stress + 0.035 * cold, 0, 1)
-            self.echo_trace = _clip(self.echo_trace - 0.03 * cold, -1, 1)
-        if warm:
-            self.trust = _clip(self.trust + 0.012 * warm, 0, 1)
-            self.v = _clip(self.v + 0.02 * warm, -1, 1)
-            self.stress = _clip(self.stress - 0.01 * warm, 0, 1)
 
     def __init__(self, profile=None):
         self.profile = dict(profile or DEFAULT_PROFILE)
@@ -993,2429 +1048,61 @@ class BioCore:
         self.spiking = {"rate": 0.0, "variance": 0.0, "ei": 0.0}
         self._rng = __import__("random").Random()
 
-    def set_relationship_context(self, relationship=None) -> None:
-        """Attach the last per-user relationship record for the slow C6 loop.
 
-        The plugin refreshes this hook after persisting the user doc each turn;
-        only conflict/closeness are consumed by homeostasis._drives.
-        """
-        self.relationship_context = relationship if isinstance(relationship, dict) else None
 
-    def seed_trust_from_user(self, user_trust, weight=0.2, max_delta=0.05) -> float:
-        """G3: one-shot bounded trust seed from the user-level record.
 
-        The caller decides *when* (cold start / context rebuild); this method
-        only applies the bounded EMA step and marks the core as seeded. Trust
-        stays in [0,1] and a single step moves it by at most max_delta.
-        """
-        try:
-            target = _clip(float(user_trust), 0.0, 1.0)
-            current = _clip(float(self.trust), 0.0, 1.0)
-            delta = float(weight) * (target - current)
-            limit = abs(float(max_delta))
-            delta = max(-limit, min(limit, delta))
-            self.trust = _clip(current + delta, 0.0, 1.0)
-            self._user_trust_seeded = True
-            self._user_trust_seed_delta = round(delta, 4)
-            return round(float(self.trust), 4)
-        except Exception:
-            return float(getattr(self, "trust", 0.5))
 
-    def load_state(self, d: dict) -> None:
-        if not isinstance(d, dict):
-            return
-        for key in ("v", "a", "d", "stress", "energy", "trust", "social"):
-            if key in d:
-                try:
-                    lo = -1 if key in ("v", "d") else 0
-                    hi = 1.0
-                    setattr(self, key, _clip(d[key], lo, hi))
-                except Exception:
-                    pass
-        self._derive()
-        try:
-            self.ticks = max(0, int(d.get("ticks", self.ticks) or 0))
-        except Exception:
-            pass
-        def _num_map(raw, defaults, lo=-1.0, hi=1.0):
-            out = dict(defaults)
-            if not isinstance(raw, dict):
-                return out
-            for key, default in defaults.items():
-                if key not in raw:
-                    continue
-                try:
-                    value = float(raw.get(key))
-                    if not math.isfinite(value):
-                        continue
-                    out[key] = max(lo, min(hi, value))
-                except Exception:
-                    continue
-            return out
 
-        self.noise = _num_map(d.get("noise"),
-                              {"stress": 0.0, "energy": 0.0, "social": 0.0,
-                               "attention": 0.0, "valence": 0.0}, -0.3, 0.3)
-        self.reflection = _num_map(d.get("reflection"),
-                                   {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}, -1.0, 1.0)
-        self.momentum = _num_map(d.get("momentum"),
-                                 {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}, -1.0, 1.0)
-        self.appraisal = _num_map(d.get("appraisal"),
-                                  {"novelty": 0.0, "goal_relevance": 0.0,
-                                   "coping": 0.5, "agency": 0.5}, 0.0, 1.0)
-        self.opponent = _num_map(d.get("opponent"),
-                                 {"v": 0.0, "a": 0.0, "d": 0.0, "social": 0.0}, -1.0, 1.0)
-        # Labels are display/decision proxies: whitelist known values only.
-        _allowed_labels = {
-            "emotion": {"joy", "sadness", "anger", "fear", "loneliness", "neutral"},
-            "intent": {"approach", "hold", "withdraw"},
-            "expression": {"open", "normal", "short"},
-            "need": {"share", "space", "vent", "be_heard", "talk"},
-            "energy": {"low", "normal", "high"},
-            "stress": {"calm", "tense", "overloaded"},
-        }
-        safe_labels = {}
-        raw_labels = d.get("labels") if isinstance(d.get("labels"), dict) else {}
-        for key, allowed in _allowed_labels.items():
-            value = str(raw_labels.get(key) or "").strip()
-            if value in allowed:
-                safe_labels[key] = value
-        self.labels = {**{"emotion": "neutral", "intent": "hold",
-                          "expression": "normal", "need": "talk",
-                          "energy": "normal", "stress": "calm"}, **safe_labels}
-        if isinstance(d.get("ripple"), dict):
-            self.ripple = _num_map(d["ripple"], self.ripple, 0.0, 1.0)
-        if isinstance(d.get("spiking"), dict):
-            self.spiking = _num_map(d["spiking"], self.spiking, 0.0, 10.0)
-        if isinstance(d.get("stimuli"), list):
-            self.stimuli = [x for x in d["stimuli"] if isinstance(x, dict)][-40:]
-        if isinstance(d.get("history"), list):
-            self.history = [x for x in d["history"] if isinstance(x, dict)][-80:]
-        if isinstance(d.get("open_loops"), list):
-            self.open_loops = [x for x in d["open_loops"] if isinstance(x, dict)][-20:]
-        if isinstance(d.get("coping_history"), list):
-            self.coping_history = [float(x) for x in d["coping_history"] if isinstance(x, (int, float))][-40:]
-        if isinstance(d.get("event_anchors"), list):
-            self.event_anchors = [x for x in d["event_anchors"] if isinstance(x, dict)][-20:]
-        if isinstance(d.get("autobiography"), list):
-            self.autobiography = [x for x in d["autobiography"] if isinstance(x, dict)][-80:]
-        if isinstance(d.get("regulation_stats"), dict):
-            self.regulation_stats = {str(k): dict(v) for k, v in d["regulation_stats"].items() if isinstance(v, dict)}
-        try:
-            self.attention = _clip(d.get("attention", 0.5), 0, 1)
-        except Exception:
-            self.attention = 0.5
-        for _key in ("circadian_alertness", "allostatic_load"):
-            if _key in d:
-                try:
-                    setattr(self, _key, _clip(d[_key], 0, 1))
-                except Exception:
-                    pass
-        try:
-            self.homeostasis = homeostasis.normalize_state(d.get("homeostasis"))
-        except Exception:
-            self.homeostasis = homeostasis.default_state()
-        # BUG-01: restore the remaining bounded biological fields.
-        for _key in ("novelty_need", "boredom", "boundary_pressure", "refusal_readiness"):
-            if _key in d:
-                try:
-                    setattr(self, _key, _clip(d[_key], 0.0, 1.0))
-                except Exception:
-                    pass
-        raw_inter = d.get("interpersonal") if isinstance(d.get("interpersonal"), dict) else {}
-        self.interpersonal = {
-            "other_valence_est": round(_clip(raw_inter.get("other_valence_est", 0.0), -1.0, 1.0), 6),
-            "coupling": round(_clip(raw_inter.get("coupling", 0.0), 0.0, 1.0), 6),
-            "dampening": round(_clip(raw_inter.get("dampening", 1.0), 0.0, 1.0), 6),
-        }
-        digests = d.get("daily_digests")
-        if isinstance(digests, list):
-            safe_digests = []
-            for item in digests[-30:]:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    safe_digests.append({
-                        "date": str(item.get("date") or "")[:10],
-                        "event_ids": [str(x)[:80] for x in (item.get("event_ids") or [])[:50] if str(x)],
-                        "mean_v": round(_clip(item.get("mean_v", 0.0), -1.0, 1.0), 4),
-                        "mean_a": round(_clip(item.get("mean_a", 0.0), 0.0, 1.0), 4),
-                        "mean_stress": round(_clip(item.get("mean_stress", 0.0), 0.0, 1.0), 4),
-                        "dominant_emotion": str(item.get("dominant_emotion") or "neutral")[:20],
-                        "interaction_count": max(0, int(item.get("interaction_count", 0) or 0)),
-                    })
-                except Exception:
-                    continue
-            self.daily_digests = safe_digests[-30:]
-        self.goal_focus = str(d.get("goal_focus") or "")[:40]
-        if isinstance(d.get("meta_emotion"), str):
-            self.meta_emotion = d["meta_emotion"]
-        if isinstance(d.get("goals"), list):
-            self.goals = [dict(g) for g in d["goals"] if isinstance(g, dict)][:8]
-        if isinstance(d.get("goal_conflict"), list):
-            self.goal_conflict = [str(x) for x in d["goal_conflict"]][:6]
-        if isinstance(d.get("goal_scores"), dict):
-            self.goal_scores = {str(k): _clip(v, 0, 1) for k, v in d["goal_scores"].items()
-                                if isinstance(v, (int, float))}
-        for _g in self.goals:
-            if not isinstance(_g, dict):
-                continue
-            _g.setdefault("priority", 0.5)
-            _g.setdefault("last_update", 0.0)
-        if isinstance(d.get("self_timeline"), dict):
-            self.self_timeline = d["self_timeline"]
-        if isinstance(d.get("reflection_tree"), dict):
-            self.reflection_tree = d["reflection_tree"]
-        elif isinstance(d.get("reflection_tree"), list):
-            self.reflection_tree = {"roots": [x for x in d["reflection_tree"] if isinstance(x, dict)][-10:], "count": len(d["reflection_tree"])}
-        if isinstance(d.get("sec"), dict):
-            self.sec = dict(d["sec"])
-        self.core_self = str(d.get("core_self") or "")
-        self.narrative_self = str(d.get("narrative_self") or "")
-        self.last_tick = __import__("time").time()
-        for key in ("echo", "echo_trace"):
-            if key in d:
-                try:
-                    setattr(self, key, _clip(d[key]))
-                except Exception:
-                    pass
-        # Task-15: restore autonomy counters/history only; enabled is owned by
-        # plugin config. Old states without the key keep {"enabled": False}.
-        _raw_auto = d.get("proactive_autonomy")
-        if isinstance(_raw_auto, dict):
-            _safe_auto = {"enabled": bool(_raw_auto.get("enabled", False))}
-            for _k in ("threshold", "max_chars", "impulse", "chaos",
-                       "impulse_ema", "ready", "gain", "noise_seed",
-                       "last_sent_ts", "sent_count", "sent_day", "updated_ts"):
-                if _k in _raw_auto:
-                    _safe_auto[_k] = _raw_auto[_k]
-            self._proactive_autonomy = _safe_auto
-            try:
-                self._noise_seed = max(0, int(_raw_auto.get("noise_seed", 0) or 0))
-            except Exception:
-                self._noise_seed = 0
-        # Task-28: restore the autonomy-loop state if present; "enabled" is
-        # owned by plugin config and unknown/extra keys are ignored.
-        _raw_loop = d.get("autonomy_loop")
-        if isinstance(_raw_loop, dict):
-            self.autonomy_loop = self._autonomy_loop_restore(_raw_loop)
-        # task-43 L1 scalars (bounded restore; unknown/NaN -> defaults).
-        self.conflict_ema = _clip(d.get("conflict_ema", 0.0) or 0.0, 0.0, 1.0)
-        self.rumination_ema = _clip(d.get("rumination_ema", 0.0) or 0.0, 0.0, 1.0)
-        self.anchor_weight = _clip(d.get("anchor_weight", 0.25) or 0.25, 0.0, 0.9)
-        try:
-            self._neg_repeat = max(0, int(d.get("_neg_repeat", 0) or 0))
-        except Exception:
-            self._neg_repeat = 0
-        self._last_neg_topic = str(d.get("_last_neg_topic") or "")[:80]
 
-    def _derive(self) -> None:
-        """Derive stress/energy from v, a, dominance, social (they are not independent)."""
-        v = float(getattr(self, "v", 0.0))
-        a = float(getattr(self, "a", 0.5))
-        d = float(getattr(self, "d", 0.55))
-        soc = float(getattr(self, "social", 0.55))
-        self.stress = _clip(0.45 * max(0.0, -v) * a + 0.35 * (1.0 - d) + 0.20 * (1.0 - soc), 0, 1)
-        _offset = 0.0
-        try:
-            _offset = _clip(float(getattr(self, "_metabolic_energy_offset", 0.0)), 0.0, 0.20)
-        except Exception:
-            _offset = 0.0
-        self.energy = _clip(0.45 * a + 0.25 * max(0.0, v) + 0.20 * d + 0.10 * soc - _offset, 0, 1)
 
-    def _intensity(self) -> float:
-        """Normalized current emotional intensity (0..1)."""
-        v = abs(float(getattr(self, "v", 0.0)))
-        a = float(getattr(self, "a", 0.5))
-        d = abs(float(getattr(self, "d", 0.5)) - 0.5) * 2.0
-        soc = abs(float(getattr(self, "social", 0.5)) - 0.5) * 2.0
-        stress = float(getattr(self, "stress", 0.0))
-        return max(0.0, min(1.0, 0.30 * v + 0.30 * a + 0.20 * stress + 0.10 * d + 0.10 * soc))
 
-    def _goal_signature(self, g: dict) -> str:
-        try:
-            return "、".join([str(g.get("name") or "")] + [str(x) for x in (g.get("keywords") or ())[:6]])
-        except Exception:
-            return str(g.get("name") or "")
 
-    def _goal_evidence(self, g: dict, local_text: str, context_text: str) -> float:
-        """Evidence that a goal is active, from this turn plus retrieved context.
 
-        Local keyword hits are only one channel; memory / self-narrative text is
-        compared against the goal signature so relevance is not keyword-only.
-        """
-        try:
-            t = str(local_text or "")
-            ctx = str(context_text or "")
-            sig = self._goal_signature(g)
-            terms = tuple(g.get("keywords") or ())
-            terms += tuple((getattr(self, "goal_context_terms", {}) or {}).get(str(g.get("key") or ""), ()))
-            hits = sum(1 for w in terms if w and str(w) in t)
-            local = min(1.0, 0.35 + 0.18 * hits) if hits else 0.0
-            local = max(local, self._text_similarity(t, sig) * 0.75)
-            learned = 0.0
-            if ctx:
-                term_hits = [w for w in terms if w and str(w) in ctx]
-                coverage = len(term_hits) / max(1, len(terms))
-                density = min(1.0, len(term_hits) / 5.0)
-                learned = max(self._text_similarity(ctx[:900], sig) * 1.6,
-                              min(1.0, 0.5 * density + 0.9 * coverage))
-                for h in (getattr(self, "history", []) or [])[-12:]:
-                    _txt = str((h or {}).get("text") or "")
-                    if _txt and _txt in ctx:
-                        learned = max(learned, self._text_similarity(_txt, sig) * 0.8)
-            return max(0.0, min(1.0, max(local, 0.75 * learned)))
-        except Exception:
-            return 0.0
 
-    def _resolve_goal_conflict(self, scores=None) -> None:
-        """Pick a focus among active goals: high priority and low progress win."""
-        scores = scores if isinstance(scores, dict) else dict(getattr(self, "goal_scores", {}) or {})
-        cand = []
-        for g in getattr(self, "goals", []) or []:
-            if not isinstance(g, dict):
-                continue
-            key = str(g.get("key") or "")
-            rel = float(scores.get(key, 0.0) or 0.0)
-            if rel < 0.25:
-                continue
-            try:
-                pri = float(g.get("priority", 0.5) or 0.5)
-                prog = max(0.0, min(1.0, float(g.get("progress", 0.0) or 0.0)))
-            except Exception:
-                pri, prog = 0.5, 0.0
-            cand.append((pri * (1.0 - prog), rel, g))
-        if not cand:
-            self.goal_focus = ""
-            self.goal_conflict = []
-            return
-        cand.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        self.goal_focus = str(cand[0][2].get("name") or "")
-        self.goal_conflict = [str(x[2].get("name") or "") for x in cand[1:]][:4]
 
-    def _update_goals(self, text: str, context: str = "") -> None:
-        t = str(text or "")
-        ctx = str(context or "")
-        scores = {}
-        for g in getattr(self, "goals", []) or []:
-            if not isinstance(g, dict):
-                continue
-            key = str(g.get("key") or "")
-            scores[key] = round(self._goal_evidence(g, t, ctx), 3)
-        self.goal_scores = scores
-        # Deterministic priority learning: repeated evidence raises a goal,
-        # neglect decays it slowly (bounded EMA; no LLM involved).
-        try:
-            for g in getattr(self, "goals", []) or []:
-                if not isinstance(g, dict):
-                    continue
-                _key = str(g.get("key") or "")
-                _rel = float(scores.get(_key, 0.0) or 0.0)
-                memory_meta.update_goal_priority(
-                    g, hit=(_rel > 0.05), relevance=_rel)
-        except Exception:
-            pass
-        best = max(scores.values()) if scores else 0.0
-        self.appraisal["goal_relevance"] = round(best, 3)
-        self._resolve_goal_conflict(scores)
-        _pos = sum(1 for w in ("谢谢", "喜欢", "陪", "开心", "信任", "爱") if w in t)
-        _neg = sum(1 for w in ("废物", "滚", "闭嘴", "讨厌", "没用", "难受") if w in t)
-        self.appraisal["norm_compatibility"] = round(max(0.0, min(1.0, 0.5 + 0.12 * _pos - 0.18 * _neg)), 3)
-        self.appraisal["expectedness"] = round(1.0 - float(self.appraisal.get("novelty", 0.0) or 0.0), 3)
-        self.appraisal["urgency"] = round(float(getattr(self, "a", 0.5)), 3)
 
-    def _advance_goals(self, v_delta: float = 0.0, social_delta: float = 0.0) -> None:
-        """Goal progress follows the interaction outcome, not a fixed step."""
-        focus_key = ""
-        focus_name = str(getattr(self, "goal_focus", "") or "")
-        if not focus_name:
-            return
-        for g in getattr(self, "goals", []) or []:
-            if str(g.get("name") or "") == focus_name:
-                focus_key = str(g.get("key") or "")
-                break
-        if not focus_key:
-            return
-        try:
-            rel = float((getattr(self, "goal_scores", {}) or {}).get(focus_key, 0.0) or 0.0)
-            if rel <= 0.0:
-                return
-            gain = (0.004 * rel
-                    + 0.060 * max(0.0, float(v_delta))
-                    + 0.040 * max(0.0, float(social_delta))
-                    - 0.060 * max(0.0, -float(v_delta)))
-            # Stage-2 C9: appraisal/emotion now feeds goal progress (real loop),
-            # gated by bio_feedback_loops; default OFF keeps 1.2.98 unchanged.
-            if getattr(self, "bio_feedback_loops", False):
-                try:
-                    _coping = float((getattr(self, "appraisal", {}) or {}).get("coping", 0.5) or 0.5)
-                    _goal_rel = float((getattr(self, "appraisal", {}) or {}).get("goal_relevance", 0.5) or 0.5)
-                    gain += 0.02 * ((_coping - 0.5) + (_goal_rel - 0.5))
-                except Exception:
-                    pass
-            gain = max(-0.06, min(0.08, gain))
-            for g in self.goals:
-                if str(g.get("key") or "") != focus_key:
-                    continue
-                g["progress"] = round(max(0.0, min(1.0, float(g.get("progress", 0.0) or 0.0) + gain)), 4)
-                g["last_update"] = round(__import__("time").time(), 3)
-                try:
-                    memory_meta.update_goal_priority(
-                        g, hit=(gain >= 0.0), relevance=min(1.0, rel + max(0.0, gain)))
-                except Exception:
-                    pass
-                break
-        except Exception:
-            pass
 
-    def bind_goal_context(self, memory_text: str = "", self_model=None, recent=None, text: str = "") -> None:
-        """Fuse retrieved memory / self narrative / recent turns into goal relevance."""
-        try:
-            ctx_parts = [str(memory_text or "")]
-            if isinstance(self_model, dict):
-                ctx_parts.append(str(self_model.get("narrative") or ""))
-                ctx_parts.append("、".join(str(x) for x in (self_model.get("consistency") or [])[:5]))
-            if isinstance(recent, (list, tuple)):
-                ctx_parts.extend(str(x)[:200] for x in recent[:8])
-            ctx = "\n".join([p for p in ctx_parts if p])
-            if not ctx.strip():
-                return
-            base = dict(getattr(self, "goal_scores", {}) or {})
-            for g in getattr(self, "goals", []) or []:
-                if not isinstance(g, dict):
-                    continue
-                key = str(g.get("key") or "")
-                rel = self._goal_evidence(g, str(text or ""), ctx)
-                base[key] = round(max(float(base.get(key, 0.0) or 0.0), rel), 3)
-            self.goal_scores = base
-            if base:
-                self.appraisal["goal_relevance"] = round(min(1.0, max(base.values())), 3)
-            self._resolve_goal_conflict(base)
-        except Exception:
-            pass
 
-    def _update_coping(self, pre_stress: float) -> None:
-        delta = float(getattr(self, "stress", 0.2)) - float(pre_stress)
-        success = 0.5 - 0.8 * delta + 0.15 * (float(getattr(self, "social", 0.5)) - 0.5)
-        success = max(0.0, min(1.0, success))
-        self.coping_history = (list(getattr(self, "coping_history", [])) + [success])[-40:]
-        if self.coping_history:
-            self.appraisal["coping"] = round(sum(self.coping_history) / len(self.coping_history), 3)
 
-    def remember_event(self, key: str, title: str, meaning: str = "", reflection: str = "",
-                       embedding=None) -> None:
-        key = str(key or "").strip()
-        title = str(title or "").strip()
-        if not key or not title:
-            return
-        self.event_anchors = [x for x in getattr(self, "event_anchors", [])
-                              if x.get("key") != key][-19:]
-        _anchor = {"key": key, "title": title, "ts": __import__("time").time()}
-        if embedding:
-            try:
-                _anchor["embedding"] = [float(x) for x in embedding]
-            except Exception:
-                pass
-        self.event_anchors.append(_anchor)
-        self.autobiography = (list(getattr(self, "autobiography", [])) + [{
-            "ts": __import__("time").time(), "key": key, "title": title,
-            "meaning": str(meaning or "")[:400], "reflection": str(reflection or "")[:400],
-        }])[-80:]
-        try:
-            self.self_timeline["past"] = [x.get("title") for x in self.autobiography[-8:]]
-            self.self_timeline["present"] = str(reflection or meaning or title)[:300]
-            self.self_timeline["future"] = [g.get("name") for g in (self.goals or []) if g.get("name")][:5]
-            self.core_self = str(getattr(self, "core_self", "") or title)[:300]
-            self.narrative_self = str(reflection or meaning or title)[:500]
-        except Exception:
-            pass
 
-    @staticmethod
-    def _cosine_static(a, b) -> float:
-        try:
-            aa = [float(x) for x in (a or [])]
-            bb = [float(x) for x in (b or [])]
-            if not aa or not bb:
-                return 0.0
-            return sum(x * y for x, y in zip(aa, bb))
-        except Exception:
-            return 0.0
 
-    @staticmethod
-    def _text_similarity(a: str, b: str) -> float:
-        a = str(a or "")
-        b = str(b or "")
-        if not a or not b:
-            return 0.0
-        def grams(x):
-            x = re.sub(r"\s+", "", x)
-            return {x[i:i + 2] for i in range(max(0, len(x) - 1))}
-        ga, gb = grams(a), grams(b)
-        if not ga or not gb:
-            return 0.0
-        return len(ga & gb) / float(len(ga | gb))
 
-    def _update_sec(self, v_delta: float, a_delta: float) -> None:
-        self.sec = {
-            "relevance": round(max(0.0, min(1.0, float(self.appraisal.get("goal_relevance", 0.0) or 0.0) * 0.7 + float(self.appraisal.get("novelty", 0.0) or 0.0) * 0.3)), 3),
-            "implication": round(max(0.0, min(1.0, abs(float(v_delta)) * 2.0 + float(self.stress))), 3),
-            "coping_potential": round(max(0.0, min(1.0, float(self.appraisal.get("coping", 0.5) or 0.5))), 3),
-            "normative": round(max(0.0, min(1.0, float(self.appraisal.get("norm_compatibility", 0.5) or 0.5))), 3),
-        }
 
-    def _update_attention(self, v_delta: float, a_delta: float) -> None:
-        novelty = float(self.appraisal.get("novelty", 0.0) or 0.0)
-        goal = float(self.appraisal.get("goal_relevance", 0.0) or 0.0)
-        salience = abs(float(v_delta)) * 1.8 + abs(float(a_delta)) * 1.2 + novelty * 0.4 + goal * 0.5
-        self.attention = _clip(0.82 * float(self.attention) + 0.18 * _clip(salience, 0, 1), 0, 1)
 
-    def _update_meta_emotion(self) -> None:
-        e = str((self.labels or {}).get("emotion") or "neutral")
-        t = float(self.trust)
-        soc = float(self.social)
-        if e == "sadness" and t < 0.55:
-            self.meta_emotion = "对难过的羞耻"
-        elif e == "anger" and soc < 0.50:
-            self.meta_emotion = "对生气的羞耻"
-        elif e == "fear" and float(self.appraisal.get("coping", 0.5)) < 0.45:
-            self.meta_emotion = "对害怕的焦虑"
-        elif e == "loneliness" and t >= 0.55:
-            self.meta_emotion = "对孤独的承认"
-        else:
-            self.meta_emotion = ""
 
-    def update_open_loops(self, text: str, now=None) -> None:
-        """Deterministic prospective-memory (open loops) update from one message."""
-        try:
-            stamp = float(now if now is not None else __import__("time").time())
-            loops = [x for x in (getattr(self, "open_loops", []) or []) if isinstance(x, dict)]
-            memory_meta.resolve_open_loops(loops, text, stamp)
-            for new_loop in memory_meta.detect_open_loops(text, stamp):
-                merged = False
-                for existing in loops:
-                    if str(existing.get("status") or "open") != "open":
-                        continue
-                    if memory_meta.text_similarity(
-                            existing.get("text", ""), new_loop.get("text", "")) >= memory_meta.OPEN_LOOP_MERGE_SIMILARITY:
-                        existing["last_mentioned_ts"] = stamp
-                        existing["mentioned"] = int(existing.get("mentioned", 1) or 1) + 1
-                        merged = True
-                        break
-                if not merged:
-                    loops.append(new_loop)
-            self.open_loops = loops[-int(memory_meta.OPEN_LOOP_MAX):]
-        except Exception:
-            pass
 
-    def observe(self, text: str, embedding=None) -> None:
-        self._decay_to_now()
-        self._query_embedding = embedding
-        _pre_stress = float(self.stress)
-        t = str(text or "")
-        self._update_goals(t)
-        _event_key = ""
-        for _anchor in getattr(self, "event_anchors", []) or []:
-            _sim = self._text_similarity(re.sub(r"\s+", "", t)[:120], str(_anchor.get("title", "")))
-            if self._query_embedding and _anchor.get("embedding"):
-                _sim = max(_sim, self._cosine_static(self._query_embedding, _anchor.get("embedding")))
-            if _sim >= 0.55:
-                _event_key = str(_anchor.get("key", ""))
-                break
-        v_delta, a_delta, d_delta, social_delta = 0.0, 0.0, 0.0, 0.0
-        _hits = []
-        for label, words in LEX.items():
-            if not any(self._word_hit(t, w) for w in words):
-                continue
-            _hits.append(label)
-            if label == "joy":
-                v_delta += 0.12
-                a_delta += 0.05
-                d_delta += 0.04
-                social_delta += 0.03
-            elif label == "sadness":
-                v_delta -= 0.14
-                a_delta -= 0.03
-                d_delta -= 0.05
-            elif label == "loneliness":
-                v_delta -= 0.12
-                a_delta -= 0.03
-                d_delta -= 0.04
-                social_delta -= 0.16
-            elif label == "anger":
-                v_delta -= 0.12
-                a_delta += 0.15
-                d_delta += 0.10
-                social_delta -= 0.05
-            elif label == "fear":
-                v_delta -= 0.16
-                a_delta += 0.14
-                d_delta -= 0.12
-                social_delta -= 0.03
-        # Short-term habituation: repeated equivalent emotional stimuli decay.
-        _now = time.time()
-        # B-T06: generic novelty history (also covers non-emotional repeated text).
-        try:
-            _novelty_text = re.sub(r"\s+", "", t)[:160]
-            if _novelty_text:
-                _hist = getattr(self, "_novelty_history", [])
-                _seen_before = any(
-                    self._text_similarity(_novelty_text, str(x)) >= 0.65
-                    for x in _hist[-12:])
-                if _seen_before:
-                    self.boredom = _clip(self.boredom + 0.06 * (1.0 - self.boredom), 0.0, 1.0)
-                    self.novelty_need = _clip(self.novelty_need + 0.03 * (1.0 - self.novelty_need), 0.0, 1.0)
-                else:
-                    self.boredom = _clip(self.boredom - 0.08, 0.0, 1.0)
-                    self.novelty_need = _clip(0.94 * self.novelty_need + 0.06 * 0.5, 0.0, 1.0)
-                self._novelty_history = (_hist + [_novelty_text])[-20:]
-        except Exception:
-            pass
-        # Batch4 B5: information-gap curiosity proxy. Question/unknown cues raise
-        # a bounded EMA that the homeostasis layer reads as extra curiosity.
-        try:
-            _question_cue = ("?" in t or "？" in t or any(
-                w in t for w in ("什么", "谁", "为什么", "怎么", "哪", "多少", "吗", "如何")))
-            self.info_gap = _clip(
-                0.85 * float(getattr(self, "info_gap", 0.0))
-                + 0.15 * (1.0 if _question_cue else 0.0), 0.0, 1.0)
-        except Exception:
-            self.info_gap = 0.0
-        self.stimuli = [x for x in (getattr(self, "stimuli", []) or [])
-                        if _now - float(x.get("ts", 0) or 0) <= float(getattr(self, "stimulus_decay_seconds", 300))]
-        if _hits:
-            _labels = tuple(sorted(set(_hits)))
-            _norm = re.sub(r"\s+", "", t)[:120]
-            _item = None
-            for _cand in self.stimuli:
-                if _event_key:
-                    if str(_cand.get("event_key", "")) != _event_key:
-                        continue
-                    _item = _cand
-                    break
-                if tuple(_cand.get("labels") or ()) != _labels:
-                    continue
-                if self._text_similarity(_norm, str(_cand.get("text", ""))) >= 0.55:
-                    _item = _cand
-                    break
-            if _item:
-                _gap = max(0.0, _now - float(_item.get("ts", _now)))
-                try:
-                    _count = float(_item.get("n", 0) or 0) * math.exp(-_gap / max(30.0, float(getattr(self, "stimulus_decay_seconds", 300))))
-                except Exception:
-                    _count = 0.0
-            else:
-                _count = 0.0
-            _hab = 1.0 / (1.0 + float(getattr(self, "stimulus_habituation", 0.75)) * _count)
-            _novelty = float((getattr(self, "appraisal", {}) or {}).get("novelty", 0.0) or 0.0)
-            _hab *= max(0.25, 1.0 - 0.6 * _novelty)
-            # Batch4 B1: sensitization is the dual of habituation. Only strong
-            # negative impulses (v_delta <= -0.12) repeated with >=0.55 text
-            # similarity get a gain: 1 + 0.15 * sum(0.5 ** (age_h / 24h)),
-            # capped at 1.25. Weak/neutral stimuli keep _sens = 1.0; the final
-            # impulse is base * _hab * _sens (habituation still applies).
-            _sens = 1.0
-            try:
-                _prior_sens = [x for x in (getattr(self, "_sensitization_history", []) or [])
-                               if isinstance(x, dict)
-                               and _now - float(x.get("ts", 0) or 0) <= SENSITIZATION_HISTORY_MAX_AGE]
-                if v_delta <= SENSITIZATION_STRONG_NEG_DV:
-                    _rep = 0.0
-                    for _old in _prior_sens:
-                        if self._text_similarity(_norm, str(_old.get("text", ""))) < 0.55:
-                            continue
-                        _age_h = max(0.0, _now - float(_old.get("ts", 0) or 0)) / 3600.0
-                        _rep += 0.5 ** (_age_h / SENSITIZATION_HALF_LIFE_HOURS)
-                    _sens = min(SENSITIZATION_MAX, 1.0 + SENSITIZATION_STEP * _rep)
-                    _prior_sens.append({"text": _norm, "ts": _now})
-                self._sensitization_history = _prior_sens[-SENSITIZATION_HISTORY_MAX:]
-            except Exception:
-                _sens = 1.0
-            if _item:
-                _item["n"] = _count + 1
-                _item["ts"] = _now
-            else:
-                self.stimuli.append({"labels": _labels, "text": _norm, "n": 1, "ts": _now, "event_key": _event_key})
-            v_delta *= _hab * _sens
-            a_delta *= _hab * _sens
-            d_delta *= _hab * _sens
-            social_delta *= _hab * _sens
-            if _item:
-                # Repeated equivalent stimulus: boredom rises, novelty need rises.
-                self.boredom = _clip(self.boredom + (0.05 + 0.03 * min(3.0, _count)) * (1.0 - self.boredom), 0.0, 1.0)
-                self.novelty_need = _clip(self.novelty_need + 0.04 * (1.0 - self.novelty_need), 0.0, 1.0)
-            else:
-                # New stimulus: boredom falls, novelty need eases toward baseline.
-                self.boredom = _clip(self.boredom - 0.08, 0.0, 1.0)
-                self.novelty_need = _clip(0.92 * self.novelty_need + 0.08 * 0.5, 0.0, 1.0)
-        # B-T07: boundary pressure/refusal readiness from explicit command cues.
-        _text_b = str(t or "")
-        _commands = sum(1 for w in ("必须", "立刻", "马上", "服从", "不许", "闭嘴", "滚", "废物", "没用", "就该") if w in _text_b)
-        _polite = sum(1 for w in ("请", "可以", "愿意", "谢谢", "麻烦") if w in _text_b)
-        self.boundary_pressure = _clip(0.86 * self.boundary_pressure + 0.14 * min(1.0, _commands) - 0.04 * min(1.0, _polite), 0.0, 1.0)
-        self.refusal_readiness = _clip(
-            0.78 * self.refusal_readiness + 0.30 * self.boundary_pressure * min(1.0, _commands)
-            + 0.08 * self.stress - 0.05 * min(1.0, _polite), 0.0, 1.0)
-        # B-T09: estimate other's valence from the stimulus response, couple with dampening.
-        _other_v = _clip(v_delta * 2.5, -1.0, 1.0)
-        _gain = _clip(float(getattr(self, "profile", {}).get("contagion_gain", 0.10) or 0.10), 0.0, 0.6)
-        _reg = str(getattr(self, "regulation", "none") or "none").lower()
-        _damp = 0.55 if _reg in ("reappraise", "reframe") else (0.75 if _reg in ("suppress", "suppression") else 1.0)
-        _coupling = _clip(_gain * _damp * abs(_other_v), 0.0, 1.0)
-        self.interpersonal = {"other_valence_est": round(_other_v, 4),
-                              "coupling": round(_coupling, 4), "dampening": round(_damp, 3)}
-        self.v = _clip(self.v + 0.05 * _coupling * _other_v, -1, 1)
-        self.a = _clip(self.a + 0.02 * _coupling * abs(_other_v), 0, 1)
-        self.v = _clip(0.7 * self.v + 0.3 * v_delta, -1, 1)
-        self.a = _clip(0.8 * self.a + 0.2 * (0.4 + a_delta), 0, 1)
-        self.d = _clip(0.8 * self.d + 0.2 * (0.55 + d_delta), -1, 1)
-        self.social = _clip(0.8 * self.social + 0.2 * (0.55 + social_delta), 0, 1)
-        # Affective inertia: recent impulses keep pushing in their direction.
-        self.momentum["v"] = _clip(0.75 * float(self.momentum.get("v", 0.0)) + 0.25 * v_delta, -1, 1)
-        self.momentum["a"] = _clip(0.75 * float(self.momentum.get("a", 0.0)) + 0.25 * a_delta, -1, 1)
-        self.momentum["d"] = _clip(0.75 * float(self.momentum.get("d", 0.0)) + 0.25 * d_delta, -1, 1)
-        self.momentum["social"] = _clip(0.75 * float(self.momentum.get("social", 0.0)) + 0.25 * social_delta, -1, 1)
-        self.v = _clip(self.v + 0.16 * self.momentum["v"], -1, 1)
-        self.a = _clip(self.a + 0.16 * self.momentum["a"], 0, 1)
-        self.d = _clip(self.d + 0.16 * self.momentum["d"], -1, 1)
-        self.social = _clip(self.social + 0.16 * self.momentum["social"], 0, 1)
-        # Intensity raises noise amplitude, but a dimension already near its
-        # ceiling receives less effective noise (saturation).
-        _int = self._intensity()
-        _amp = 0.010 + 0.055 * _int
-        self.v = _clip(self.v + self._rng.gauss(0, _amp * (1.0 - 0.75 * abs(self.v))), -1, 1)
-        self.a = _clip(self.a + self._rng.gauss(0, _amp * (1.0 - 0.55 * self.a)), 0, 1)
-        self.d = _clip(self.d + self._rng.gauss(0, _amp * 0.6 * (1.0 - 0.65 * abs(self.d))), -1, 1)
-        self.social = _clip(self.social + self._rng.gauss(0, _amp * 0.5 * (1.0 - 0.65 * self.social)), 0, 1)
-        # Reflection buffer: impulse proportional to intensity, then decays;
-        # feedback is attenuated when the destination is already high.
-        _ref_gain = 0.10 + 0.25 * _int
-        self.reflection["v"] = _clip(0.90 * float(self.reflection.get("v", 0.0)) + _ref_gain * v_delta, -1, 1)
-        self.reflection["a"] = _clip(0.88 * float(self.reflection.get("a", 0.0)) + _ref_gain * a_delta, -1, 1)
-        self.reflection["d"] = _clip(0.92 * float(self.reflection.get("d", 0.0)) + _ref_gain * 0.6 * d_delta, -1, 1)
-        self.reflection["social"] = _clip(0.92 * float(self.reflection.get("social", 0.0)) + _ref_gain * 0.6 * social_delta, 0, 1)
-        self.v = _clip(self.v + self.reflection["v"] * (1.0 - 0.7 * abs(self.v)), -1, 1)
-        self.a = _clip(self.a + self.reflection["a"] * (1.0 - 0.5 * self.a), 0, 1)
-        self.d = _clip(self.d + self.reflection["d"] * (1.0 - 0.6 * abs(self.d)), -1, 1)
-        self.social = _clip(self.social + self.reflection["social"] * (1.0 - 0.6 * self.social), 0, 1)
-        # Opponent process (Solomon & Corbit): the after-reaction builds in the
-        # opposite direction and decays slowly, producing an affective rebound.
-        _deltas = {"v": v_delta, "a": a_delta, "d": d_delta, "social": social_delta}
-        for _k in ("v", "a", "d", "social"):
-            _old = float(self.opponent.get(_k, 0.0))
-            self.opponent[_k] = _clip(0.86 * _old - 0.22 * _deltas[_k], -1, 1)
-        self.v = _clip(self.v + float(getattr(self, "opponent_gain", 0.10)) * self.opponent["v"], -1, 1)
-        self.a = _clip(self.a + float(getattr(self, "opponent_gain", 0.10)) * self.opponent["a"], 0, 1)
-        self.d = _clip(self.d + float(getattr(self, "opponent_gain", 0.10)) * self.opponent["d"], -1, 1)
-        self.social = _clip(self.social + float(getattr(self, "opponent_gain", 0.10)) * self.opponent["social"], 0, 1)
-        self._derive()
-        self._update_coping(_pre_stress)
-        # Stage-2 C8: goal progress writes back to appraisal/affect (real loop),
-        # gated by bio_feedback_loops; default OFF is a pure 1.2.98 no-op.
-        _progress_before = 0.0
-        if getattr(self, "bio_feedback_loops", False):
-            try:
-                _focus = str(getattr(self, "goal_focus", "") or "")
-                for _g in (getattr(self, "goals", []) or []):
-                    if isinstance(_g, dict) and str(_g.get("name") or "") == _focus:
-                        _progress_before = float(_g.get("progress", 0.0) or 0.0)
-                        break
-            except Exception:
-                _progress_before = 0.0
-        self._advance_goals(v_delta, social_delta)
-        if getattr(self, "bio_feedback_loops", False):
-            try:
-                _focus = str(getattr(self, "goal_focus", "") or "")
-                _progress_after = _progress_before
-                for _g in (getattr(self, "goals", []) or []):
-                    if isinstance(_g, dict) and str(_g.get("name") or "") == _focus:
-                        _progress_after = float(_g.get("progress", 0.0) or 0.0)
-                        break
-                _pdelta = _progress_after - _progress_before
-                if abs(_pdelta) > 1e-9:
-                    _apr = self.appraisal if isinstance(self.appraisal, dict) else {}
-                    _apr["coping"] = round(_clip(
-                        float(_apr.get("coping", 0.5) or 0.5) + 0.30 * _pdelta,
-                        0.0, 1.0), 3)
-                    _apr["goal_relevance"] = round(_clip(
-                        float(_apr.get("goal_relevance", 0.5) or 0.5)
-                        + 0.20 * max(0.0, _pdelta), 0.0, 1.0), 3)
-                    self.v = _clip(self.v + 0.20 * _pdelta, -1.0, 1.0)
-                    self.stress = _clip(self.stress - 0.10 * max(0.0, _pdelta), 0.0, 1.0)
-                    self.appraisal = _apr
-            except Exception:
-                pass
-        self._update_attention(v_delta, a_delta)
-        self._update_sec(v_delta, a_delta)
-        self._update_meta_emotion()
-        if not getattr(self, "autonomy_enabled", False):
-            # Legacy noise update (1.2.98). When autonomy is enabled, the only
-            # noise update point is noise_tick() driven by the background tick.
-            for k in self.noise:
-                self.noise[k] = _clip(0.82 * self.noise[k] + self._rng.gauss(0, 0.045), -0.3, 0.3)
-            self.noise["valence"] = _clip(0.7 * self.noise["valence"] + 0.3 * v_delta, -0.3, 0.3)
-            self.noise["stress"] = _clip(0.8 * self.noise["stress"] + 0.2 * (self.stress - 0.2), -0.3, 0.3)
-        self.echo_trace = _clip(0.88 * self.echo_trace + 0.12 * (self.v - self.stress * 0.5), -1, 1)
-        self.echo = _clip(0.7 * self.echo + 0.3 * self.echo_trace, -1, 1)
-        upper = _clip(0.6 * max(0.0, self.v) + 0.2 * self.trust, 0, 1)
-        lower = _clip(0.6 * max(0.0, -self.v) + 0.3 * self.stress, 0, 1)
-        self.ripple = {"upper": round(upper, 3), "lower": round(lower, 3),
-                       "overlap": round(min(upper, lower), 3), "energy": round((upper + lower) / 2, 3)}
-        self.spiking = {"rate": round(0.02 + self.energy * 0.08, 3),
-                        "variance": round(0.01 + self.stress * 0.05, 4),
-                        "ei": round(0.2 + self.trust * 0.3, 3)}
-        try:
-            self.update_open_loops(t)
-        except Exception:
-            pass
-        self.ticks += 1
-        self.infer_labels(force=True)
-        try:
-            homeostasis.step(self, relationship=getattr(self, "relationship_context", None))
-        except Exception:
-            pass
-        # Task-15: affect tick + homeostasis drive deviation feed L1 noise.
-        try:
-            self.integrate_noise(
-                "emotion_tick",
-                stress=0.004 * float(self.stress),
-                energy=0.003 * (0.5 - float(self.energy)),
-                social=0.003 * (0.5 - float(self.social)),
-                valence=0.004 * float(self.v))
-            _homeo = self.homeostasis if isinstance(self.homeostasis, dict) else {}
-            _l_int = float(_homeo.get("L_int", 0.0) or 0.0)
-            _drives = _homeo.get("drives") if isinstance(_homeo.get("drives"), dict) else {}
-            _points = _homeo.get("set_points") if isinstance(_homeo.get("set_points"), dict) else {}
-            self.integrate_noise(
-                "homeostasis",
-                energy=0.004 * _l_int,
-                social=0.004 * abs(float(_drives.get("social", 0.5))
-                                   - float(_points.get("social", 0.55))),
-                attention=0.002 * _l_int)
-        except Exception:
-            pass
 
-    def _spectrum(self) -> list:
-        v = (float(getattr(self, "v", 0.0)) + 1.0) / 2.0
-        a = float(getattr(self, "a", 0.5))
-        d = (float(getattr(self, "d", 0.5)) + 1.0) / 2.0
-        soc = float(getattr(self, "social", 0.5))
-        out = []
-        _emo_bias = {
-            "sadness": {"disappointment": 0.42, "empathic_pain": 0.36, "guilt": 0.18},
-            "anger": {"anger": 0.52, "contempt": 0.30, "disgust": 0.18},
-            "fear": {"fear": 0.52, "anxiety": 0.42, "horror": 0.24},
-            "loneliness": {"empathic_pain": 0.42, "disappointment": 0.36, "nostalgia": 0.24},
-            "joy": {"joy": 0.52, "contentment": 0.36, "amusement": 0.24},
-        }.get(str((self.labels or {}).get("emotion") or ""), {})
-        _protos = {}
-        try:
-            _protos = self._calibrate_spectrum_prototypes()
-        except Exception:
-            _protos = {}
-        for key, cn, sv, sa, sd, ss in EMOTION_SPECTRUM:
-            _p = _protos.get(key)
-            if _p:
-                sv, sa, sd, ss = _p
-            dv = v - ((sv + 1.0) / 2.0)
-            dd = d - ((sd + 1.0) / 2.0)
-            dist = (dv * dv * 1.2 + (a - sa) ** 2 + dd * dd + (soc - ss) ** 2) ** 0.5
-            dist = max(0.0, dist - float(_emo_bias.get(key, 0.0)))
-            out.append((round(dist, 3), key, cn))
-        out.sort(key=lambda x: x[0])
-        return [{"key": k, "name": n, "distance": dist} for dist, k, n in out[:3]]
 
-    def _spectrum_probs(self) -> list:
-        try:
-            out = []
-            for it in self._spectrum():
-                dist = max(0.001, float(it.get("distance", 1.0)))
-                out.append({"key": it.get("key"), "name": it.get("name"), "p": round(1.0 / dist, 4)})
-            total = sum(x["p"] for x in out) or 1.0
-            for x in out:
-                x["p"] = round(x["p"] / total, 4)
-            return out
-        except Exception:
-            return []
 
-    def _calibrate_spectrum_prototypes(self) -> dict:
-        """Cowen & Keltner (2017) style prototype calibration.
 
-        Each EMOTION_SPECTRUM anchor is mixed with the centroid of this core's
-        own state history for the matching emotion family. Pure anchors are
-        used until at least two observations exist, so a single turn cannot
-        move the emotion map. Deterministic: no RNG, no LLM call.
-        """
-        anchors = {key: (sv, sa, sd, ss) for key, cn, sv, sa, sd, ss in EMOTION_SPECTRUM}
-        sums = {}
-        counts = {}
-        hist = list(getattr(self, "history", []) or [])[-80:]
-        cur_d = float(getattr(self, "d", 0.55))
-        cur_soc = float(getattr(self, "social", 0.55))
-        for h in hist:
-            if not isinstance(h, dict):
-                continue
-            emo = str(h.get("emotion") or "").strip()
-            keys = SPECTRUM_FAMILY.get(emo)
-            if not keys:
-                continue
-            try:
-                w = max(0.05, min(1.0, float(h.get("intensity", 0.5) or 0.5)))
-            except Exception:
-                w = 0.5
-            try:
-                hv = float(h.get("v", 0.0))
-                ha = float(h.get("a", 0.5))
-            except Exception:
-                continue
-            try:
-                hd = float(h.get("d", cur_d))
-            except Exception:
-                hd = cur_d
-            try:
-                hs = float(h.get("social", cur_soc))
-            except Exception:
-                hs = cur_soc
-            for key in keys:
-                if key not in anchors:
-                    continue
-                acc = sums.setdefault(key, [0.0, 0.0, 0.0, 0.0, 0.0])
-                acc[0] += hv * w
-                acc[1] += ha * w
-                acc[2] += hd * w
-                acc[3] += hs * w
-                acc[4] += w
-                counts[key] = int(counts.get(key, 0) or 0) + 1
-        out = {}
-        for key, anchor in anchors.items():
-            acc = sums.get(key)
-            n = int(counts.get(key, 0) or 0)
-            if acc and n >= 2 and acc[4] > 0:
-                alpha = min(0.35, 0.06 * n)
-                centroid = [acc[0] / acc[4], acc[1] / acc[4], acc[2] / acc[4], acc[3] / acc[4]]
-                out[key] = tuple((1.0 - alpha) * anchor[i] + alpha * centroid[i] for i in range(4))
-            else:
-                out[key] = anchor
-        self._spectrum_calibration_meta = {
-            "samples": len(hist),
-            "families": len({str(h.get("emotion") or "") for h in hist
-                             if SPECTRUM_FAMILY.get(str(h.get("emotion") or ""))}),
-            "calibrated": sum(1 for k in anchors if int(counts.get(k, 0) or 0) >= 2),
-        }
-        return out
 
-    def _compound_emotion(self) -> str:
-        v = float(getattr(self, "v", 0.0))
-        a = float(getattr(self, "a", 0.5))
-        d = float(getattr(self, "d", 0.5))
-        soc = float(getattr(self, "social", 0.5))
-        trust = float(getattr(self, "trust", 0.5))
-        w = {
-            "joy": max(0.0, v) * max(0.2, a),
-            "trust": trust * max(0.0, 1.0 - abs(v)),
-            "sadness": max(0.0, -v) * (1.0 - a * 0.5),
-            "anger": max(0.0, -v) * a * max(0.0, d - 0.5) * 2.0,
-            "fear": max(0.0, -v) * a * max(0.0, 0.5 - d) * 2.0,
-            "loneliness": max(0.0, -v) * max(0.0, 0.7 - soc),
-            "surprise": max(0.0, float(self.appraisal.get("novelty", 0.0) or 0.0)) * max(0.2, a),
-            "anticipation": max(0.0, float(self.appraisal.get("goal_relevance", 0.0) or 0.0)) * max(0.2, a),
-            "disgust": max(0.0, -v) * max(0.0, 1.0 - a) * max(0.0, 0.6 - soc),
-        }
-        top = sorted(w.items(), key=lambda kv: kv[1], reverse=True)[:2]
-        if len(top) < 2 or top[1][1] < 0.08:
-            return ""
-        pair = frozenset((top[0][0], top[1][0]))
-        names = {
-            frozenset(("joy", "trust")): "亲近",
-            frozenset(("joy", "fear")): "不安的期待",
-            frozenset(("joy", "sadness")): "苦甜参半",
-            frozenset(("joy", "anger")): "复杂",
-            frozenset(("joy", "loneliness")): "热闹中的空",
-            frozenset(("trust", "fear")): "顺从的不安",
-            frozenset(("trust", "sadness")): "失落",
-            frozenset(("trust", "anger")): "失望的怒",
-            frozenset(("trust", "loneliness")): "想念",
-            frozenset(("fear", "sadness")): "无助",
-            frozenset(("fear", "anger")): "戒备",
-            frozenset(("fear", "loneliness")): "被抛下",
-            frozenset(("sadness", "anger")): "委屈",
-            frozenset(("sadness", "loneliness")): "空落",
-            frozenset(("anger", "loneliness")): "被排斥的怒",
-        }
-        names.update({
-            frozenset(("joy", "surprise")): "惊喜",
-            frozenset(("trust", "surprise")): "敬畏",
-            frozenset(("fear", "surprise")): "惊骇",
-            frozenset(("sadness", "surprise")): "意外失落",
-            frozenset(("disgust", "surprise")): "错愕",
-            frozenset(("anger", "surprise")): "暴怒",
-            frozenset(("anticipation", "surprise")): "期待",
-            frozenset(("joy", "anticipation")): "乐观",
-            frozenset(("trust", "anticipation")): "希望",
-            frozenset(("fear", "anticipation")): "焦虑",
-            frozenset(("sadness", "anticipation")): "悲观",
-            frozenset(("disgust", "anticipation")): "蔑视",
-            frozenset(("anger", "anticipation")): "攻击性",
-            frozenset(("joy", "disgust")): "幸灾乐祸",
-            frozenset(("trust", "disgust")): "矛盾",
-            frozenset(("fear", "disgust")): "厌恶恐惧",
-            frozenset(("sadness", "disgust")): "懊悔",
-            frozenset(("joy", "sadness")): "苦甜参半",
-            frozenset(("trust", "anger")): "失望的怒",
-            frozenset(("surprise", "anticipation")): "警觉",
-            frozenset(("disgust", "anger")): "轻蔑",
-            frozenset(("disgust", "sadness")): "嫌恶",
-            frozenset(("disgust", "fear")): "恶心",
-            frozenset(("disgust", "trust")): "勉强接受",
-            frozenset(("surprise", "joy")): "惊喜",
-            frozenset(("surprise", "fear")): "惊骇",
-            frozenset(("anticipation", "joy")): "乐观",
-            frozenset(("anticipation", "fear")): "焦虑",
-        })
-        return names.get(pair, "混合")
 
-    def _regulation_rate(self, strategy: str, now: float = None) -> float:
-        """G4: recency-weighted success rate for one regulation strategy.
 
-        Raw uses/success/cost stay cumulative; the score is multiplied by an
-        exponential recency weight derived from last_update (half-life
-        REGULATION_STATS_HALF_LIFE_DAYS). Read-only: stats are never rewritten
-        here, and legacy stats without last_update keep their old score.
-        """
-        try:
-            st = (getattr(self, "regulation_stats", None) or {}).get(strategy) or {}
-            uses = int(st.get("uses", 0) or 0)
-            if uses <= 0:
-                return 0.0
-            success = float(st.get("success", 0) or 0)
-            cost = float(st.get("cost", 0) or 0)
-            score = success / uses - 0.05 * (cost / uses)
-            last = st.get("last_update")
-            if last is None:
-                return score
-            current = float(now if now is not None else time.time())
-            elapsed_days = max(0.0, current - float(last)) / 86400.0
-            return score * (0.5 ** (elapsed_days / REGULATION_STATS_HALF_LIFE_DAYS))
-        except Exception:
-            return 0.0
 
-    def _choose_regulation(self) -> str:
-        stress = float(getattr(self, "stress", 0.0))
-        trust = float(getattr(self, "trust", 0.5))
-        soc = float(getattr(self, "social", 0.5))
-        arousal = float(getattr(self, "a", 0.5))
-        attention = float(getattr(self, "attention", 0.5))
-        emo = str(self.labels.get("emotion") or "neutral")
-        if stress >= 0.65:
-            if trust >= 0.55:
-                return "seek_comfort"
-            if soc <= 0.30:
-                return "avoid"
-            return "reappraise"
-        _cands = []
-        if emo in ("anger", "fear"):
-            _cands = (["suppress", "reappraise", "distraction"] if soc < 0.50
-                      else ["reappraise", "express", "distraction"])
-            if arousal >= 0.72:
-                _cands = ["distraction"] + _cands
-        elif emo == "sadness":
-            _cands = ["express", "reappraise", "seek_comfort", "distraction"]
-        elif emo == "loneliness":
-            _cands = ["seek_comfort", "avoid", "express", "distraction"]
-        elif stress >= 0.45 and arousal >= 0.70 and attention < 0.55:
-            _cands = ["distraction", "reappraise"]
-        # Batch4 B2: affect labeling (naming the emotion) is the 7th strategy.
-        # Deterministic trigger: spectrum top1 >= 0.45 and arousal >= 0.50.
-        if _cands and arousal >= AFFECT_LABEL_MIN_AROUSAL:
-            try:
-                _top_p = max((float(x.get("p", 0.0) or 0.0)
-                              for x in self._spectrum_probs() if isinstance(x, dict)),
-                             default=0.0)
-            except Exception:
-                _top_p = 0.0
-            try:
-                _label_stats = (getattr(self, "regulation_stats", {}) or {}).get(
-                    "label_emotion") or {}
-                _last_label = _label_stats.get("last_update")
-                if _last_label is None:
-                    _label_ready = True
-                else:
-                    _label_ready = (time.time() - float(_last_label)
-                                    >= AFFECT_LABEL_COOLDOWN_SECONDS)
-            except Exception:
-                _label_ready = True
-            if _top_p >= AFFECT_LABEL_MIN_TOP_P and _label_ready:
-                _cands = ["label_emotion"] + _cands
-        if _cands:
-            if getattr(self, "regulation_stats", None):
-                _qs = (getattr(self, "_learning", {}) or {}).get("params", {}).get("regulation_q", {}) if getattr(self, "bio_learning", False) else {}
-                _cands.sort(key=lambda s: self._regulation_rate(s) + (LEARNING_Q_WEIGHT * float((_qs or {}).get(s, 0.0) or 0.0)), reverse=True)
-            return _cands[0]
-        return "none"
 
-    def _record_regulation(self, strategy: str, pre_stress: float) -> None:
-        """Persist uses / success / cumulative stress change / cost + last_update."""
-        if not strategy or strategy == "none":
-            return
-        try:
-            stats = self.regulation_stats
-            st = stats.setdefault(strategy, {"uses": 0, "success": 0, "stress_delta": 0.0, "cost": 0.0})
-            uses = int(st.get("uses", 0) or 0) + 1
-            delta = float(getattr(self, "stress", 0.0)) - float(pre_stress)
-            st["uses"] = uses
-            st["stress_delta"] = round(float(st.get("stress_delta", 0.0) or 0.0) + delta, 5)
-            st["cost"] = round(float(st.get("cost", 0.0) or 0.0) + float(REGULATION_COST.get(strategy, 0.003)), 5)
-            st["last_update"] = round(time.time(), 3)
-            if getattr(self, "bio_learning", False):
-                try:
-                    # Daw 2011 Q-learning; min-sample N=5 + step cap 0.02 (review BLOCK-05).
-                    r = max(-1.0, min(1.0, (-delta) * 10.0
-                                      - 0.05 * float(REGULATION_COST.get(strategy, 0.003))
-                                      + 0.10 * float(getattr(self, "a", 0.5))))
-                    qs = self._learning.setdefault("params", {}).setdefault("regulation_q", {})
-                    evidence = self._learning.setdefault("evidence", {}).setdefault("regulation_q", {})
-                    ev = evidence.get(strategy) if isinstance(evidence.get(strategy), dict) else {"n": 0, "sum_pe": 0.0}
-                    old_q = float(qs.get(strategy, 0.0) or 0.0)
-                    ev["n"] = int(ev.get("n", 0) or 0) + 1
-                    ev["sum_pe"] = float(ev.get("sum_pe", 0.0) or 0.0) + (r - old_q)
-                    evidence[strategy] = ev
-                    if int(ev.get("n", 0)) >= 5:
-                        alpha = memory_meta.nassar_alpha(float(ev["sum_pe"]) / int(ev["n"]))
-                        delta_q = max(-0.02, min(0.02, alpha * float(ev["sum_pe"]) / int(ev["n"])))
-                        new_q = max(-1.0, min(1.0, old_q + delta_q))
-                        qs[strategy] = round(new_q, 5)
-                        evidence[strategy] = {"n": 0, "sum_pe": 0.0}
-                        self._learning["updates_count"] = int(self._learning.get("updates_count", 0) or 0) + 1
-                        self._learning["last_update"] = round(time.time(), 3)
-                        log = self._learning.get("log") if isinstance(self._learning.get("log"), list) else []
-                        log.append({"ts": round(time.time(), 3), "param": "regulation_q." + str(strategy),
-                                    "old": round(old_q, 5), "new": round(new_q, 5),
-                                    "reason": "delta_stress", "samples": 5})
-                        self._learning["log"] = log[-20:]
-                except Exception:
-                    pass
-            if delta <= 0.0005:
-                st["success"] = int(st.get("success", 0) or 0) + 1
-        except Exception:
-            pass
 
-    def _apply_regulation(self) -> None:
-        r = self.regulation
-        _pre_stress = float(self.stress)
-        if r == "seek_comfort":
-            self.social = _clip(self.social + 0.03, 0, 1)
-            self.stress = _clip(self.stress - 0.02, 0, 1)
-        elif r == "reappraise":
-            self.stress = _clip(self.stress - 0.04, 0, 1)
-            self.v = _clip(self.v + 0.015, -1, 1)
-        elif r == "suppress":
-            self.stress = _clip(self.stress + 0.01, 0, 1)
-            self.v = _clip(self.v - 0.005, -1, 1)
-        elif r == "avoid":
-            self.social = _clip(self.social - 0.03, 0, 1)
-        elif r == "express":
-            self.v = _clip(self.v + 0.01, -1, 1)
-            self.stress = _clip(self.stress - 0.01, 0, 1)
-        elif r == "label_emotion":
-            # Batch4 B2: name the feeling; deliberately tiny effects (not a
-            # comfort button): v toward 0, arousal/stress slightly down.
-            self.v = _clip(self.v + 0.005, -1, 1)
-            self.a = _clip(self.a - 0.01, 0, 1)
-            self.stress = _clip(self.stress - 0.005, 0, 1)
-        elif r == "distraction":
-            # Brief relief: lower arousal/stress now, but attention and the
-            # current goal pay for it because the concern is left unaddressed.
-            self.a = _clip(self.a - 0.06, 0, 1)
-            self.stress = _clip(self.stress - 0.035, 0, 1)
-            self.attention = _clip(self.attention - 0.05, 0, 1)
-            _focus = str(getattr(self, "goal_focus", "") or "")
-            for g in self.goals:
-                if str(g.get("name") or "") == _focus:
-                    g["progress"] = round(max(0.0, float(g.get("progress", 0) or 0) - 0.005), 5)
-                    break
-        self._derive()
-        self._record_regulation(r, _pre_stress)
 
-    def infer_labels(self, force: bool = False) -> None:
-        """Derive labels from the biological state when the model omits them."""
-        v = float(getattr(self, "v", 0.0))
-        a = float(getattr(self, "a", 0.5))
-        d = float(getattr(self, "d", 0.55))
-        soc = float(getattr(self, "social", 0.55))
-        stress = float(getattr(self, "stress", 0.0))
-        energy = float(getattr(self, "energy", 0.8))
-        trust = float(getattr(self, "trust", 0.5))
-        inferred = {}
-        if soc <= 0.47 and v <= 0.00:
-            inferred["emotion"] = "loneliness"
-        elif v >= 0.16 and a >= 0.40 and d >= 0.35:
-            inferred["emotion"] = "joy"
-        elif v <= -0.20 and a < 0.55:
-            inferred["emotion"] = "sadness"
-        elif v <= -0.12 and a >= 0.55 and d >= 0.50:
-            inferred["emotion"] = "anger"
-        elif v <= -0.08 and a >= 0.50 and d < 0.50:
-            inferred["emotion"] = "fear"
-        else:
-            inferred["emotion"] = "neutral"
-        if v >= 0.25 and soc >= 0.35:
-            inferred["intent"] = "approach"
-        elif v <= -0.25 or soc <= 0.30:
-            inferred["intent"] = "withdraw"
-        else:
-            inferred["intent"] = "hold"
-        if energy >= 0.68 and v >= 0.15:
-            inferred["expression"] = "open"
-        elif energy <= 0.35:
-            inferred["expression"] = "short"
-        else:
-            inferred["expression"] = "normal"
-        if soc <= 0.30:
-            inferred["need"] = "space"
-        elif stress >= 0.65:
-            inferred["need"] = "vent" if trust >= 0.40 else "space"
-        elif trust >= 0.60:
-            inferred["need"] = "be_heard" if v <= 0.0 else "share"
-        elif v <= -0.30:
-            inferred["need"] = "space"
-        else:
-            inferred["need"] = "talk"
-        inferred["energy"] = "high" if energy >= 0.70 else ("low" if energy <= 0.35 else "normal")
-        inferred["stress"] = "overloaded" if stress >= 0.70 else ("tense" if stress >= 0.35 else "calm")
-        for key, value in inferred.items():
-            if force or not self.labels.get(key):
-                self.labels[key] = value
-        self.compound = self._compound_emotion()
-        self.regulation = self._choose_regulation()
-        self._apply_regulation()
 
-    def intent(self) -> dict:
-        labels = dict(getattr(self, "labels", {}) or {})
-        return {
-            "emotion": labels.get("emotion", "neutral"),
-            "energy": labels.get("energy", "normal"),
-            "stress": labels.get("stress", "calm"),
-            "trust": round(self.trust, 2),
-            "intent": labels.get("intent", "hold"),
-            "expression": labels.get("expression", "normal"),
-            "need": labels.get("need", "talk"),
-            "dominance": round(self.d, 2),
-            "social": round(self.social, 2),
-            "compound": self.compound,
-            "spectrum": self._spectrum(),
-            "regulation": self.regulation,
-        }
 
-    def apply_affect(self, meta: dict) -> None:
-        if not isinstance(meta, dict):
-            return
-        def delta(key, lo=-0.30, hi=0.30):
-            try:
-                return _clip(meta.get(key, 0.0), lo, hi)
-            except Exception:
-                return 0.0
-        self.v = _clip(self.v + delta("valence_delta"), -1, 1)
-        self.a = _clip(self.a + delta("arousal_delta"), 0, 1)
-        self.d = _clip(self.d + delta("dominance_delta"), -1, 1)
-        self.social = _clip(self.social + delta("social_delta"), 0, 1)
-        # Backward compatibility with old tags that only sent stress/energy.
-        if "dominance_delta" not in meta and "stress_delta" in meta:
-            self.d = _clip(self.d - delta("stress_delta") * 0.5, -1, 1)
-        if "social_delta" not in meta and "stress_delta" in meta:
-            self.social = _clip(self.social - max(0.0, delta("stress_delta")) * 0.4, 0, 1)
-        self.trust = _clip(self.trust + delta("trust_delta"), 0, 1)
-        self.momentum["v"] = _clip(0.75 * float(self.momentum.get("v", 0.0)) + 0.25 * delta("valence_delta"), -1, 1)
-        self.momentum["a"] = _clip(0.75 * float(self.momentum.get("a", 0.0)) + 0.25 * delta("arousal_delta"), -1, 1)
-        self.momentum["d"] = _clip(0.75 * float(self.momentum.get("d", 0.0)) + 0.25 * delta("dominance_delta"), -1, 1)
-        self.momentum["social"] = _clip(0.75 * float(self.momentum.get("social", 0.0)) + 0.25 * delta("social_delta"), -1, 1)
-        self.v = _clip(self.v + 0.12 * self.momentum["v"], -1, 1)
-        self.a = _clip(self.a + 0.12 * self.momentum["a"], 0, 1)
-        self.d = _clip(self.d + 0.12 * self.momentum["d"], -1, 1)
-        self.social = _clip(self.social + 0.12 * self.momentum["social"], 0, 1)
-        for _k in ("novelty", "goal_relevance", "coping", "agency"):
-            if _k + "_delta" in meta:
-                self.appraisal[_k] = _clip(float(self.appraisal.get(_k, 0.0)) + delta(_k + "_delta"), 0, 1)
-        self._derive()
-        allowed = {
-            "emotion": {"joy", "sadness", "anger", "fear", "loneliness", "neutral"},
-            "intent": {"approach", "hold", "withdraw"},
-            "expression": {"open", "normal", "short"},
-            "need": {"share", "space", "vent", "be_heard", "talk"},
-            "energy": {"low", "normal", "high"},
-            "stress": {"calm", "tense", "overloaded"},
-        }
-        for key, values in allowed.items():
-            value = str(meta.get(key) or "").strip()
-            if value in values:
-                self.labels[key] = value
-        # task-39 §9.3: optional soft-bounded negative feedback replacing the
-        # final hard clamp. Default OFF => bit-identical to the legacy _clip path.
-        if getattr(self, "soft_bound_enabled", False):
-            try:
-                _prof = self.profile if isinstance(self.profile, dict) else {}
-                _k = float(getattr(self, "soft_bound_k", 0.10) or 0.10)
-                _mf = float(getattr(self, "soft_bound_m_frac", 0.08) or 0.08)
-                _lam = float(getattr(self, "soft_bound_lam", 0.10) or 0.10)
-                _bv = float(_prof.get("baseline_v", 0.05) or 0.05)
-                _ba = float(_prof.get("baseline_a", 0.40) or 0.40)
-                self.v = memory_meta.soft_bounded(self.v, _bv, -1.0, 1.0, _k, _mf, _lam)
-                self.a = memory_meta.soft_bounded(self.a, _ba, 0.0, 1.0, _k, _mf, _lam)
-                self.d = memory_meta.soft_bounded(self.d, 0.5, -1.0, 1.0, _k, _mf, _lam)
-                self.social = memory_meta.soft_bounded(self.social, 0.5, 0.0, 1.0, _k, _mf, _lam)
-                self.trust = memory_meta.soft_bounded(self.trust, 0.5, 0.0, 1.0, _k, _mf, _lam)
-            except Exception:
-                pass
-        self._derive()
-        self.infer_labels(force=False)
-        self.ticks += 1
-        self.noise["valence"] = _clip(0.7 * self.noise["valence"] + 0.3 * delta("valence_delta"), -0.3, 0.3)
-        self.noise["stress"] = _clip(0.8 * self.noise["stress"] + 0.2 * delta("stress_delta"), -0.3, 0.3)
-        self.echo_trace = _clip(0.88 * self.echo_trace + 0.12 * (self.v - self.stress * 0.5), -1, 1)
-        self.echo = _clip(0.7 * self.echo + 0.3 * self.echo_trace, -1, 1)
-        upper = _clip(0.6 * max(0.0, self.v) + 0.2 * self.trust, 0, 1)
-        lower = _clip(0.6 * max(0.0, -self.v) + 0.3 * self.stress, 0, 1)
-        self.ripple = {"upper": round(upper, 3), "lower": round(lower, 3),
-                       "overlap": round(min(upper, lower), 3), "energy": round((upper + lower) / 2, 3)}
-        self.spiking = {"rate": round(0.02 + self.energy * 0.08, 3),
-                        "variance": round(0.01 + self.stress * 0.05, 4),
-                        "ei": round(0.2 + self.trust * 0.3, 3)}
 
-    def feedback(self, reply: str) -> None:
-        r = str(reply or "")
-        warm = 0.008 * sum(1 for w in ("谢谢", "在", "陪", "懂", "一起", "抱") if w in r)
-        self.trust = _clip(self.trust + warm, 0, 1)
-        self.social = _clip(self.social + warm * 0.5, 0, 1)
-        self._derive()
-        self.echo_trace = _clip(0.9 * self.echo_trace + 0.1 * warm, -1, 1)
 
-    def _recovery_speed(self) -> float:
-        """Batch4 B4: contextual recovery-speed multiplier, bounded [0.8, 1.2].
 
-        speed = clamp(0.85 + 0.30*recovery_rate
-                      + 0.05*(2*coping_success - 1)
-                      + 0.05*(circadian_alertness - 0.5), 0.8, 1.2)
-        Applied as HL/speed only to dimensions below baseline (v<0, a>0.40,
-        social<0.55), so recovery is faster after rest/support and slower when
-        recovery_rate is low. Deterministic, no LLM, no new stored field.
-        """
-        try:
-            rate = _clip(float((getattr(self, "profile", {}) or {}).get(
-                "recovery_rate", 0.62) or 0.62), 0.0, 1.0)
-        except Exception:
-            rate = 0.62
-        success = 0.5
-        try:
-            stats = getattr(self, "regulation_stats", {}) or {}
-            uses = sum(int(v.get("uses", 0) or 0) for v in stats.values()
-                       if isinstance(v, dict))
-            succ = sum(int(v.get("success", 0) or 0) for v in stats.values()
-                       if isinstance(v, dict))
-            if uses > 0:
-                success = _clip(succ / uses, 0.0, 1.0)
-        except Exception:
-            success = 0.5
-        try:
-            alert = _clip(float(getattr(self, "circadian_alertness", 0.5) or 0.5), 0.0, 1.0)
-        except Exception:
-            alert = 0.5
-        speed = (0.85 + 0.30 * rate + 0.05 * (2.0 * success - 1.0)
-                 + 0.05 * (alert - 0.5))
-        return max(RECOVERY_CONTEXT_MIN, min(RECOVERY_CONTEXT_MAX, speed))
 
-    def _decay_to_now(self) -> None:
-        now = __import__("time").time()
-        try:
-            dt_min = max(0.0, (now - float(getattr(self, "last_tick", now))) / 60.0)
-        except Exception:
-            dt_min = 0.0
-        self.last_tick = now
-        if dt_min < 0.5:
-            return
-        def factor(halflife):
-            try:
-                hl = max(1.0, float(halflife))
-            except Exception:
-                hl = 120.0
-            return 0.5 ** (dt_min / hl)
-        _emo = str((getattr(self, "labels", {}) or {}).get("emotion") or "neutral")
-        _ef = float((getattr(self, "emotion_decay_factors", {}) or {}).get(_emo, 1.0))
-        # Batch4 B4: contextual recovery speed shortens the half-life only for
-        # dimensions that are recovering toward baseline.
-        _rec = self._recovery_speed()
-        _v_rec = _rec if self.v < 0 else 1.0
-        _a_rec = _rec if self.a > 0.40 else 1.0
-        _soc_rec = _rec if self.social < 0.55 else 1.0
-        self.v = _clip(self.v * factor(self.valence_decay_minutes * _ef / _v_rec), -1, 1)
-        self.a = _clip(0.40 + (self.a - 0.40) * factor(
-            self.arousal_decay_minutes * max(0.5, _ef) / _a_rec), 0, 1)
-        self.d = _clip(0.55 + (self.d - 0.55) * factor(self.valence_decay_minutes * _ef), -1, 1)
-        self.social = _clip(0.55 + (self.social - 0.55) * factor(
-            self.social_decay_minutes * _ef / _soc_rec), 0, 1)
-        self._derive()
-        try:
-            self._apply_circadian_effects()
-            self._update_allostatic_load()
-        except Exception:
-            pass
-        try:
-            self._metabolic_energy_offset = _clip(
-                float(getattr(self, "_metabolic_energy_offset", 0.0)) * 0.98, 0.0, 0.20)
-        except Exception:
-            self._metabolic_energy_offset = 0.0
 
-    def apply_memory_trace(self, v_delta: float = 0.0, stress_delta: float = 0.0) -> dict:
-        """Single BioCore writer for L3 memory-trace nudges (bounded)."""
-        try:
-            dv = max(-0.05, min(0.05, float(v_delta or 0.0)))
-        except Exception:
-            dv = 0.0
-        try:
-            ds = max(-0.05, min(0.05, float(stress_delta or 0.0)))
-        except Exception:
-            ds = 0.0
-        self.v = _clip(float(getattr(self, "v", 0.0)) + dv, -1.0, 1.0)
-        self.stress = _clip(float(getattr(self, "stress", 0.0)) + ds, 0.0, 1.0)
-        return {"v_delta": round(dv, 4), "stress_delta": round(ds, 4)}
-
-    def record_reply(self, text: str = "", meta=None) -> None:
-        try:
-            emo = str((self.labels or {}).get("emotion") or "neutral")
-            self.history.append({
-                "ts": __import__("time").time(),
-                "emotion": emo,
-                "compound": str(self.compound or ""),
-                "intensity": round(float(self._intensity()), 3),
-                "v": round(float(self.v), 3),
-                "a": round(float(self.a), 3),
-                "d": round(float(self.d), 3),
-                "social": round(float(self.social), 3),
-                "text": str(text or "")[:80],
-            })
-            if len(self.history) > 80:
-                self.history = self.history[-80:]
-        except Exception:
-            pass
-
-    def _apply_circadian_effects(self, alert=None, now=None) -> float:
-        """Small attention/energy modulation from local-hour alertness."""
-        try:
-            if alert is None:
-                current = time.localtime(time.time() if now is None else now)
-                alert = circadian_alertness(current.tm_hour + current.tm_min / 60.0)
-            alert = max(0.0, min(1.0, float(alert)))
-            self.circadian_alertness = round(alert, 3)
-            delta = 0.01 * (alert - 0.5)
-            self.energy = _clip(self.energy + delta, 0.0, 1.0)
-            self.attention = _clip(self.attention + delta * 0.5, 0.0, 1.0)
-            return alert
-        except Exception:
-            return 0.5
-
-    def _update_allostatic_load(self) -> float:
-        """Slow allostatic accumulation/recovery; bounded, tiny stress offset."""
-        try:
-            stress = _clip(self.stress, 0.0, 1.0)
-            if stress > 0.55:
-                self.allostatic_load = _clip(
-                    self.allostatic_load + 0.01 * (stress - 0.55) * (1.0 - self.allostatic_load), 0.0, 1.0)
-            else:
-                self.allostatic_load = _clip(
-                    self.allostatic_load - 0.004 * (0.55 - stress), 0.0, 1.0)
-            if self.allostatic_load > 0:
-                self.stress = _clip(self.stress + 0.005 * self.allostatic_load, 0.0, 1.0)
-            return float(self.allostatic_load)
-        except Exception:
-            return 0.0
-
-    def update_daily_digest(self, now=None, event_ids=None) -> dict:
-        """Deterministic daily digest base; no narrative/LLM. Bounded to 30 days."""
-        try:
-            current = float(time.time() if now is None else now)
-            date = time.strftime("%Y-%m-%d", time.localtime(current))
-            accum = getattr(self, "_daily_accum", None)
-            if not isinstance(accum, dict):
-                accum = {"date": "", "n": 0, "v": 0.0, "a": 0.0, "stress": 0.0,
-                         "emotions": {}, "ticks": 0, "event_ids": []}
-            if accum.get("date") and accum.get("date") != date:
-                if int(accum.get("n", 0) or 0) > 0:
-                    emotions = accum.get("emotions") or {}
-                    dominant = max(emotions.items(), key=lambda kv: kv[1])[0] if emotions else "neutral"
-                    n = int(accum.get("n", 1) or 1)
-                    self.daily_digests.append({
-                        "date": str(accum.get("date")),
-                        "event_ids": [str(x) for x in (accum.get("event_ids") or [])[-50:] if str(x)],
-                        "mean_v": round(float(accum.get("v", 0.0) or 0.0) / n, 4),
-                        "mean_a": round(float(accum.get("a", 0.0) or 0.0) / n, 4),
-                        "mean_stress": round(float(accum.get("stress", 0.0) or 0.0) / n, 4),
-                        "dominant_emotion": dominant,
-                        "interaction_count": n,
-                    })
-                    self.daily_digests = self.daily_digests[-30:]
-                accum = {"date": date, "n": 0, "v": 0.0, "a": 0.0, "stress": 0.0,
-                         "emotions": {}, "ticks": 0, "event_ids": []}
-            accum["date"] = date
-            accum["n"] = int(accum.get("n", 0) or 0) + 1
-            accum["v"] = float(accum.get("v", 0.0) or 0.0) + float(self.v)
-            accum["a"] = float(accum.get("a", 0.0) or 0.0) + float(self.a)
-            accum["stress"] = float(accum.get("stress", 0.0) or 0.0) + float(self.stress)
-            _emo = str((self.labels or {}).get("emotion") or "neutral")
-            emotions = accum.get("emotions") if isinstance(accum.get("emotions"), dict) else {}
-            emotions[_emo] = int(emotions.get(_emo, 0) or 0) + 1
-            accum["emotions"] = emotions
-            accum["ticks"] = int(accum.get("ticks", 0) or 0) + 1
-            if isinstance(event_ids, (list, tuple)):
-                _eids = accum.get("event_ids") if isinstance(accum.get("event_ids"), list) else []
-                for _eid in event_ids:
-                    if str(_eid) and str(_eid) not in _eids:
-                        _eids.append(str(_eid))
-                accum["event_ids"] = _eids[-50:]
-            self._daily_accum = accum
-            return dict(accum)
-        except Exception:
-            return {}
-
-    def _reflection_tree_view(self) -> dict:
-        """G15: read-only reflection tree with old nodes softly forgotten.
-
-        Nodes carry their creation ts; nodes older than REFLECTION_TREE_TTL_DAYS
-        are hidden from snapshots/dashboard without deleting stored history.
-        """
-        try:
-            tree = self.reflection_tree if isinstance(self.reflection_tree, dict) else {}
-            cutoff = time.time() - REFLECTION_TREE_TTL_DAYS * 86400.0
-
-            def _alive(node):
-                try:
-                    ts = float(node.get("ts", 0) or 0)
-                except Exception:
-                    ts = 0.0
-                return ts <= 0 or ts >= cutoff
-
-            roots = []
-            for node in (tree.get("roots") or [])[:10]:
-                if not isinstance(node, dict) or not _alive(node):
-                    continue
-                item = dict(node)
-                item["children"] = [dict(child) for child in
-                                    (node.get("children") or [])[-10:]
-                                    if isinstance(child, dict) and _alive(child)]
-                roots.append(item)
-            stored_roots = [node for node in (tree.get("roots") or [])
-                            if isinstance(node, dict)]
-            stored_total = sum(
-                1 + len([c for c in (node.get("children") or []) if isinstance(c, dict)])
-                for node in stored_roots)
-            visible_total = sum(1 + len(item.get("children") or []) for item in roots)
-            return {"roots": roots[-10:], "count": int(tree.get("count", 0) or 0),
-                    "hidden_count": max(0, stored_total - visible_total)}
-        except Exception:
-            return {"roots": [], "count": 0, "hidden_count": 0}
-
-    def integrate_noise(self, source: str = "", **deltas) -> dict:
-        """L1 task-15: decayed addition into the 5-channel noise integrator.
-
-        Only active when the plugin enabled proactive autonomy
-        (core.autonomy_enabled). Default OFF is a pure no-op, so the legacy
-        noise trajectory is unchanged. Channels decay 0.98 per integration and
-        are clamped to ±NOISE_CLAMP. This is an L1 state update: callers only
-        hand in module deltas; no caller reads it to bypass L1 decisions.
-        """
-        if not getattr(self, "autonomy_enabled", False):
-            return {}
-        # Accumulator only: modules add small deltas; the single tick applies
-        # decay + RNG + the accumulated injections (P0-2 unified noise model).
-        if not isinstance(getattr(self, "_noise_accum", None), dict):
-            self._noise_accum = {}
-        out = {}
-        try:
-            for key in ("stress", "energy", "social", "attention", "valence"):
-                try:
-                    add = float(deltas.get(key, 0.0) or 0.0)
-                except Exception:
-                    add = 0.0
-                add = max(-0.02, min(0.02, add))
-                current = float(self._noise_accum.get(key, 0.0) or 0.0)
-                value = _clip(current + add, -NOISE_CLAMP, NOISE_CLAMP)
-                self._noise_accum[key] = round(value, 4)
-                out[key] = round(value, 4)
-            self._last_noise_source = {"source": str(source or "")[:40],
-                                       "ts": round(time.time(), 3)}
-        except Exception:
-            pass
-        return out
-
-    def noise_tick(self, now=None) -> dict:
-        """L1 task-15 P0-2: single noise update point.
-
-        noise = clip(0.82*noise + gauss(0,0.045) + accumulated module deltas,
-                     ±NOISE_CLAMP). Only called by the autonomy tick; legacy
-        per-observe noise updates are skipped while autonomy is enabled.
-        """
-        if not (getattr(self, "autonomy_enabled", False)
-                or getattr(self, "autonomy_loop_enabled", False)):
-            return {}
-        out = {}
-        try:
-            accum = self._noise_accum if isinstance(getattr(self, "_noise_accum", None), dict) else {}
-            for key in ("stress", "energy", "social", "attention", "valence"):
-                old = float(self.noise.get(key, 0.0) or 0.0)
-                try:
-                    gauss = float(self._rng.gauss(0, 0.045))
-                except Exception:
-                    gauss = 0.0
-                try:
-                    add = float(accum.get(key, 0.0) or 0.0)
-                except Exception:
-                    add = 0.0
-                value = _clip(0.82 * old + gauss + add, -NOISE_CLAMP, NOISE_CLAMP)
-                self.noise[key] = round(value, 4)
-                out[key] = round(value, 4)
-            self._noise_accum = {}
-        except Exception:
-            pass
-        return out
 
     # ------------------------------------------------------------------
     # Task-28: minimal autonomy loop (L1, deterministic, default OFF)
     # ------------------------------------------------------------------
-    @staticmethod
-    def _loop_num(value, default: float = 0.0, lo: float = 0.0,
-                  hi: float = 1.0) -> float:
-        """Finite, bounded float for loop inputs (NaN/Inf -> default)."""
-        try:
-            num = float(value)
-        except Exception:
-            return default
-        if num != num or num in (float("inf"), float("-inf")):
-            return default
-        return max(lo, min(hi, num))
 
-    @staticmethod
-    def _autonomy_loop_default_state(now: float = 0.0) -> dict:
-        """Bounded loop state shape (spec §7.2); created only while enabled."""
-        try:
-            stamp = float(now or time.time())
-        except Exception:
-            stamp = time.time()
-        return {
-            "enabled": True,
-            "tick": 0,
-            "candidates": [],
-            "winner": None,
-            "ignition": False,
-            "workspace_token": "",
-            "inhibition": {},
-            "value_ema": {},
-            "effort_debt": 0.0,
-            "budget": {"day": time.strftime("%Y-%m-%d", time.localtime(stamp)),
-                       "used": 0, "last_action_ts": 0.0},
-            "stats": {"ticks": 0, "no_ignition": 0, "ignitions": 0, "executed": 0,
-                      "blocked_group": 0, "blocked_quiet": 0,
-                      "blocked_cooldown": 0, "blocked_cap": 0},
-            "updated_ts": 0.0,
-        }
 
-    def _autonomy_loop_restore(self, raw: dict) -> dict:
-        """Restore persisted loop state; unknown keys dropped, values bounded."""
-        base = self._autonomy_loop_default_state()
-        if not isinstance(raw, dict):
-            return base
-        try:
-            base["tick"] = max(0, min(10 ** 9, int(raw.get("tick", 0) or 0)))
-        except Exception:
-            base["tick"] = 0
-        cands = raw.get("candidates") if isinstance(raw.get("candidates"), list) else []
-        safe_cands = []
-        for row in cands[:AUTONOMY_LOOP_CANDIDATE_MAX]:
-            if not isinstance(row, dict):
-                continue
-            mode = str(row.get("mode") or "")[:AUTONOMY_LOOP_WORKSPACE_MAX]
-            if mode not in AUTONOMY_LOOP_MODES:
-                continue
-            safe_cands.append({
-                "mode": mode,
-                "source": str(row.get("source") or "")[:16],
-                "salience": round(self._loop_num(row.get("salience"), 0.0, 0.0, 1.0), 4),
-                "goal_gain": round(self._loop_num(row.get("goal_gain"), 1.0, 0.8, 1.4), 4),
-                "discount": round(self._loop_num(row.get("discount"), 1.0, 0.05, 1.0), 4),
-                "effort": round(self._loop_num(row.get("effort"), 0.5, 0.0, 1.0), 4),
-                "cost": round(self._loop_num(row.get("cost"), 0.0, 0.0, 1.0), 4),
-                "value": round(self._loop_num(row.get("value"), 0.0,
-                                              AUTONOMY_LOOP_VALUE_MIN,
-                                              AUTONOMY_LOOP_VALUE_MAX), 4),
-            })
-        base["candidates"] = safe_cands
-        winner = raw.get("winner")
-        if isinstance(winner, dict) and str(winner.get("mode") or "") in AUTONOMY_LOOP_MODES:
-            base["winner"] = {
-                "mode": str(winner.get("mode"))[:AUTONOMY_LOOP_WORKSPACE_MAX],
-                "value": round(self._loop_num(winner.get("value"), 0.0,
-                                              AUTONOMY_LOOP_VALUE_MIN,
-                                              AUTONOMY_LOOP_VALUE_MAX), 4),
-                "ts": round(self._loop_num(winner.get("ts"), 0.0, 0.0, 10 ** 12), 3),
-            }
-        base["ignition"] = bool(raw.get("ignition", False))
-        token = str(raw.get("workspace_token") or "")[:AUTONOMY_LOOP_WORKSPACE_MAX]
-        base["workspace_token"] = token if token in AUTONOMY_LOOP_MODES else ""
-        inhibition = raw.get("inhibition") if isinstance(raw.get("inhibition"), dict) else {}
-        safe_inh = {}
-        for mode, ts in list(inhibition.items())[:AUTONOMY_LOOP_CANDIDATE_MAX]:
-            mode = str(mode or "")[:AUTONOMY_LOOP_WORKSPACE_MAX]
-            if mode not in AUTONOMY_LOOP_MODES:
-                continue
-            safe_inh[mode] = round(self._loop_num(ts, 0.0, 0.0, 10 ** 12), 3)
-        base["inhibition"] = dict(sorted(safe_inh.items(),
-                                         key=lambda kv: kv[1], reverse=True)
-                                 [:AUTONOMY_LOOP_CANDIDATE_MAX])
-        ema = raw.get("value_ema") if isinstance(raw.get("value_ema"), dict) else {}
-        base["value_ema"] = {
-            str(k)[:AUTONOMY_LOOP_WORKSPACE_MAX]:
-                round(self._loop_num(v, 0.0, AUTONOMY_LOOP_VALUE_MIN,
-                                     AUTONOMY_LOOP_VALUE_MAX), 6)
-            for k, v in list(ema.items())[:AUTONOMY_LOOP_CANDIDATE_MAX]
-            if str(k)[:AUTONOMY_LOOP_WORKSPACE_MAX] in AUTONOMY_LOOP_MODES}
-        base["effort_debt"] = round(self._loop_num(
-            raw.get("effort_debt"), 0.0, 0.0, AUTONOMY_LOOP_DEBT_MAX), 6)
-        budget = raw.get("budget") if isinstance(raw.get("budget"), dict) else {}
-        base["budget"] = {
-            "day": str(budget.get("day") or "")[:10],
-            "used": max(0, min(int(self._loop_num(budget.get("used"), 0.0, 0.0, 10 ** 6)),
-                               AUTONOMY_DAILY_CAP)),
-            "last_action_ts": round(self._loop_num(
-                budget.get("last_action_ts"), 0.0, 0.0, 10 ** 12), 3),
-        }
-        stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
-        base["stats"] = {key: max(0, min(
-            int(self._loop_num(stats.get(key), 0.0, 0.0, 10 ** 9)), 10 ** 9))
-            for key in base["stats"]}
-        base["updated_ts"] = round(self._loop_num(
-            raw.get("updated_ts"), 0.0, 0.0, 10 ** 12), 3)
-        return base
-
-    def _autonomy_loop_param(self, name: str, default: float,
-                             lo: float, hi: float) -> float:
-        """Read one loop tuning parameter, defensively clamped to its range."""
-        try:
-            value = float(getattr(self, name, default))
-        except Exception:
-            return float(default)
-        if value != value or value in (float("inf"), float("-inf")):
-            return float(default)
-        return max(float(lo), min(float(hi), value))
-
-    def _autonomy_loop_ior_factor(self, state: dict, mode: str, now: float) -> float:
-        """Return-inhibition recovery factor (Itti & Koch 1998 WTA + IOR).
-
-        A just-broadcast mode is fully suppressed (0) and recovers towards 1 as
-        exp(-Δ/τ). Note: spec §2's literal exp(-Δ/τ) points the opposite way
-        (no suppression right after selection); the implemented direction is the
-        IOR semantics the spec's S9 scenario requires.
-        """
-        try:
-            inhibition = state.get("inhibition") if isinstance(state.get("inhibition"), dict) else {}
-            stamp = float(inhibition.get(mode, 0.0) or 0.0)
-        except Exception:
-            stamp = 0.0
-        if stamp <= 0:
-            return 1.0
-        tau = self._autonomy_loop_param(
-            "autonomy_loop_ior_seconds", AUTONOMY_LOOP_IOR_SECONDS,
-            AUTONOMY_LOOP_IOR_MIN, AUTONOMY_LOOP_IOR_MAX)
-        delta = max(0.0, float(now) - stamp)
-        return _clip(1.0 - math.exp(-delta / max(1.0, tau)), 0.0, 1.0)
-
-    def _autonomy_loop_goal_progress(self) -> float:
-        """Progress proxy for the engaged goal (0 when there is no goal)."""
-        try:
-            goals = [g for g in (getattr(self, "goals", []) or [])
-                     if isinstance(g, dict)]
-            if not goals:
-                return 0.0
-            focus = str(getattr(self, "goal_focus", "") or "")
-            chosen = next((g for g in goals
-                           if str(g.get("key") or "") == focus), None)
-            if chosen is None:
-                chosen = max(goals, key=lambda g: self._loop_num(
-                    g.get("priority"), 0.5, 0.0, 1.0))
-            return self._loop_num(chosen.get("progress"), 0.0, 0.0, 1.0)
-        except Exception:
-            return 0.0
-
-    def _autonomy_loop_noise_chaos(self) -> float:
-        """Normalized 5-channel noise chaos (same scale as task-15)."""
-        try:
-            total = sum(abs(self._loop_num((getattr(self, "noise", {}) or {}).get(k),
-                                           0.0, -NOISE_CLAMP, NOISE_CLAMP))
-                        for k in ("stress", "energy", "social", "attention", "valence"))
-            return _clip(total / (5.0 * NOISE_CLAMP), 0.0, 1.0)
-        except Exception:
-            return 0.0
-
-    def _autonomy_loop_open_loops(self) -> tuple:
-        """(due_count, delay_min proxy) for the open-loop candidate."""
-        due = 0
-        delay_min = 0.0
-        try:
-            for loop in (getattr(self, "open_loops", []) or []):
-                if not isinstance(loop, dict):
-                    continue
-                if str(loop.get("status") or "open") != "open":
-                    continue
-                hint = str(loop.get("due_hint") or "")
-                if hint == "soon":
-                    due += 1
-                    delay_min = max(delay_min, 60.0)
-                elif hint == "tomorrow":
-                    due += 1
-                    delay_min = max(delay_min, 1440.0)
-        except Exception:
-            return 0, 0.0
-        return due, delay_min
-
-    def _autonomy_loop_candidates(self, relationship, now: float, state: dict) -> list:
-        """Build ≤6 deterministic candidates (spec §7.3); values per §2–§6."""
-        rel = relationship if isinstance(relationship, dict) else {}
-        rel_state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
-        attachment = rel.get("attachment") if isinstance(rel.get("attachment"), dict) else {}
-        absence = rel.get("absence") if isinstance(rel.get("absence"), dict) else {}
-        closeness = self._loop_num(rel_state.get("closeness"), 0.5)
-        conflict = self._loop_num(rel_state.get("conflict"), 0.0)
-        attachment_safe = self._loop_num(attachment.get("safe"), 0.5)
-        closeness_eff = _clip(0.70 * closeness + 0.30 * attachment_safe, 0.0, 1.0)
-        gap_days = self._loop_num(absence.get("gap_days"), 0.0, 0.0, 365.0)
-        appraisal = getattr(self, "appraisal", {}) if isinstance(getattr(self, "appraisal", None), dict) else {}
-        novelty = self._loop_num(appraisal.get("novelty"), 0.0)
-        goal_rel = self._loop_num(appraisal.get("goal_relevance"), 0.0)
-        intensity = self._loop_num(self._intensity(), 0.0)
-        stress = self._loop_num(getattr(self, "stress", 0.0), 0.0)
-        boredom = self._loop_num(getattr(self, "boredom", 0.0), 0.0)
-        novelty_need = self._loop_num(getattr(self, "novelty_need", 0.5), 0.5)
-        chaos = self._autonomy_loop_noise_chaos()
-        due_count, loop_delay = self._autonomy_loop_open_loops()
-        loop_progress = 0.5 if due_count else 0.0
-        goal_progress = self._autonomy_loop_goal_progress()
-        debt = self._loop_num(state.get("effort_debt"), 0.0, 0.0,
-                              AUTONOMY_LOOP_DEBT_MAX)
-        k = self._autonomy_loop_param("autonomy_loop_k_delay", AUTONOMY_LOOP_K_DELAY,
-                                      AUTONOMY_LOOP_K_MIN, AUTONOMY_LOOP_K_MAX)
-        c0 = self._autonomy_loop_param("autonomy_loop_c0", AUTONOMY_LOOP_C0, 0.0, 1.0)
-        c1 = self._autonomy_loop_param("autonomy_loop_c1", AUTONOMY_LOOP_C1, 0.0, 1.0)
-        c2 = self._autonomy_loop_param("autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
-        w = AUTONOMY_LOOP_WEIGHTS
-        # (mode, features, goal_progress|None, delay_min)
-        rows = [
-            ("reach_out",
-             {"novelty": 0.0, "goal": 0.0, "relation": closeness_eff,
-              "affect": intensity, "noise": chaos}, None, gap_days * 1440.0),
-            ("explore",
-             {"novelty": max(novelty_need, boredom), "goal": 0.0, "relation": 0.0,
-              "affect": 0.5 * intensity, "noise": 0.5 * chaos}, None, 0.0),
-            ("engage",
-             {"novelty": novelty, "goal": goal_rel,
-              "relation": 0.5 * closeness_eff, "affect": intensity,
-              "noise": 0.3 * chaos}, goal_progress, 0.0),
-            ("wait",
-             {"novelty": 0.0, "goal": 0.0, "relation": 0.0,
-              "affect": 0.0, "noise": 0.0}, None, 0.0),
-            ("share",
-             {"novelty": 0.0, "goal": loop_progress, "relation": closeness_eff,
-              "affect": 0.3 * intensity, "noise": 0.2 * chaos},
-             loop_progress, loop_delay),
-            ("withdraw",
-             {"novelty": 0.0, "goal": 0.0,
-              "relation": _clip(max(conflict, 1.0 - closeness_eff), 0.0, 1.0),
-              "affect": stress, "noise": chaos}, None, 0.0),
-        ]
-        out = []
-        for mode, features, progress, delay_min in rows[:AUTONOMY_LOOP_CANDIDATE_MAX]:
-            salience = sum(w[key] * self._loop_num(features.get(key), 0.0)
-                           for key in w)
-            salience = _clip(salience, 0.0, 1.0)
-            ior = self._autonomy_loop_ior_factor(state, mode, now)
-            salience = _clip(salience * ior, 0.0, 1.0)
-            if progress is None:
-                goal_gain = 1.0
-            else:
-                goal_gain = _clip(0.8 + 0.4 * self._loop_num(progress, 0.0),
-                                  0.8, 1.4)
-            discount = _clip(1.0 / (1.0 + k * max(0.0, self._loop_num(
-                delay_min, 0.0, 0.0, 1440.0))), 0.05, 1.0)
-            effort = AUTONOMY_LOOP_EFFORT.get(mode, 0.5)
-            cost = c0 + c1 * effort + c2 * debt
-            value = _clip(salience * goal_gain * discount - cost,
-                          AUTONOMY_LOOP_VALUE_MIN, AUTONOMY_LOOP_VALUE_MAX)
-            out.append({
-                "mode": mode,
-                "source": ("readiness" if mode == "reach_out" else
-                           "curiosity" if mode == "explore" else
-                           "context" if mode == "engage" else
-                           "fallback" if mode == "wait" else
-                           "open_loop" if mode == "share" else "stress"),
-                "salience": round(salience, 4),
-                "goal_gain": round(goal_gain, 4),
-                "discount": round(discount, 4),
-                "effort": round(effort, 4),
-                "cost": round(cost, 4),
-                "value": round(value, 4),
-            })
-        return out
-
-    def autonomy_loop_tick(self, relationship=None, now=None,
-                           private_chat: bool = True) -> dict:
-        """One deterministic minimal-autonomy-loop tick (L1, spec §7.1).
-
-        Deterministic arbitration inspired by biased competition / saliency
-        WTA+IOR / goal gradient / hyperbolic delay discounting / effort cost /
-        global-workspace-style single-token broadcast. This is an engineering
-        control loop, NOT an implementation of consciousness or a GWT.
-
-        Default OFF returns {"enabled": False} without creating state or
-        touching any other field. Only one token is broadcast per tick; the
-        caller decides whether anything is sent (token-only default).
-        """
-        if not getattr(self, "autonomy_loop_enabled", False):
-            return {"enabled": False}
-        try:
-            current = float(now if now is not None else time.time())
-        except Exception:
-            current = time.time()
-        state = self.autonomy_loop if isinstance(
-            getattr(self, "autonomy_loop", None), dict) else None
-        if state is None:
-            state = self._autonomy_loop_default_state(current)
-            self.autonomy_loop = state
-        base = self._autonomy_loop_default_state(current)
-        for key, value in base.items():
-            if key not in state or not isinstance(state.get(key), type(value)):
-                state[key] = value
-        for key in base["stats"]:
-            if key not in state["stats"]:
-                state["stats"][key] = 0
-        state["enabled"] = True
-        try:
-            state["tick"] = int(state.get("tick", 0) or 0) + 1
-        except Exception:
-            state["tick"] = 1
-        stats = state["stats"]
-        stats["ticks"] = int(stats.get("ticks", 0) or 0) + 1
-        budget = state["budget"]
-        day = time.strftime("%Y-%m-%d", time.localtime(current))
-        if str(budget.get("day") or "") != day:
-            budget["day"] = day
-            budget["used"] = 0
-        # --- gates (spec §7.1 order: group -> quiet -> cooldown -> daily cap)
-        blocked = ""
-        if not private_chat:
-            blocked = "group"
-            stats["blocked_group"] = int(stats.get("blocked_group", 0) or 0) + 1
-        else:
-            hour = time.localtime(current).tm_hour
-            if AUTONOMY_QUIET_START_HOUR <= hour < AUTONOMY_QUIET_END_HOUR:
-                blocked = "quiet"
-                stats["blocked_quiet"] = int(stats.get("blocked_quiet", 0) or 0) + 1
-            else:
-                last_ts = self._loop_num(budget.get("last_action_ts"), 0.0,
-                                         0.0, 10 ** 12)
-                if last_ts > 0 and (current - last_ts) < AUTONOMY_COOLDOWN_SECONDS:
-                    blocked = "cooldown"
-                    stats["blocked_cooldown"] = int(
-                        stats.get("blocked_cooldown", 0) or 0) + 1
-                elif int(budget.get("used", 0) or 0) >= AUTONOMY_DAILY_CAP:
-                    blocked = "cap"
-                    stats["blocked_cap"] = int(stats.get("blocked_cap", 0) or 0) + 1
-        if blocked:
-            state["ignition"] = False
-            state["winner"] = None
-            state["workspace_token"] = ""
-            state["candidates"] = []
-            state["updated_ts"] = round(current, 3)
-            return {"enabled": True, "blocked": blocked, "ignition": False,
-                    "tick": state["tick"], "candidates": [], "stats": dict(stats)}
-        # --- effort-debt recovery on every active tick (bounded)
-        state["effort_debt"] = round(_clip(
-            self._loop_num(state.get("effort_debt"), 0.0, 0.0,
-                           AUTONOMY_LOOP_DEBT_MAX) - AUTONOMY_LOOP_DEBT_RECOVERY,
-            0.0, AUTONOMY_LOOP_DEBT_MAX), 6)
-        # --- candidates + values
-        candidates = self._autonomy_loop_candidates(relationship, current, state)
-        state["candidates"] = [dict(row) for row in candidates]
-        if not candidates:
-            stats["no_ignition"] = int(stats.get("no_ignition", 0) or 0) + 1
-            state["ignition"] = False
-            state["winner"] = None
-            state["workspace_token"] = ""
-            state["updated_ts"] = round(current, 3)
-            return {"enabled": True, "blocked": "", "ignition": False,
-                    "tick": state["tick"], "candidates": [], "stats": dict(stats)}
-        theta = self._autonomy_loop_param(
-            "autonomy_loop_theta_ig", AUTONOMY_LOOP_THETA_IG,
-            AUTONOMY_LOOP_THETA_MIN, AUTONOMY_LOOP_THETA_MAX)
-        margin_min = self._autonomy_loop_param(
-            "autonomy_loop_margin", AUTONOMY_LOOP_MARGIN,
-            AUTONOMY_LOOP_MARGIN_MIN, AUTONOMY_LOOP_MARGIN_MAX)
-        inhibition = state["inhibition"] if isinstance(
-            state.get("inhibition"), dict) else {}
-        # Refractory: a mode broadcast within the last 60 s cannot win again.
-        eligible = []
-        for row in candidates:
-            stamp = self._loop_num(inhibition.get(row["mode"]), 0.0, 0.0, 10 ** 12)
-            if stamp > 0 and (current - stamp) < AUTONOMY_LOOP_REFRACTORY_SECONDS:
-                continue
-            eligible.append(row)
-        margin = 0.0
-        ignition = False
-        winner = None
-        if eligible:
-            ranked = sorted(
-                eligible, key=lambda row: (-float(row["value"]),
-                                           AUTONOMY_LOOP_MODES.index(row["mode"])))
-            winner = ranked[0]
-            second = float(ranked[1]["value"]) if len(ranked) > 1 else \
-                AUTONOMY_LOOP_VALUE_MIN
-            margin = float(winner["value"]) - second
-            ignition = bool(float(winner["value"]) >= theta
-                            and margin >= margin_min)
-        if not ignition:
-            stats["no_ignition"] = int(stats.get("no_ignition", 0) or 0) + 1
-            state["ignition"] = False
-            state["winner"] = None
-            state["workspace_token"] = ""
-            state["updated_ts"] = round(current, 3)
-            return {"enabled": True, "blocked": "", "ignition": False,
-                    "tick": state["tick"], "candidates": [dict(r) for r in candidates],
-                    "theta_ig": round(theta, 4), "margin": round(margin, 4),
-                    "stats": dict(stats)}
-        # --- broadcast exactly one workspace token (token-only; no send here)
-        mode = str(winner["mode"])[:AUTONOMY_LOOP_WORKSPACE_MAX]
-        state["workspace_token"] = mode
-        state["winner"] = {"mode": mode, "value": round(float(winner["value"]), 4),
-                           "ts": round(current, 3)}
-        state["ignition"] = True
-        inhibition[mode] = round(current, 3)
-        state["inhibition"] = dict(sorted(
-            inhibition.items(), key=lambda kv: self._loop_num(
-                kv[1], 0.0, 0.0, 10 ** 12), reverse=True
-        )[:AUTONOMY_LOOP_CANDIDATE_MAX])
-        # --- feedback EMA (record-only; no learning gradient / no next-tick use)
-        ema = state["value_ema"] if isinstance(state.get("value_ema"), dict) else {}
-        prev = self._loop_num(ema.get(mode), 0.0, AUTONOMY_LOOP_VALUE_MIN,
-                              AUTONOMY_LOOP_VALUE_MAX)
-        outcome = _clip(float(winner["value"]), AUTONOMY_LOOP_VALUE_MIN,
-                        AUTONOMY_LOOP_VALUE_MAX)
-        ema[mode] = round(_clip(
-            AUTONOMY_LOOP_EMA_KEEP * prev
-            + (1.0 - AUTONOMY_LOOP_EMA_KEEP) * outcome,
-            AUTONOMY_LOOP_VALUE_MIN, AUTONOMY_LOOP_VALUE_MAX), 6)
-        state["value_ema"] = {str(k)[:AUTONOMY_LOOP_WORKSPACE_MAX]: v
-                              for k, v in list(ema.items())[
-                                  :AUTONOMY_LOOP_CANDIDATE_MAX]}
-        state["effort_debt"] = round(_clip(
-            self._loop_num(state.get("effort_debt"), 0.0, 0.0,
-                           AUTONOMY_LOOP_DEBT_MAX) + AUTONOMY_LOOP_DEBT_STEP,
-            0.0, AUTONOMY_LOOP_DEBT_MAX), 6)
-        budget["last_action_ts"] = round(current, 3)
-        budget["used"] = int(budget.get("used", 0) or 0) + 1
-        stats["ignitions"] = int(stats.get("ignitions", 0) or 0) + 1
-        stats["executed"] = int(stats.get("executed", 0) or 0) + 1
-        state["updated_ts"] = round(current, 3)
-        return {"enabled": True, "blocked": "", "ignition": True,
-                "tick": state["tick"], "workspace_token": mode,
-                "winner": dict(state["winner"]),
-                "candidates": [dict(r) for r in candidates],
-                "theta_ig": round(theta, 4), "margin": round(margin, 4),
-                "effort_debt": state["effort_debt"],
-                "value_ema": dict(state["value_ema"]), "stats": dict(stats)}
-
-    def refusal_posture(self, relationship=None) -> dict:
-        """task-35 L1: deterministic refusal posture -> brevity posture.
-
-        Reads boundary_pressure/trust/conflict only; returns a label used by L2
-        rendering and the proactive gate. Never decides by itself whether a reply
-        is sent here.
-        """
-        rel = relationship if isinstance(relationship, dict) else {}
-        state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
-        try:
-            protocol = relationship_meta.refusal_protocol({
-                "boundary_pressure": float(getattr(self, "boundary_pressure", 0.0) or 0.0),
-                "trust": float(state.get("trust", 0.5) or 0.5),
-                "conflict": float(state.get("conflict", 0.0) or 0.0),
-            })
-        except Exception:
-            protocol = {"mode": "comply"}
-        mode = str(protocol.get("mode") or "comply")
-        brevity = "short" if mode == "decline" else (
-            "medium" if mode == "negotiate" else "normal")
-        return {"mode": mode, "brevity": brevity}
-
-    def evaluate_reply_consistency(self, text, now=None) -> dict:
-        """task-36: deterministic reply/intent consistency (0..1, read-only).
-
-        Heuristic checks only (length bands vs labels need/expression). It never
-        rewrites the reply and is only stored when reply_consistency_enabled.
-        """
-        value = str(text or "").strip()
-        checks = []
-        score = 1.0
-        try:
-            labels = getattr(self, "labels", {}) or {}
-            need = str(labels.get("need") or "talk")
-            expression = str(labels.get("expression") or "normal")
-            if not value:
-                score = 0.0
-                checks.append("empty")
-            else:
-                length = len(value)
-                if length > 240:
-                    score -= 0.20
-                    checks.append("too_long")
-                if length < 2:
-                    score -= 0.30
-                    checks.append("too_short")
-                if need == "space" and length > 60:
-                    score -= 0.20
-                    checks.append("space_but_long")
-                if need == "talk" and length < 4:
-                    score -= 0.10
-                    checks.append("talk_but_short")
-                if expression == "normal" and value.count("！") >= 4:
-                    score -= 0.10
-                    checks.append("too_excited")
-        except Exception:
-            checks.append("error")
-        try:
-            stamp = float(now if now is not None else time.time())
-        except Exception:
-            stamp = time.time()
-        return {"score": round(_clip(score, 0.0, 1.0), 4),
-                "length": len(value), "checks": checks[:6],
-                "ts": round(stamp, 3)}
 
     # ---- task-43: L1 deterministic "thinking physiology" scalars ----
-    def blend_prior(self, new_value, prior, anchor=None) -> float:
-        """Tversky 1974 / Nickerson 1998 anchor-weighted update."""
-        try:
-            new = float(new_value)
-            old = float(prior)
-        except Exception:
-            return _clip(new_value)
-        try:
-            a = float(anchor if anchor is not None else self.anchor_weight)
-        except Exception:
-            a = 0.25
-        a = max(0.0, min(0.9, a))
-        return _clip((1.0 - a) * new + a * old, -1.0, 1.0)
 
-    def update_conflict_ema(self, text, *, novelty=0.0, correction=False,
-                            contradiction=False) -> dict:
-        """Botvinick 2001 proxy: contradiction/correction/instruction conflict EMA."""
-        value = str(text or "")
-        cues = ("不对", "不是", "你错了", "矛盾", "但是", "可是", "然而",
-                "说错", "纠正", "改口", "冲突", "说反")
-        hits = sum(1 for cue in cues if cue in value)
-        corr = 1.0 if (correction or any(w in value for w in ("不对", "你错了", "纠正", "改口"))) else 0.0
-        contrad = 1.0 if (contradiction or any(w in value for w in ("矛盾", "不是这样", "说错了"))) else 0.0
-        nov = _clip(novelty, 0.0, 1.0)
-        delta = _clip(0.45 * min(1.0, hits / 2.0) + 0.30 * corr
-                      + 0.15 * contrad + 0.10 * nov, 0.0, 1.0)
-        self.conflict_ema = _clip(0.80 * float(getattr(self, "conflict_ema", 0.0)) + 0.20 * delta,
-                                  0.0, 1.0)
-        high = self.conflict_ema >= 0.60
-        if high and getattr(self, "conflict_gate_enabled", False):
-            state = getattr(self, "autonomy_loop", None)
-            if isinstance(state, dict):
-                try:
-                    debt = float(state.get("effort_debt", 0.0) or 0.0)
-                    state["effort_debt"] = round(_clip(debt + 0.02, 0.0, 0.60), 4)
-                except Exception:
-                    pass
-        return {"conflict_ema": round(self.conflict_ema, 4),
-                "delta": round(delta, 4), "high": bool(high)}
 
-    def update_rumination_ema(self, text, *, emotion="neutral", intensity=0.0,
-                              novelty=0.0) -> dict:
-        """Nolen-Hoeksema 1991 proxy: repeated negative topic EMA (bounded)."""
-        value = str(text or "")
-        negative = (str(emotion or "") in ("sadness", "anger", "fear", "loneliness")
-                    or any(w in value for w in ("难受", "难过", "烦", "焦虑", "委屈",
-                                                "不想", "讨厌", "崩溃", "累")))
-        topic = value[:40] if negative else ""
-        repeat = False
-        if negative and topic and self._last_neg_topic:
-            repeat = memory_meta.text_similarity(topic, self._last_neg_topic) >= 0.5
-        if negative:
-            self._neg_repeat = (int(getattr(self, "_neg_repeat", 0) or 0) + 1
-                                if repeat else 1)
-            self._last_neg_topic = topic
-            inc = 0.20 if repeat else 0.10
-            add = inc * (0.5 + 0.5 * _clip(intensity, 0.0, 1.0))
-            self.rumination_ema = _clip(float(getattr(self, "rumination_ema", 0.0)) + add,
-                                        0.0, 1.0)
-            # §6/LIT: 3 consecutive same-topic negative rounds -> suppression mark.
-            if int(getattr(self, "_neg_repeat", 0) or 0) >= 3:
-                self.rumination_suppress = True
-        else:
-            decay = 0.70 if _clip(novelty, 0.0, 1.0) >= 0.50 else 0.85
-            self.rumination_ema = _clip(
-                float(getattr(self, "rumination_ema", 0.0)) * decay, 0.0, 1.0)
-            self._neg_repeat = 0
-            self.rumination_suppress = False
-        if (getattr(self, "rumination_effect_enabled", False)
-                and self.rumination_ema > 0.0):
-            shift = min(0.12, 0.12 * self.rumination_ema)
-            self.v = _clip(self.v - shift, -1.0, 1.0)
-        return {"rumination_ema": round(self.rumination_ema, 4),
-                "repeat": bool(repeat), "repeat_count": int(self._neg_repeat)}
 
-    @staticmethod
-    def detect_identity_threat(text) -> bool:
-        """Swann 1987 proxy: deterministic self/role/narrative conflict cues."""
-        value = str(text or "")
-        cues = ("你不是她", "你不是你", "不配", "工具", "废物", "假的", "装的",
-                "人设", "角色", "根本不懂", "不是真的", "换个人", "你变了")
-        return any(cue in value for cue in cues)
 
-    def apply_identity_threat(self, text) -> bool:
-        """task-43 (default OFF): identity threat -> bounded stress bump (<=0.08)."""
-        if not getattr(self, "identity_threat_stress_enabled", False):
-            return False
-        if not self.detect_identity_threat(text):
-            return False
-        self.stress = _clip(float(getattr(self, "stress", 0.0)) + 0.06, 0.0, 1.0)
-        return True
 
-    def autonomy_state(self, relationship=None, now=None, persist: bool = True) -> dict:
-        """L1 task-15: deterministic noise -> autonomy readiness.
 
-        Inputs are all L1 state: 5 noise channels, echo_trace, stress_load
-        (stress + allostatic), homeostasis drive deviation (L_int), persona
-        autonomy_gain, and the relationship record passed in as data.
-        Outputs are bounded: threshold ∈ [0.55, 0.90], max_chars ∈ [60, 240],
-        impulse ∈ [0, 1]. P1-G11: threshold follows an EMA of past impulses plus
-        a ready hysteresis band, not the current impulse alone. Default OFF
-        returns {"enabled": False} without computing anything.
-        """
-        if not getattr(self, "autonomy_enabled", False):
-            return {"enabled": False}
-        try:
-            current = float(now if now is not None else time.time())
-        except Exception:
-            current = time.time()
-        try:
-            noise = {k: float(self.noise.get(k, 0.0) or 0.0)
-                     for k in ("stress", "energy", "social", "attention", "valence")}
-        except Exception:
-            noise = {}
-        chaos = _clip(sum(abs(v) for v in noise.values()) / (5.0 * NOISE_CLAMP), 0.0, 1.0)
-        # Stage-2: echo/ripple/spiking all feed the readiness input, not just
-        # echo_trace. Bounded weighted mix (deterministic).
-        try:
-            _echo_raw = abs(float(getattr(self, "echo_trace", 0.0) or 0.0))
-            _ripple = float((getattr(self, "ripple", {}) or {}).get("energy", 0.0) or 0.0)
-            _spiking = float((getattr(self, "spiking", {}) or {}).get("rate", 0.0) or 0.0)
-            echo = _clip(0.60 * _echo_raw + 0.20 * _ripple + 0.20 * min(1.0, _spiking), 0.0, 1.0)
-        except Exception:
-            echo = 0.0
-        try:
-            stress_load = _clip(
-                0.6 * float(self.stress)
-                + 0.4 * float(getattr(self, "allostatic_load", 0.0)), 0.0, 1.0)
-        except Exception:
-            stress_load = 0.0
-        try:
-            homeo = self.homeostasis if isinstance(self.homeostasis, dict) else {}
-            drive_dev = _clip(float(homeo.get("L_int", 0.0) or 0.0), 0.0, 1.0)
-        except Exception:
-            drive_dev = 0.0
-        rel = relationship if isinstance(relationship, dict) else {}
-        rel_state = rel.get("state") if isinstance(rel.get("state"), dict) else {}
-        try:
-            trust = _clip(float(rel_state.get("trust", 0.5) or 0.5), 0.0, 1.0)
-        except Exception:
-            trust = 0.5
-        try:
-            closeness = _clip(float(rel_state.get("closeness", 0.5) or 0.5), 0.0, 1.0)
-        except Exception:
-            closeness = 0.5
-        # Stage-2: attachment is an L1 input (not dashboard-only anymore).
-        try:
-            _attachment = rel.get("attachment") if isinstance(rel.get("attachment"), dict) else {}
-            attachment_safe = _clip(float(_attachment.get("safe", 0.5) or 0.5), 0.0, 1.0)
-        except Exception:
-            attachment_safe = 0.5
-        closeness_eff = _clip(0.70 * closeness + 0.30 * attachment_safe, 0.0, 1.0)
-        try:
-            gain = _clip(float((getattr(self, "profile", {}) or {}).get(
-                "autonomy_gain", 1.0) or 0.0), 0.0, 1.5)
-        except Exception:
-            gain = 1.0
-        w = AUTONOMY_WEIGHTS
-        impulse = _clip(
-            w["chaos"] * chaos + w["echo"] * echo + w["stress_load"] * stress_load
-            + w["drive_dev"] * drive_dev + w["distrust"] * (1.0 - trust)
-            + w["distance"] * (1.0 - closeness_eff), 0.0, 1.0)
-        # P1-G10: autonomy_gain (persona profile) is now a real consumer.
-        impulse = _clip(impulse * gain, 0.0, 1.0)
-        prev = self._proactive_autonomy if isinstance(self._proactive_autonomy, dict) else {}
-        try:
-            prev_ema = float(prev.get("impulse_ema", impulse))
-        except Exception:
-            prev_ema = impulse
-        impulse_ema = _clip(0.8 * prev_ema + 0.2 * impulse, 0.0, 1.0)
-        # P1-G11: threshold uses the EMA (history), so it does not collapse to a
-        # function of the current impulse; ready uses a small hysteresis band.
-        target = _clip(0.82 - 0.30 * impulse_ema,
-                       AUTONOMY_THRESHOLD_MIN, AUTONOMY_THRESHOLD_MAX)
-        prev_ready = bool(prev.get("ready", False))
-        # Explicit hysteresis: enter at 0.72, exit only below 0.60.
-        if prev_ready:
-            ready = impulse >= AUTONOMY_EXIT
-        else:
-            ready = impulse >= AUTONOMY_ENTER
-        max_chars = int(round(_clip(60.0 + 180.0 * impulse,
-                                    AUTONOMY_MAX_CHARS_MIN, AUTONOMY_MAX_CHARS_MAX)))
-        result = {
-            "enabled": True,
-            "threshold": round(target, 4),
-            "max_chars": max_chars,
-            "impulse": round(impulse, 4),
-            "impulse_ema": round(impulse_ema, 4),
-            "ready": bool(ready),
-            "chaos": round(chaos, 4),
-            "gain": round(gain, 3),
-            "noise_seed": int(getattr(self, "_noise_seed", 0) or 0),
-            "sources": {
-                "noise": {k: round(v, 4) for k, v in noise.items()},
-                "echo_trace": round(echo, 4),
-                "stress_load": round(stress_load, 4),
-                "drive_dev": round(drive_dev, 4),
-                "trust": round(trust, 4),
-                "closeness": round(closeness, 4),
-                "attachment_safe": round(attachment_safe, 4),
-                "closeness_effective": round(closeness_eff, 4),
-                "autonomy_gain": round(gain, 3),
-            },
-            "updated_ts": round(current, 3),
-            "last_sent_ts": float(prev.get("last_sent_ts", 0.0) or 0.0),
-            "sent_count": int(prev.get("sent_count", 0) or 0),
-            "sent_day": str(prev.get("sent_day") or ""),
-            "cooldown_seconds": AUTONOMY_COOLDOWN_SECONDS,
-            "daily_cap": AUTONOMY_DAILY_CAP,
-            "quiet_hours": [AUTONOMY_QUIET_START_HOUR, AUTONOMY_QUIET_END_HOUR],
-        }
-        if persist:
-            self._proactive_autonomy = result
-        return dict(result)
-
-    def snapshot(self) -> dict:
-        self._decay_to_now()
-        out = {"v": round(self.v, 4), "a": round(self.a, 4),
-                "d": round(self.d, 4), "social": round(self.social, 4),
-                "stress": round(self.stress, 4), "energy": round(self.energy, 4),
-                "trust": round(self.trust, 4), "ticks": self.ticks,
-                "noise": {k: round(float(v), 3) for k, v in self.noise.items()},
-                "echo": round(self.echo, 4), "echo_trace": round(self.echo_trace, 4),
-                "ripple": dict(self.ripple), "spiking": dict(self.spiking),
-                "reflection": dict(self.reflection),
-                "momentum": dict(self.momentum),
-                "appraisal": dict(self.appraisal),
-                "stimuli": list(self.stimuli)[-8:],
-                "history": list(self.history)[-80:],
-                "open_loops": [dict(x) for x in (getattr(self, "open_loops", []) or [])[-20:]
-                               if isinstance(x, dict)],
-                "open_loops_due": sum(1 for _loop in (getattr(self, "open_loops", []) or [])
-                                      if isinstance(_loop, dict)
-                                      and _loop.get("status") == "open"
-                                      and str(_loop.get("due_hint") or "") in ("soon", "tomorrow")),
-                "goal_focus": self.goal_focus,
-                "coping": round(float((self.appraisal or {}).get("coping", 0.5)), 3),
-                "event_anchors": list(self.event_anchors)[-5:],
-                "opponent": dict(self.opponent),
-                "autobiography": list(self.autobiography)[-8:],
-                "regulation_stats": dict(self.regulation_stats),
-                "attention": round(float(self.attention), 3),
-                "novelty_need": round(float(getattr(self, "novelty_need", 0.5)), 3),
-                "boredom": round(float(getattr(self, "boredom", 0.0)), 3),
-                "circadian_alertness": round(float(getattr(self, "circadian_alertness", 0.5)), 3),
-                "allostatic_load": round(float(getattr(self, "allostatic_load", 0.0)), 3),
-                "homeostasis": dict(getattr(self, "homeostasis", {}) or {}),
-                "boundary_pressure": round(float(getattr(self, "boundary_pressure", 0.0)), 3),
-                "refusal_readiness": round(float(getattr(self, "refusal_readiness", 0.0)), 3),
-                "conflict_ema": round(float(getattr(self, "conflict_ema", 0.0) or 0.0), 4),
-                "rumination_ema": round(float(getattr(self, "rumination_ema", 0.0) or 0.0), 4),
-                "anchor_weight": round(float(getattr(self, "anchor_weight", 0.25) or 0.25), 4),
-                "rumination_suppress": bool(getattr(self, "rumination_suppress", False)),
-                "user_trust_seeded": bool(getattr(self, "_user_trust_seeded", False)),
-                "user_trust_seed_delta": round(
-                    float(getattr(self, "_user_trust_seed_delta", 0.0) or 0.0), 4),
-                "interpersonal": {k: round(float(v), 4) for k, v in (getattr(self, "interpersonal", {}) or {}).items()},
-                "daily_digests": [dict(x) for x in (getattr(self, "daily_digests", []) or [])[-30:]],
-                "meta_emotion": self.meta_emotion,
-                "goals": [{"key": g.get("key"), "name": g.get("name"), "horizon": g.get("horizon"),
-                           "progress": round(float(g.get("progress", 0) or 0), 3),
-                           "priority": round(float(g.get("priority", 0.5) or 0.5), 3),
-                           "last_update": round(float(g.get("last_update", 0.0) or 0.0), 3)}
-                          for g in self.goals],
-                "goal_conflict": list(self.goal_conflict),
-                "goal_scores": dict(getattr(self, "goal_scores", {}) or {}),
-                "self_timeline": dict(self.self_timeline),
-                "reflection_tree": self._reflection_tree_view(),
-                "spectrum_probs": self._spectrum_probs(),
-                "sec": dict(self.sec),
-                "core_self": self.core_self,
-                "narrative_self": self.narrative_self,
-                "plutchik": PLUTCHIK_WHEEL,
-                "compound": self.compound,
-                "regulation": self.regulation,
-                "spectrum": self._spectrum(),
-                "spectrum_calibration": dict(getattr(self, "_spectrum_calibration_meta", {}) or {}),
-                "labels": dict(getattr(self, "labels", {}) or {}),
-                # Task-15: exactly one new top-level field; default OFF keeps
-                # the minimal marker and computes no readiness.
-                "learning": dict(self._learning),
-                "proactive_autonomy": (dict(self._proactive_autonomy)
-                                       if getattr(self, "autonomy_enabled", False)
-                                       and isinstance(getattr(self, "_proactive_autonomy", None), dict)
-                                       else {"enabled": False})}
-        # Task-28: persisted ONLY while the loop is enabled. Default OFF is a
-        # true no-op: the state file stays byte-identical (key absent entirely).
-        if (getattr(self, "autonomy_loop_enabled", False)
-                and isinstance(getattr(self, "autonomy_loop", None), dict)):
-            out["autonomy_loop"] = dict(self.autonomy_loop)
-        # task-36: opt-in read-only reply-consistency projection; default OFF
-        # keeps the state file byte-identical to 1.2.99.
-        if (getattr(self, "reply_consistency_enabled", False)
-                and isinstance(getattr(self, "reply_consistency", None), dict)):
-            out["reply_consistency"] = dict(self.reply_consistency)
-        # 1.3.1: opt-in read-only projections (default OFF keeps the state file
-        # byte-identical to 1.3.0). thought_note is NEVER persisted.
-        if (getattr(self, "think_selfcheck_trace_enabled", False)
-                and isinstance(getattr(self, "reverse_check", None), dict)):
-            out["reverse_check"] = dict(self.reverse_check)
-        if (getattr(self, "token_budget_enabled", False)
-                and isinstance(getattr(self, "token_usage", None), dict)):
-            out["token_usage"] = dict(self.token_usage)
-        if (getattr(self, "path_monitor_enabled", False)
-                and isinstance(getattr(self, "path_monitor", None), dict)):
-            out["path_monitor"] = dict(self.path_monitor)
-        if (getattr(self, "sycophancy_check_enabled", False)
-                and isinstance(getattr(self, "sycophancy_check", None), dict)):
-            out["sycophancy_check"] = dict(self.sycophancy_check)
-        if any(getattr(self, k, False) for k in (
-                "learning_bandit_enabled", "learning_relationship_enabled",
-                "learning_worthiness_enabled")) and isinstance(
-                getattr(self, "learning_state", None), dict):
-            out["learning_state"] = dict(self.learning_state)
-        if (getattr(self, "relationship_chain_enabled", False)
-                or getattr(self, "gottman_enabled", False)) and isinstance(
-                getattr(self, "relationship_dynamics", None), dict):
-            out["relationship_dynamics"] = dict(self.relationship_dynamics)
-        if (getattr(self, "big5_effect_enabled", False)
-                and isinstance(getattr(self, "big5_effect", None), dict)):
-            out["big5_effect"] = dict(self.big5_effect)
-        if (getattr(self, "injection_trace_enabled", False)
-                and isinstance(getattr(self, "injection_trace", None), dict)):
-            out["injection_trace"] = dict(self.injection_trace)
-        return out
 
 
 class _AutonomySendTarget:
@@ -3441,12 +1128,24 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.3.4")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.0")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
+        # L0 config layer: inject paths so ConfigMixin never imports main
+        self._data_dir = DATA_DIR
+        self._persist_dir = _PERSIST_DATA_DIR
+        self._profile_path = PROFILE_PATH
+        self._api_config_path = API_CONFIG_PATH
         super().__init__(context)
         self.config = config or {}
         self.enabled = bool(self.config.get("enabled", True))
+        # emotion probe concurrency guard: busy -> drop (never queue).
+        self._probe_inflight = 0
+        try:
+            self.emotion_probe_max_inflight = max(
+                1, int(self.config.get("emotion_probe_max_inflight", 1) or 1))
+        except Exception:
+            self.emotion_probe_max_inflight = 1
         self.inject_intent = bool(self.config.get("inject_intent", True))
         try:
             self.summary_max_chars = max(0, int(self.config.get("summary_max_chars", 0) or 0))
@@ -3489,6 +1188,13 @@ class BioCorePlugin(Star):
             "autonomy_loop_c2", AUTONOMY_LOOP_C2, 0.0, 1.0)
         self.autonomy_loop_token_only = bool(
             self.config.get("autonomy_loop_token_only", True))
+        # MOD-2 (restored in step-3): L4 autonomy tick engine selector.
+        # "module" = biocore_model.autonomy_tick (new default); "legacy" = the
+        # in-core autonomy loop, kept as the fallback path until step-4 removal.
+        self.autonomy_tick_engine = str(
+            self.config.get("autonomy_tick_engine", "module") or "module").strip().lower()
+        if self.autonomy_tick_engine not in ("legacy", "module"):
+            self.autonomy_tick_engine = "module"
         # task-35/36: reply-side wiring (all deterministic, default OFF except
         # read-only telemetry counters which have no behavioural effect).
         self.refusal_brevity_enabled = bool(
@@ -3844,6 +1550,13 @@ class BioCorePlugin(Star):
         _names = self.config.get("kb_names", [])
         self.kb_names = [str(x).strip() for x in _names] if isinstance(_names, (list, tuple)) else []
         self.cores = {}
+        # Synthetic fallback core when no user core exists yet (restart).
+        self._global_bio_core = None
+        self._last_insult_ts = 0.0
+        self._recent_proactive = []
+        self._recent_proactive_loaded = False
+        self.lexical_fallback_enabled = bool(
+            self.config.get("lexical_fallback_enabled", True))
         self._consolidating = False
         self._last_consolidation = 0.0
         self._last_event_archive = 0.0
@@ -3941,6 +1654,31 @@ class BioCorePlugin(Star):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_profile()
         self._load_settings()
+        # 1.3.4 -> 1.4.0 data migration: after settings load, before the first
+        # life loop. Idempotent (schema_version); never crashes startup.
+        try:
+            try:
+                from .biocore_model import migrate as _migrate_mod
+            except Exception:
+                from biocore_model import migrate as _migrate_mod
+            self._migration_report = _migrate_mod.migrate(self)
+            try:
+                self._migration_retry_done = bool(
+                    _migrate_mod.schema_version(self) >= 2)
+            except Exception:
+                self._migration_retry_done = False
+        except Exception as _migrate_exc:
+            self._migration_report = {"applied": [], "warnings": [str(_migrate_exc)],
+                                      "stats": {}}
+            logger.warning("[biocore] migration failed: %s", _migrate_exc)
+        # The host event loop may not be running yet: init only records that
+        # the loop is wanted; page_status / the first message starts it.
+        self._life_task = None
+        self._life_start_pending = True
+        try:
+            self._ensure_life_task()
+        except Exception:
+            self._life_start_pending = True
         if "kb_enabled" in self.config:
             self.kb_enabled = bool(self.config.get("kb_enabled"))
         if "kb_names" in self.config:
@@ -3964,8 +1702,16 @@ class BioCorePlugin(Star):
 
     def _load_profile(self):
         try:
-            if PROFILE_PATH.exists():
-                d = json.loads(PROFILE_PATH.read_text(encoding="utf-8"))
+            _profile_file = None
+            for _cand in (PROFILE_PATH, _PERSIST_DATA_DIR / "persona_profile.json"):
+                try:
+                    if _cand.exists():
+                        _profile_file = _cand
+                        break
+                except Exception:
+                    continue
+            if _profile_file is not None:
+                d = json.loads(_profile_file.read_text(encoding="utf-8"))
                 self.profile = dict(d.get("profile") or {})
                 self.persona_text = str(d.get("persona") or "")
                 _ph = str(d.get("persona_hash") or "")
@@ -3982,7 +1728,7 @@ class BioCorePlugin(Star):
                     _terms = [str(x).strip()[:12] for x in (_style.get("address_terms") or [])
                               if str(x).strip()][:3]
                     self.persona_style = {"intimacy_style": _tag, "address_terms": _terms}
-                logger.info("[biocore] loaded profile %s", PROFILE_PATH)
+                logger.info("[biocore] loaded profile %s", _profile_file)
         except Exception as exc:
             logger.warning("[biocore] profile load failed: %s", exc)
 
@@ -4507,16 +2253,32 @@ class BioCorePlugin(Star):
             getattr(core, "profile", {}), dict) else {}
         traits = prof.get("traits") if isinstance(prof.get("traits"), dict) else (
             prof.get("big5") if isinstance(prof.get("big5"), dict) else {})
+        # Persona profile stores Big Five as FLAT O/C/E/A/N (compiled profile).
+        # Reading only nested traits silently fell back to 0.5 for everyone.
+        flat = {"openness": "O", "conscientiousness": "C", "extraversion": "E",
+                "agreeableness": "A", "neuroticism": "N"}
+
+        def _trait(name):
+            short = flat[name]
+            for key in (short, short.lower(), name):
+                if key in prof:
+                    try:
+                        return max(0.0, min(1.0, float(prof[key])))
+                    except Exception:
+                        break
+            for key in (name, short, short.lower()):
+                if key in traits:
+                    try:
+                        return max(0.0, min(1.0, float(traits[key])))
+                    except Exception:
+                        break
+            return 0.5
+
         cue = max(0.0, min(1.0, (float(getattr(core, "a", 0.5) or 0.0)
                                  + (0.5 + 0.5 * float(getattr(core, "v", 0.0) or 0.0))) / 2.0))
         out = {}
-        for name in ("openness", "conscientiousness", "extraversion",
-                     "agreeableness", "neuroticism"):
-            try:
-                trait = float(traits.get(name, 0.5) or 0.5)
-            except Exception:
-                trait = 0.5
-            out[name] = interpretation.big5_trait_effect(trait, cue)
+        for name in flat:
+            out[name] = interpretation.big5_trait_effect(_trait(name), cue)
         return out
 
     def _apply_relationship_chain(self, event, core, user_text, reply) -> None:
@@ -4840,7 +2602,8 @@ class BioCorePlugin(Star):
             pass
         return resp
 
-    async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None):
+    async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None,
+                           timeout_ms=None):
         if not self._llm_allowed(kind):
             return None
         try:
@@ -4860,7 +2623,8 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         try:
-            _tmo = float(getattr(self, "outbound_timeout_ms", 3000)) / 1000.0
+            _tmo = max(0.5, float(timeout_ms or getattr(
+                self, "outbound_timeout_ms", 3000)) / 1000.0)
             _call = (provider.text_chat(prompt=prompt, system_prompt=system_prompt)
                      if system_prompt else provider.text_chat(prompt=prompt))
             if _SERVICES is not None:
@@ -5458,6 +3222,22 @@ class BioCorePlugin(Star):
             close_txt = "和你平常"
         return ("%s%s，%s。" % (need_txt, emotion_txt, close_txt))[:AUTONOMY_MAX_CHARS_MAX]
 
+    def _load_policy_q(self):
+        try:
+            from biocore_model import ui_settings as _ui
+            data = _ui.load(self)
+            table = (data.get("autonomy") or {}).get("policy_q")
+            return table if isinstance(table, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_policy_q(self, table):
+        try:
+            from biocore_model import ui_settings as _ui
+            _ui.save(self, {"autonomy": {"policy_q": dict(table or {})}})
+        except Exception:
+            pass
+
     def _autonomy_gate(self, core, relationship, now=None):
         """Task-15: L3 applies send gates to an L1 readiness result."""
         if core is None:
@@ -5524,6 +3304,18 @@ class BioCorePlugin(Star):
             if not text:
                 return False
             await event.send(MessageChain([Plain(text)]))
+            try:
+                from biocore_model import policy_learning as _pl_send
+                _ctx_key = _pl_send.make_context(
+                    "protest" if int(state.get("sent_count", 0) or 0) else "expect",
+                    str(getattr(self, "attachment_style", "secure") or "secure"),
+                    time.localtime(current).tm_hour)
+                _pick = _pl_send.choose(_ctx_key, self._load_policy_q(), epsilon=0.1)
+                self._policy_pending = {"ctx": _ctx_key,
+                                        "action": _pick["action"],
+                                        "ts": float(current)}
+            except Exception:
+                pass
             day = time.strftime("%Y-%m-%d", time.localtime(current))
             sent_count = int(state.get("sent_count", 0) or 0)
             if str(state.get("sent_day") or "") != day:
@@ -5558,17 +3350,297 @@ class BioCorePlugin(Star):
         except Exception:
             pass
 
-    def _ensure_autonomy_task(self) -> None:
-        """P0-1: start the generator only when task-15 or task-28 is on."""
-        if not (getattr(self, "proactive_autonomy", False)
-                or getattr(self, "autonomy_loop_enabled", False)):
+
+    def _ensure_life_task(self) -> None:
+        """Single always-on loop: start it only when a loop is running.
+
+        Plugin construction can happen before the host event loop exists; in
+        that case only a pending flag is set and the first status/message call
+        starts the task. Safe to call many times (idempotent).
+        """
+        if not getattr(self, "enabled", True):
+            return
+        task = getattr(self, "_life_task", None)
+        if task is not None and not task.done():
+            self._life_start_pending = False
             return
         try:
-            task = getattr(self, "_autonomy_task", None)
-            if task is None or task.done():
-                self._autonomy_task = asyncio.create_task(self._autonomy_loop())
+            asyncio.get_running_loop()
+        except RuntimeError:
+            self._life_start_pending = True
+            return
+        try:
+            self._life_task = asyncio.create_task(self._life_loop())
+            self._life_start_pending = False
+            logger.info("[biocore] life loop started")
+        except Exception as exc:
+            self._life_start_pending = True
+            logger.warning("[biocore] life loop start failed: %s", exc)
+
+    def _stop_life_task(self) -> None:
+        task = getattr(self, "_life_task", None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._life_task = None
+        self._life_start_pending = False
+
+    def _bio_state_key(self):
+        """(key, source_path) for hydration: last_umo first, then newest state."""
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_h
+            except Exception:
+                from biocore_model import ui_settings as _ui_h
+            acc = ((_ui_h.load(self).get("autonomy") or {}).get("accumulator") or {})
+            key = str(acc.get("last_umo") or "").strip()
+            if key:
+                return key, None
         except Exception:
             pass
+        try:
+            files = sorted(STATE_DIR.glob("*.json"),
+                           key=lambda f: f.stat().st_mtime, reverse=True)
+            if files:
+                return files[0].stem, files[0]
+        except Exception:
+            pass
+        return "", None
+
+    def _make_global_bio_core(self):
+        """Synthetic core from ui_settings.bio_state (no user is created)."""
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_h
+            except Exception:
+                from biocore_model import ui_settings as _ui_h
+            raw = _ui_h.load(self).get("bio_state") or {}
+            state = dict(raw) if isinstance(raw, dict) else {}
+        except Exception:
+            state = {}
+        defaults = {"v": 0.0, "a": 0.4, "d": 0.55, "social": 0.5,
+                    "stress": 0.15, "energy": 0.5, "trust": 0.5,
+                    "allostatic_load": 0.0, "sleep_debt": 0.0,
+                    "last_debt_ts": 0.0, "last_bio_tick_ts": 0.0,
+                    "circadian_alertness": 0.5}
+        for name, default in defaults.items():
+            try:
+                state[name] = float(state.get(name, default) or default)
+            except Exception:
+                state[name] = default
+        core = types.SimpleNamespace(
+            v=state["v"], a=state["a"], d=state["d"], social=state["social"],
+            stress=state["stress"], energy=state["energy"], trust=state["trust"],
+            allostatic_load=state["allostatic_load"], sleep_debt=state["sleep_debt"],
+            last_debt_ts=state["last_debt_ts"],
+            last_bio_tick_ts=state["last_bio_tick_ts"],
+            circadian_alertness=state["circadian_alertness"],
+            _bio_tick_count=int(state.get("_bio_tick_count", 0) or 0),
+            labels=dict(state.get("labels") or {"emotion": "neutral", "intensity": 0.0}),
+            needs=(dict(state["needs"]) if isinstance(state.get("needs"), dict) else None),
+            intero=(dict(state["intero"]) if isinstance(state.get("intero"), dict) else None),
+            pending_intent=(dict(state["pending_intent"])
+                            if isinstance(state.get("pending_intent"), dict) else None),
+        )
+        core.snapshot = lambda: {"v": core.v, "a": core.a, "d": core.d,
+                                 "social": core.social, "stress": core.stress,
+                                 "energy": core.energy, "trust": core.trust,
+                                 "allostatic_load": core.allostatic_load,
+                                 "labels": dict(core.labels),
+                                 "sleep_debt": core.sleep_debt}
+        return core
+
+    def _ensure_bio_core(self):
+        """Hydrate one core from last_umo/newest state; else synthetic global."""
+        cores = getattr(self, "cores", None) or {}
+        try:
+            if isinstance(cores, dict) and cores:
+                return next(iter(cores.values()))
+        except Exception:
+            pass
+        if getattr(self, "_global_bio_core", None) is not None:
+            return self._global_bio_core
+        key, _path = self._bio_state_key()
+        if key:
+            try:
+                core = self._core(types.SimpleNamespace(unified_msg_origin=key))
+                self.cores[key] = core
+                return core
+            except Exception:
+                pass
+        try:
+            core = self._make_global_bio_core()
+            self._global_bio_core = core
+            return core
+        except Exception:
+            return None
+
+    def _persist_global_bio_state(self):
+        core = getattr(self, "_global_bio_core", None)
+        if core is None:
+            return
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_h
+            except Exception:
+                from biocore_model import ui_settings as _ui_h
+            snap = dict(core.snapshot() if callable(getattr(core, "snapshot", None)) else {})
+            for extra in ("intero", "needs", "sleep_debt", "last_debt_ts",
+                          "last_bio_tick_ts", "_bio_tick_count",
+                          "pending_intent", "circadian_alertness"):
+                value = getattr(core, extra, None)
+                if isinstance(value, dict):
+                    snap[extra] = dict(value)
+                elif value is not None:
+                    snap[extra] = value
+            _ui_h.save(self, {"bio_state": snap})
+        except Exception:
+            pass
+
+    def _bio_cores_for_tick(self):
+        try:
+            cores = list((getattr(self, "cores", {}) or {}).values())
+        except Exception:
+            cores = []
+        if cores:
+            return cores
+        core = self._ensure_bio_core()
+        return [core] if core is not None else []
+
+    def _autonomy_params(self):
+        """Persona/relationship-derived rhythm params (+ ui_settings overrides)."""
+        try:
+            try:
+                from .biocore_model import autonomy_params as _ap
+            except Exception:
+                from biocore_model import autonomy_params as _ap
+            try:
+                from .biocore_model import ui_settings as _ui
+            except Exception:
+                from biocore_model import ui_settings as _ui
+            relationship = self._relationship_of({})
+            params = _ap.from_profile(
+                getattr(self, "profile", {}) or {}, relationship,
+                responsiveness=float(getattr(self, "autonomy_responsiveness", 0.5) or 0.5),
+                ignore_rate=float(getattr(self, "autonomy_ignore_rate", 0.0) or 0.0))
+            overrides = ((_ui.load(self).get("autonomy") or {}).get("params") or {})
+            return _ap.apply_overrides(params, overrides if isinstance(overrides, dict) else {})
+        except Exception:
+            return {"theta": 0.55, "tau_hours": 24.0, "cooldown_s": 1800,
+                    "social_tau_hours": 18.0, "silence_tau_hours": 2.0,
+                    "daily_cap": 5}
+
+    def _autonomy_insult_blocked(self, now):
+        """True for 30 min after an insult: autonomy must not initiate."""
+        try:
+            last = float(getattr(self, "_last_insult_ts", 0.0) or 0.0)
+            return last > 0 and (float(now) - last) < 1800.0
+        except Exception:
+            return False
+
+    def _apply_autonomy_params(self, payload, params):
+        """Overwrite accumulator rhythm keys from params (theta always wins)."""
+        out = dict(payload or {})
+        params = params if isinstance(params, dict) else {}
+        try:
+            out["theta"] = float(params.get("theta", out.get("theta", 0.55)) or 0.55)
+        except Exception:
+            out.setdefault("theta", 0.55)
+        for key, pkey in (("cooldown_seconds", "cooldown_s"),
+                          ("daily_cap", "daily_cap")):
+            if key not in out:
+                continue
+            try:
+                out[key] = int(params.get(pkey, out[key]))
+            except Exception:
+                pass
+        return out
+
+    def _write_autonomy_theta_once(self):
+        """Startup: persist persona theta immediately, not after the first tick."""
+        if getattr(self, "_autonomy_theta_written", False):
+            return
+        self._autonomy_theta_written = True
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui
+            except Exception:
+                from biocore_model import ui_settings as _ui
+            params = self._autonomy_params()
+            auto = _ui.load(self).get("autonomy") or {}
+            acc = dict(auto.get("accumulator") or {})
+            acc = self._apply_autonomy_params(acc, params)
+            _ui.save(self, {"autonomy": {"accumulator": acc}})
+        except Exception:
+            pass
+
+    async def _life_loop(self) -> None:
+        while getattr(self, "enabled", True):
+            try:
+                _now = time.time()
+                try:
+                    self._write_autonomy_theta_once()
+                except Exception:
+                    pass
+                self._life_tick_n = int(getattr(self, "_life_tick_n", 0) or 0) + 1
+                _n = self._life_tick_n
+                _autonomy_on = (getattr(self, "proactive_autonomy", False)
+                                or getattr(self, "autonomy_loop_enabled", False))
+                _do_autonomy = bool(_autonomy_on and _n % 6 == 0)
+                _do_memory = bool(_n % 360 == 0)
+                for _core in self._bio_cores_for_tick():
+                    if _bio_tick is None:
+                        break
+                    _sum = _bio_tick.bio_tick(_core, _now)
+                    try:
+                        from .biocore_model import (autonomic as _auto, criticality as _crit,
+                                                    intent_render as _irender, mind_wander as _wander,
+                                                    noise_bank as _noise)
+                        _thr = _auto.threshold(now=_now)
+                        _sig = _noise.value(getattr(self, "noise_seed", 0), int(_now // 60), "core")
+                        if float(_sum.get("discomfort") or 0.0) + 0.05 * _sig["value"] > _thr:
+                            if not isinstance(getattr(_core, "pending_intent", None), dict):
+                                _pull = _wander.choose(getattr(_core, "open_loops", None) or [],
+                                                       rumination=float(getattr(_core, "rumination_ema", 0.0)),
+                                                       seed=int(_now), now=int(_now))
+                                if _pull:
+                                    _core.pending_intent = {"action": "share", "reason": "life-loop wander",
+                                                            "weight": _pull["weight"], "ts": _now,
+                                                            "burst": _crit.burst_value(int(_now), int(_now // 60))}
+                        if isinstance(getattr(_core, "pending_intent", None), dict):
+                            _core.pending_intent["text"] = _irender.render(_core.pending_intent)
+                    except Exception:
+                        pass
+                    _log = _sum.get("log") or {}
+                    if _n == 1 or _n % 6 == 0 or _log.get("emit"):
+                        logger.info("[biocore] bio_tick %s", _log)
+                    if _n % 10 == 0:
+                        logger.info("[biocore] needs tick %s", _log.get("needs"))
+                    if _do_memory:
+                        try:
+                            self._memory_maintenance_pass(_now)
+                        except Exception as _mm_exc:
+                            logger.warning("[biocore] memory maintenance failed: %s", _mm_exc)
+                    if _core is getattr(self, "_global_bio_core", None):
+                        try:
+                            self._persist_global_bio_state()
+                        except Exception:
+                            pass
+                if _do_autonomy:
+                    try:
+                        await self._autonomy_tick(now=_now)
+                    except Exception as _at_exc:
+                        logger.warning("[biocore] autonomy tick in life loop: %s", _at_exc)
+            except Exception as exc:
+                logger.warning("[biocore] life loop: %s", exc)
+            await asyncio.sleep(10)
+
+    def _ensure_autonomy_task(self) -> None:
+        """Deprecated no-op: the single life loop owns the 60s tick.
+
+        Keeping the legacy 300s loop from starting here prevents a double-run:
+        _life_loop already calls _autonomy_tick(now) on its own 60s cadence.
+        """
+        logger.debug("[biocore] _ensure_autonomy_task is a no-op (life loop owns ticks)")
 
     async def _autonomy_loop(self) -> None:
         """P0-1: 5-minute deterministic tick; exits immediately when disabled."""
@@ -5611,6 +3683,14 @@ class BioCorePlugin(Star):
         token (token-only => nothing sent) or the existing task-15 send gate may
         send at most once -- never both.
         """
+        engine = str(getattr(self, "autonomy_tick_engine", "module") or "module").lower()
+        if engine == "module":
+            try:
+                return await self._autonomy_tick_module(now)
+            except Exception as exc:
+                logger.warning("[biocore] autonomy module engine failed, "
+                               "falling back to legacy: %s", exc)
+        # legacy path (engine=legacy or module failure); kept until step-4.
         sent = []
         loop_on = bool(getattr(self, "autonomy_loop_enabled", False))
         proactive_on = bool(getattr(self, "proactive_autonomy", False))
@@ -5639,15 +3719,8 @@ class BioCorePlugin(Star):
                     info.get("sender_name", ""), private=True)
                 acted = False
                 if loop_on and getattr(core, "autonomy_loop_enabled", False):
-                    try:
-                        user_data = self._user_record(target)
-                        loop_result = core.autonomy_loop_tick(
-                            self._relationship_of(user_data), now=current,
-                            private_chat=True)
-                        acted = bool(loop_result.get("ignition"))
-                    except Exception as exc:
-                        logger.warning("[biocore] autonomy loop tick failed: %s", exc)
-                        acted = False
+                    # legacy autonomy loop removed: L4 module engine owns ticks
+                    acted = False
                 plan = self._autonomy_exit_plan(
                     acted, loop_on, proactive_on,
                     bool(getattr(self, "proactive_send", False)),
@@ -5658,6 +3731,263 @@ class BioCorePlugin(Star):
             except Exception:
                 continue
         return sent
+
+    async def _autonomy_tick_module(self, now=None) -> list:
+        """MOD-2: run one L4 tick through biocore_model.autonomy_tick.
+
+        The L4 module is dependency-injected and never imports main. All deps
+        below are built from plugin-owned state only; the module keeps its
+        current signatures -- autonomy_model.step(V, drift, leak=0.15,
+        sigma=0.06, theta=0.55) and send_gate(state, private=True, now=None,
+        quiet_start=23, quiet_end=8, cooldown_seconds=1800, daily_cap=3,
+        send_enabled=True). Any setup error is raised to _autonomy_tick, which
+        falls back to the legacy loop.
+        """
+        import asyncio as _asyncio
+        try:
+            from .biocore_model import autonomy_tick as _tick_mod
+            from .biocore_model import autonomy_model as _am
+            from .biocore_model import ui_settings as _ui
+        except Exception:
+            from biocore_model import autonomy_tick as _tick_mod
+            from biocore_model import autonomy_model as _am
+            from biocore_model import ui_settings as _ui
+        current = float(now if now is not None else time.time())
+        params = self._autonomy_params()
+        auto = _ui.load(self).get("autonomy") or {}
+        acc = auto.get("accumulator") if isinstance(auto.get("accumulator"), dict) else {}
+        sessions = [{"umo": str(umo)} for umo in
+                    list(getattr(self, "_autonomy_private_sessions", {}) or {})]
+        if not sessions:
+            _recent = str((acc or {}).get("last_umo") or "")
+            if _recent:
+                sessions = [{"umo": _recent}]
+            else:
+                # No session is not a reason to freeze V: the module tick still
+                # advances V/drift below and reports reason=no_session.
+                logger.info("[biocore] autonomy module tick: no session; V still advances")
+        deps = type("Deps", (), {})()
+        deps.load_acc = lambda: dict((_ui.load(self).get("autonomy") or {}).get("accumulator") or {})
+
+        def _save_acc(value):
+            payload = dict(value or {})
+            # Persona-derived theta must overwrite the stale hard-coded value;
+            # only fall back to setdefault when params are unavailable.
+            payload = self._apply_autonomy_params(payload, params)
+            try:
+                payload["V"] = max(0.0, float(payload.get("V", 0.0) or 0.0))
+            except Exception:
+                payload["V"] = 0.0
+            if sessions:
+                payload["last_umo"] = str(sessions[0].get("umo") or "")
+            else:
+                payload.setdefault("last_umo", "")
+            return _ui.save(self, {"autonomy": {"accumulator": payload}})
+
+        deps.save_acc = _save_acc
+        deps.list_sessions = lambda: list(sessions)
+        deps.params = lambda: dict(params)
+        deps.get_core = lambda umo: (self.cores.get(umo)
+                                     if isinstance(getattr(self, "cores", None), dict) else None)
+        deps.any_core = lambda: next(
+            iter((getattr(self, "cores", {}) or {}).values()), None)
+        def _snapshot_with_parts(core):
+            snap = dict(core.snapshot()) if hasattr(core, "snapshot") else {}
+            try:
+                snap["parts"] = _am.parts_from_state(
+                    core, relationship=self._relationship_of({}),
+                    now=current, acc=acc, params=params,
+                    social_baseline=(getattr(self, "profile", {}) or {}).get(
+                        "social_baseline"))
+            except Exception:
+                pass
+            return snap
+
+        deps.snapshot = _snapshot_with_parts
+        deps.step = lambda V, drift, theta: _am.step(
+            float(V), float(drift),
+            leak=float(acc.get("leak", 0.15) or 0.15),
+            sigma=float(acc.get("sigma", 0.06) or 0.06),
+            theta=float(theta))
+
+        def _gate(core, acc_state, silence, now_ts):
+            try:
+                if self._autonomy_insult_blocked(now_ts):
+                    return False, "insult_cooldown"
+                state = core.autonomy_state(
+                    self._relationship_of({}), now=float(now_ts), persist=False)
+                return _am.send_gate(
+                    state, private=True, now=float(now_ts),
+                    quiet_start=AUTONOMY_QUIET_START_HOUR,
+                    quiet_end=AUTONOMY_QUIET_END_HOUR,
+                    cooldown_seconds=int(params.get("cooldown_s", AUTONOMY_COOLDOWN_SECONDS) or AUTONOMY_COOLDOWN_SECONDS),
+                    daily_cap=int(params.get("daily_cap", getattr(self, "autonomy_daily_cap", 5)) or 5),
+                    send_enabled=bool(getattr(self, "proactive_send", False)))
+            except Exception as exc:
+                return False, "gate_error:" + type(exc).__name__
+
+        deps.gate = _gate
+        _built = {"prompt": "", "system": "", "max_chars": 0, "text": ""}
+
+        def _build_text(core, acc_state):
+            built = self._build_proactive_text(core, acc_state, current)
+            _built.update(built)
+            return str(built.get("text") or "")
+
+        deps.build_text = _build_text
+
+        def _send_text(umo, text):
+            async def _send():
+                final = str(text or "")
+                if getattr(self, "proactive_llm_enabled", True) and _built.get("prompt"):
+                    try:
+                        upgraded = await self._llm_v2_call(
+                            "proactive", str(_built["prompt"]),
+                            lambda raw: self._sanitize_proactive_text(str(raw or ""), 0),
+                            event=_AutonomySendTarget(self, umo, private=True),
+                            system_prompt=str(_built.get("system") or ""))
+                        final = str(upgraded) if upgraded else final
+                    except Exception as exc:
+                        logger.warning("[biocore] proactive llm text failed: %s", exc)
+                final = self._sanitize_proactive_text(
+                    final, int(_built.get("max_chars", 0) or 0)) or str(text or "")
+                # B3: opening-6 repeat -> regenerate once, then rewrite/truncate.
+                if self._opening_repeats(final):
+                    try:
+                        _regen_prompt = (str(_built.get("prompt") or "")
+                                         + "\n\n上次生成的开头重复了，请换一个开头："
+                                         + final[:6])
+                        _regen = await self._llm_v2_call(
+                            "proactive", _regen_prompt,
+                            lambda raw: self._sanitize_proactive_text(str(raw or ""), 0),
+                            event=_AutonomySendTarget(self, umo, private=True),
+                            system_prompt=str(_built.get("system") or ""))
+                        _cand = self._sanitize_proactive_text(str(_regen or ""), 0)
+                        if _cand:
+                            final = _cand
+                    except Exception as _regen_exc:
+                        logger.warning("[biocore] proactive opening regen failed: %s",
+                                       _regen_exc)
+                    if self._opening_repeats(final):
+                        final = self._rewrite_proactive_opening(final) or final
+                try:
+                    target = _AutonomySendTarget(self, umo, private=True)
+                    await target.send(MessageChain([Plain(final)]))
+                    try:
+                        self._record_proactive_sent(
+                            umo, final, reason=str(_built.get("reason") or ""),
+                            event=None)
+                    except Exception as _rec_exc:
+                        logger.warning("[biocore] proactive record failed: %s", _rec_exc)
+                except Exception as exc:
+                    logger.warning("[biocore] autonomy module send failed: %s", exc)
+            try:
+                _asyncio.ensure_future(_send())
+                return True
+            except Exception:
+                return False
+
+        deps.send_text = _send_text
+        result = _tick_mod.tick_once(deps, current)
+        logger.info("[biocore] autonomy tick engine=module V=%.3f theta=%.3f sent=%d "
+                    "skipped=%d blocked=%d reason=%s",
+                    float(deps.load_acc().get("V", 0.0) or 0.0),
+                    float(params.get("theta", 0.55) or 0.55),
+                    len(result.get("sent") or []), len(result.get("skipped") or []),
+                    len(result.get("blocked") or []), result.get("reason", ""))
+        return list(result.get("sent") or [])
+
+
+    def _build_proactive_text(self, core, acc_state, now_ts) -> dict:
+        """Reason + L3 prompt + fallback text for one proactive send (sync)."""
+        try:
+            from .biocore_model import (autonomy_reason as _reason, autonomy_model as _am,
+                                        expr_template as _etpl, expr_state as _estate)
+        except Exception:
+            from biocore_model import (autonomy_reason as _reason, autonomy_model as _am,
+                                       expr_template as _etpl, expr_state as _estate)
+        state, snapshot = {}, {}
+        try:
+            state = core.autonomy_state(self._relationship_of({}), now=now_ts, persist=False) or {}
+            snapshot = (core.snapshot() if hasattr(core, "snapshot") else {}) or {}
+        except Exception:
+            state, snapshot = {}, {}
+        relationship = getattr(core, "relationship_context", None) or {}
+        try:
+            _params = self._autonomy_params()
+        except Exception:
+            _params = {}
+        parts = (state.get("parts") if isinstance(state.get("parts"), dict) else {}) or (
+            snapshot.get("parts") if isinstance(snapshot.get("parts"), dict) else {}) or (
+            _am.parts_from_state(core, relationship, now=now_ts, acc=acc_state,
+                                 params=_params,
+                                 social_baseline=(getattr(self, "profile", {}) or {}).get(
+                                     "social_baseline")))
+        reason = _reason.extract(parts)
+        try:
+            _block = _estate.render_state_block(snapshot or state, relationship, now=now_ts)
+            state_block = str((_block or {}).get("text") or "") if isinstance(_block, dict) else str(_block or "")
+        except Exception:
+            state_block = ""
+        try:
+            _last = float(acc_state.get("last_user_msg_ts", 0.0) or 0.0)
+            gap = ("间隔：已 %.1f 小时没说话" % max(0.0, (float(now_ts) - _last) / 3600.0)) if _last else ""
+        except Exception:
+            gap = ""
+        try:
+            try:
+                from .biocore_model import prompt_rules as _pr
+            except Exception:
+                from biocore_model import prompt_rules as _pr
+            _target = int(getattr(self, "reply_soft_target_chars", 10) or 10)
+            _maxc = int(getattr(self, "reply_soft_max_chars", 30) or 30)
+            _speak_style = ""
+            if bool(getattr(self, "reply_soft_limit_enabled", True)):
+                _speak_style = str(_pr.render_length_rule(_target, _maxc))
+        except Exception:
+            _speak_style = str(getattr(self, "speak_style", "") or "")
+        built = _etpl.build_proactive(
+            snapshot, relationship=relationship,
+            state_ctx={"state_block": state_block, "gap": gap,
+                       "recent_proactive": (self._recent_proactive_context()
+                                            if callable(getattr(self, "_recent_proactive_context", None))
+                                            else ""),
+                       "numeric_legend": (lambda _st: (
+                           __import__("biocore_model.schema", fromlist=["numeric_legend"])
+                           .numeric_legend(_st) if _st else ""))(
+                               snapshot if isinstance(snapshot, dict) else {})},
+            intent=acc_state.get("intent"), tone=acc_state.get("tone"),
+            opts={"persona": str(getattr(self, "persona_text", "") or ""),
+                  "speak_style": _speak_style,
+                  "output_protocol": _etpl.PROMPT_OUTPUT_PROTOCOL})
+        prompt = "\n\n".join(x for x in (built.get("system"), built.get("user")) if x)
+        try:
+            _recent_prompt = self._recent_proactive_prompt()
+        except Exception:
+            _recent_prompt = ""
+        if _recent_prompt:
+            prompt = prompt + "\n\n" + _recent_prompt
+        return {"prompt": prompt, "system": str(built.get("system") or ""),
+                "max_chars": 0, "reason": str(reason or ""),
+                "text": _reason.fallback_text(reason, self._autonomy_template(core))}
+
+    def _sanitize_proactive_text(self, text, max_chars=0) -> str:
+        """Proactive text: strip protocol tags, collapse duplicate punctuation, cap."""
+        value = str(text or "").strip()
+        try:
+            value = str(interpretation.parse_response(value)[0] or "")
+        except Exception:
+            pass
+        value = re.sub(r"([。！？!?；;，,])(?:[\s。！？!?；;，,])+", r"\1", value)
+        value = re.sub(r"[ \t]+", " ", value).strip()
+        try:
+            cap = int(max_chars or 0)
+        except Exception:
+            cap = 0
+        if cap > 0 and len(value) > cap:
+            value = value[:cap].rstrip(" \t，,；;、")
+        return value.strip()
+
 
     def _readiness_text(self, event) -> str:
         """Task-15: read-only /biocore readiness report (no side effects when off)."""
@@ -8465,7 +6795,7 @@ class BioCorePlugin(Star):
         event boundary scoring actually run instead of raising AttributeError
         inside the surrounding try/except.
         """
-        return BioCore._text_similarity(a, b)
+        return UtilMixin._text_similarity(a, b)
 
     @staticmethod
     def _normalize_event_key(key: str, title: str = "") -> str:
@@ -9400,10 +7730,19 @@ class BioCorePlugin(Star):
 
     def _register_page_api(self):
         try:
+            if not getattr(self, "data_dir", None):
+                self.data_dir = str(DATA_DIR)
+            from .biocore_model import pipeline_api as _bc_pipeline_api
+            _bc_pipeline_api.boot(self)
+        except Exception:
+            pass
+        try:
             register = getattr(self.context, "register_web_api", None)
             if register:
                 register("/astrbot_plugin_biocore/page/status", self.page_status, ["GET"],
                          "BioCore dashboard status")
+                register("/astrbot_plugin_biocore/page/debug", self.page_debug, ["GET"],
+                         "BioCore backend debug snapshot")
                 register("/astrbot_plugin_biocore/page/self_model", self.page_self_model,
                          ["GET", "POST"], "BioCore self model editor")
                 register("/astrbot_plugin_biocore/page/toggle", self.page_toggle, ["POST"],
@@ -9445,6 +7784,36 @@ class BioCorePlugin(Star):
                          self.page_memory_restore, ["POST"], "BioCore memory restore")
                 register("/astrbot_plugin_biocore/page/memory/pin/<path:session>/<entry_id>",
                          self.page_memory_pin, ["POST"], "BioCore memory pin/unpin")
+                register("/astrbot_plugin_biocore/page/pipeline",
+                         self.page_pipeline, ["GET"], "BioCore pipeline status")
+                register("/astrbot_plugin_biocore/page/pipeline_toggle",
+                         self.page_pipeline_toggle, ["POST"], "BioCore pipeline stage toggle")
+                register("/astrbot_plugin_biocore/page/pipeline_dryrun",
+                         self.page_pipeline_dryrun, ["POST"], "BioCore pipeline dry run")
+                register("/astrbot_plugin_biocore/page/persona_compile",
+                         self.page_persona_compile, ["POST"], "BioCore persona compile")
+                register("/astrbot_plugin_biocore/page/autonomy_test",
+                         self.page_autonomy_test, ["POST"], "BioCore autonomy test arm/reset")
+                register("/astrbot_plugin_biocore/page/autonomy_check",
+                         self.page_autonomy_check, ["POST"], "BioCore autonomy readiness check")
+                register("/astrbot_plugin_biocore/page/autonomy_tick_now",
+                         self.page_autonomy_tick_now, ["POST"], "BioCore run one tick now")
+                register("/astrbot_plugin_biocore/page/proactive_preview",
+                         self.page_proactive_preview, ["POST"], "BioCore proactive prompt preview")
+                register("/astrbot_plugin_biocore/page/autonomy",
+                         self.page_autonomy, ["POST"], "BioCore autonomy settings")
+                register("/astrbot_plugin_biocore/page/reply_limit",
+                         self.page_reply_limit, ["POST"], "BioCore reply max_tokens")
+                register("/astrbot_plugin_biocore/page/reply_split",
+                         self.page_reply_split, ["POST"], "BioCore reply split settings")
+                register("/astrbot_plugin_biocore/page/reply_soft",
+                         self.page_reply_soft, ["POST"], "BioCore reply soft limits")
+                register("/astrbot_plugin_biocore/page/memory",
+                         self.page_memory, ["GET"], "BioCore memory index")
+                register("/astrbot_plugin_biocore/page/core_mode",
+                         self.page_core_mode, ["POST"], "BioCore core mode switch")
+                register("/astrbot_plugin_biocore/page/download",
+                         self.page_download_info, ["GET"], "BioCore backup download info")
         except Exception as exc:
             logger.warning("[biocore] page api register failed: %s", exc)
 
@@ -9824,6 +8193,15 @@ class BioCorePlugin(Star):
         return path, {"entries": []}
 
     def _memory_save_doc_for_session(self, path: Path, doc: dict) -> None:
+        try:
+            from biocore_model import memory_dual as _memdual_persist
+            _rows = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+            _fade = _memdual_persist.forget(_rows, now=time.time())
+            doc["entries"] = _fade["entries"]
+            if _fade["forgotten_ids"]:
+                logger.info("[biocore] memory_dual hidden=%s", _fade["forgotten_ids"])
+        except Exception:
+            pass
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
@@ -10050,7 +8428,125 @@ class BioCorePlugin(Star):
                     "ttl_seconds": int(memory_meta.WORKING_SET_TTL_SECONDS),
                     "fresh_count": 0}
 
+    async def page_debug(self):
+        """Read-only backend debug snapshot (GET). Never writes/ticks/sends."""
+        data = {
+            "loop": {"count": None, "last_tick_ts": None, "interval_s": 10},
+            "bio": {"discomfort": None, "intero": None, "needs": None, "pending_intent": None},
+            "autonomy": {"V": None, "theta": None, "ticks_since_fire": None},
+            "paths": {"settings": None, "profile": None, "data_dir": None},
+            "blocks": {"enabled": [], "skipped": []},
+            "pipeline": {"mode": None, "last_trace": None},
+            "policy": {"q_size": None, "last_ctx": None},
+        }
+        try:
+            core = next(iter((getattr(self, "cores", {}) or {}).values()), None)
+            if core is None:
+                core = self._ensure_bio_core()
+        except Exception:
+            core = None
+        try:
+            data["loop"] = {
+                "count": int(getattr(self, "_life_tick_n", 0) or 0),
+                "last_tick_ts": (float(getattr(core, "last_bio_tick_ts", 0.0) or 0.0)
+                                 if core is not None else None),
+                "interval_s": 10,
+            }
+        except Exception:
+            pass
+        try:
+            intero = getattr(core, "intero", None) if core is not None else None
+            needs = getattr(core, "needs", None) if core is not None else None
+            intent = getattr(core, "pending_intent", None) if core is not None else None
+            # Same intero dict as the four-dim display; null when incomplete
+            # (never a fake 0.0).
+            discomfort = None
+            if isinstance(intero, dict):
+                try:
+                    try:
+                        from .biocore_model import intero_core as _ic_debug
+                    except Exception:
+                        from biocore_model import intero_core as _ic_debug
+                    if all(dim in intero for dim in _ic_debug.DIMS):
+                        discomfort = _ic_debug.discomfort(intero).get("total")
+                except Exception:
+                    discomfort = None
+            emotion_dist = None
+            try:
+                try:
+                    from .biocore_model import emotion_geometry as _eg_debug
+                except Exception:
+                    from biocore_model import emotion_geometry as _eg_debug
+                _snap = (core.snapshot() if core is not None
+                         and callable(getattr(core, "snapshot", None)) else {})
+                _dist = _eg_debug.classify(_snap)
+                emotion_dist = {"label": _dist.get("label"),
+                                "confidence": _dist.get("confidence"),
+                                "top": _eg_debug.top_probs(_dist, 3)}
+            except Exception:
+                emotion_dist = None
+            data["bio"] = {
+                "discomfort": discomfort,
+                "intero": dict(intero) if isinstance(intero, dict) else None,
+                "needs": dict(needs) if isinstance(needs, dict) else None,
+                "pending_intent": dict(intent) if isinstance(intent, dict) else None,
+                "emotion_dist": emotion_dist,
+            }
+        except Exception:
+            pass
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_debug
+            except Exception:
+                from biocore_model import ui_settings as _ui_debug
+            acc = ((_ui_debug.load(self).get("autonomy") or {}).get("accumulator") or {})
+            data["autonomy"] = {"V": acc.get("V"), "theta": acc.get("theta"),
+                                "ticks_since_fire": acc.get("ticks_since_fire")}
+            data["paths"] = {"settings": str(_ui_debug.settings_path(self)),
+                             "profile": str(PROFILE_PATH), "data_dir": str(DATA_DIR)}
+        except Exception:
+            pass
+        try:
+            enabled = _bc_blocks._enabled_map(self)
+            ids = [str(getattr(block, "id", "")) for block in _bc_blocks.BLOCKS]
+            data["blocks"] = {
+                "enabled": [name for name in ids if enabled.get(name, True)],
+                "skipped": [name for name in ids if not enabled.get(name, True)],
+            }
+        except Exception:
+            pass
+        try:
+            try:
+                from .biocore_model import pipeline_api as _pa_debug
+            except Exception:
+                from biocore_model import pipeline_api as _pa_debug
+            status = _pa_debug.payload_status(self)
+            data["pipeline"] = {"mode": status.get("mode"),
+                                "last_trace": status.get("last_trace") or {}}
+        except Exception:
+            pass
+        try:
+            table = self._load_policy_q()
+            pending = getattr(self, "_policy_pending", None)
+            data["policy"] = {
+                "q_size": len(table) if isinstance(table, dict) else 0,
+                "last_ctx": (pending.get("ctx") if isinstance(pending, dict) else None),
+            }
+        except Exception:
+            pass
+        try:
+            self._ensure_migration_retry_once()
+            data["migration"] = self._migration_payload()
+        except Exception:
+            data["migration"] = {"schema_version": 0, "applied": [], "warnings": [],
+                                 "backup_dir": "", "ts": None}
+        return {"status": "ok", "data": data}
+
     async def page_status(self):
+        try:
+            self._ensure_life_task()
+        except Exception:
+            pass
         _personas = []
         try:
             _pm = getattr(self.context, "persona_manager", None)
@@ -10252,6 +8748,46 @@ class BioCorePlugin(Star):
         if int(getattr(self, "_corrupt_backups", 0) or 0):
             _data["corrupt_backups"] = int(self._corrupt_backups)
         _data["env_checks"] = dict(getattr(self, "_env_checks", {}) or {})
+        try:
+            self._ensure_migration_retry_once()
+            _data["migration"] = self._migration_payload()
+        except Exception:
+            _data["migration"] = {"schema_version": 0, "applied": [],
+                                  "warnings": [], "backup_dir": "", "ts": None}
+        # UI contract: data.autonomy.{enabled,send,state}. Best-effort snapshot:
+        # 1) cached read-only state, 2) any core autonomy_state, 3) accumulator.
+        _auto_state = getattr(self, "_autonomy_readonly_state", None)
+        if not isinstance(_auto_state, dict):
+            _auto_state = {}
+            for _auto_core in list((getattr(self, "cores", {}) or {}).values()):
+                try:
+                    _snap = _auto_core.autonomy_state(
+                        self._relationship_of({}), persist=False)
+                except Exception:
+                    _snap = None
+                if isinstance(_snap, dict):
+                    _auto_state = dict(_snap)
+                    break
+        try:
+            # Read the persisted file directly: ui_settings.load() merges the
+            # defaults, which would turn "empty accumulator" into a fake state.
+            from biocore_model import ui_settings as _ui_auto
+            _ui_path = _ui_auto.settings_path(self)
+            _ui_file = {}
+            if _ui_path.is_file():
+                _ui_file = json.loads(_ui_path.read_text(encoding="utf-8-sig"))
+            _acc_ui = (_ui_file.get("autonomy") if isinstance(_ui_file, dict) else None) or {}
+            _acc_state = _acc_ui.get("accumulator") if isinstance(_acc_ui, dict) else None
+            if isinstance(_acc_state, dict) and _acc_state:
+                _auto_state = dict(_auto_state)
+                _auto_state.update(_acc_state)
+        except Exception:
+            pass
+        _data["autonomy"] = {
+            "enabled": bool(getattr(self, "proactive_autonomy", False)),
+            "send": bool(getattr(self, "proactive_send", False)),
+            "state": _auto_state if isinstance(_auto_state, dict) else {},
+        }
         return {"status": "ok", "data": _data}
 
     async def page_self_model(self):
@@ -10329,6 +8865,239 @@ class BioCorePlugin(Star):
         await self._persist_plugin_config({key: bool(getattr(self, key))})
         logger.info("[biocore] setting %s=%s", key, getattr(self, key))
         return {"status": "ok", "data": {"key": key, "value": getattr(self, key)}}
+
+    async def page_pipeline(self):
+        from .biocore_model import pipeline_api as _pa
+        return {"status": "ok", "data": _pa.payload_status(self)}
+
+    async def page_pipeline_toggle(self):
+        from quart import request
+        from .biocore_model import pipeline_api as _pa
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可切换流水线"}
+        result = _pa.payload_toggle(self, str(body.get("name") or ""),
+                                    bool(body.get("enabled", True)))
+        return {"status": "ok" if result.get("ok") else "error",
+                "data": result, "message": result.get("message", "")}
+
+    async def page_pipeline_dryrun(self):
+        from quart import request
+        from .biocore_model import pipeline_api as _pa
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可试运行流水线"}
+        return {"status": "ok",
+                "data": _pa.payload_dryrun(self, str(body.get("sample_text") or ""))}
+
+    async def page_persona_compile(self):
+        from quart import request
+        await request.get_json(silent=True)
+        if not self._llm_allowed("persona_compile"):
+            return {"status": "error", "data": {"ok": False, "error": "persona_compile_disabled",
+                                                "message": "persona_compile 已被 LLM 功能开关禁用"}}
+        try:
+            await self._compile_profile(None)
+        except Exception as exc:
+            return {"status": "ok", "data": {"ok": False, "error": "compile_failed",
+                                             "message": str(exc)[:180]}}
+        return {"status": "ok", "data": {"ok": True,
+                                         "version": len(getattr(self, "schema_texts", []) or []),
+                                         "persona_hash": str(getattr(self, "_persona_compiled_hash", ""))[:12]}}
+
+    async def page_autonomy_test(self):
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        if body.get("reset"):
+            self._autonomy_test_arm = {}
+            return {"status": "ok", "data": {"ok": True, "reset": True, "V_set": 0.0}}
+        core = next(iter(self.cores.values()), None) if isinstance(self.cores, dict) else None
+        state = {}
+        try:
+            state = core.autonomy_state() if core is not None else {}
+        except Exception:
+            state = {}
+        theta = float(state.get("threshold", 0.6) or 0.6)
+        v_set = round(min(1.0, theta + 0.05), 4)
+        self._autonomy_test_arm = {"V": v_set, "theta": theta, "ts": time.time()}
+        try:
+            from .biocore_model import ui_settings as _ui
+        except Exception:
+            from biocore_model import ui_settings as _ui
+        _ui.save(self, {"autonomy": {"accumulator": {"V": v_set, "theta": theta,
+                                                       "ticks_since_fire": 0}}})
+        return {"status": "ok", "data": {"ok": True, "V_set": v_set, "theta": theta}}
+
+    async def page_autonomy_tick_now(self):
+        """Debug: run one autonomy tick immediately (no wait for 5-min loop)."""
+        from quart import request
+        _body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin():
+            return {"ok": False, "error": "forbidden"}
+        try:
+            import time as _t
+            _sent = await self._autonomy_tick(_t.time())
+            return {"ok": True, "sent": list(_sent or []), "at": _t.time()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+
+    async def page_proactive_preview(self):
+        """Debug: build proactive prompt/text without sending."""
+        from quart import request
+        _body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin():
+            return {"ok": False, "error": "forbidden"}
+        try:
+            import time as _t
+            try:
+                from .biocore_model import ui_settings as _ui
+            except Exception:
+                from biocore_model import ui_settings as _ui
+            _now = _t.time()
+            _acc = dict((_ui.load(self).get('autonomy') or {}).get('accumulator') or {})
+            _key, _core = (None, None)
+            try:
+                _sessions = dict(getattr(self, '_autonomy_private_sessions', {}) or {})
+                _umo = next(iter(_sessions), '') or str(_acc.get('last_umo') or '')
+                _cores = getattr(self, 'cores', {}) or {}
+                _core = _cores.get(_umo)
+            except Exception:
+                _core = None
+            _persona = str(getattr(self, 'persona_text', '') or '')
+            if _core is None:
+                return {"ok": False, "error": "no core", "persona_len": len(_persona)}
+            _built = self._build_proactive_text(_core, _acc, _now)
+            _out = {'ok': True, 'persona_len': len(_persona),
+                    'persona_head': _persona[:80],
+                    'prompt': str(_built.get('prompt') or '')[:1200],
+                    'fallback_text': str(_built.get('text') or ''),
+                    'system_has_persona': bool(_persona and _persona[:40] in str(_built.get('system') or ''))}
+            return _out
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)[:200]}
+
+    async def page_autonomy_check(self):
+        from quart import request
+        await request.get_json(silent=True)
+        try:
+            from .biocore_model import autonomy_check as _check
+        except Exception:
+            from biocore_model import autonomy_check as _check
+        core = next(iter(self.cores.values()), None) if isinstance(self.cores, dict) else None
+        state = {}
+        try:
+            state = core.autonomy_state(persist=False) if core is not None else {}
+        except Exception:
+            state = {}
+        readiness = _check.snapshot(state)
+        code = _check.reason(state, private=True, session=True)
+        return {"status": "ok", "data": {"ok": True, "readiness": readiness,
+                                         "gate": {"reason": code, "text": _check.reason_text(code)}}}
+
+    async def page_autonomy(self):
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可修改自主性设置"}
+        try:
+            from .biocore_model import autonomy_mode as _mode
+        except Exception:
+            from biocore_model import autonomy_mode as _mode
+        try:
+            result = await _mode.apply(self, body)
+        except _mode.AutonomyError as exc:
+            return {"status": "error", "data": {"ok": False}, "message": str(exc)}
+        return {"status": "ok", "data": dict(result or {}, ok=True)}
+
+    async def page_reply_limit(self):
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可修改回复长度"}
+        try:
+            from .biocore_model import reply_limit as _limit
+        except Exception:
+            from biocore_model import reply_limit as _limit
+        try:
+            value = _limit.normalize(body)["max_tokens"]
+        except _limit.ReplyLimitError as exc:
+            return {"status": "error", "data": {"ok": False}, "message": str(exc)}
+        path = _limit.find_active_config(self)
+        if path is None:
+            return {"status": "error", "data": {"ok": False}, "message": "未找到 AstrBot 配置文件"}
+        ok = bool(_limit.persist_max_tokens(path, value))
+        return {"status": "ok", "data": {"ok": ok, "max_tokens": value,
+                                         "restart_required": True, "file": str(path)}}
+
+    async def page_reply_split(self):
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可修改分段设置"}
+        try:
+            from .biocore_model import reply_split as _split
+            from .biocore_model import ui_settings as _ui
+        except Exception:
+            from biocore_model import reply_split as _split
+            from biocore_model import ui_settings as _ui
+        mode = str(body.get("mode") or "punct")
+        if mode not in _split.MODES:
+            return {"status": "error", "data": {"ok": False}, "message": "mode invalid"}
+        enabled = bool(body.get("enabled", True))
+        max_chars = max(40, min(2000, int(body.get("max_chars") or 400)))
+        self.reply_split_enabled = enabled
+        self.reply_split_mode = mode
+        self.reply_split_max_chars = max_chars
+        _ui.save(self, {"reply_split": {"enabled": enabled, "mode": mode,
+                                        "max_chars": max_chars, "inject_newlines": True}})
+        return {"status": "ok", "data": {"ok": True, "reply_split": _split.status(self)}}
+
+    async def page_reply_soft(self):
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可修改柔化设置"}
+        try:
+            from .biocore_model import ui_settings as _ui
+        except Exception:
+            from biocore_model import ui_settings as _ui
+        target = max(4, min(80, int(body.get("target_chars") or 10)))
+        limit = max(target, min(200, int(body.get("max_chars") or 30)))
+        enabled = bool(body.get("enabled", True))
+        self.reply_soft_limit_enabled = enabled
+        self.reply_soft_target_chars = target
+        self.reply_soft_max_chars = limit
+        _ui.save(self, {"reply_soft": {"enabled": enabled, "target_chars": target,
+                                       "max_chars": limit}})
+        return {"status": "ok", "data": {"ok": True, "reply_soft": {
+            "enabled": enabled, "target_chars": target, "max_chars": limit}}}
+
+    async def page_memory(self):
+        from quart import request
+        await request.get_json(silent=True)
+        return {"status": "ok", "data": {"ok": True,
+                                         "memory_index": _memory_index_rows(MEMORY_DIR),
+                                         "stats": self._memory_stats()}}
+
+    async def page_core_mode(self):
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        try:
+            from .biocore_model import core_mode as _core_mode
+        except Exception:
+            from biocore_model import core_mode as _core_mode
+        try:
+            _core_mode.authorize(self, body)
+            result = await _core_mode.apply(self, body.get("mode"), via="page")
+        except _core_mode.CoreModeError as exc:
+            return {"status": "error", "data": {"ok": False}, "message": str(exc),
+                    "status_code": int(getattr(exc, "status", 400))}
+        return {"status": "ok", "data": dict(result or {}, ok=True)}
+
+    async def page_download_info(self):
+        return {"status": "ok", "data": {
+            "ok": True, "route": "/astrbot_plugin_biocore/page/download/<token>",
+            "message": "备份下载需先调用 page/backup 获取一次性 token"}}
 
     async def generate_manual_insight(self) -> dict:
         """Manual long-term insight (dashboard button), bypass threshold once.
@@ -10816,9 +9585,85 @@ class BioCorePlugin(Star):
         try:
             if isinstance(doc, dict):
                 doc["schema_version"] = MEMORY_SCHEMA_VERSION
-            self._memory_path(event).write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+            self._memory_save_doc_for_session(self._memory_path(event), doc)
         except Exception as exc:
             logger.warning("[biocore] memory save failed: %s", exc)
+
+    def _dedup_memory_top(self, top):
+        """Same-cluster recall dedup: lexical_overlap >= 0.60, keep <= 2 each."""
+        clusters = []
+        out = []
+        for pair in top or []:
+            try:
+                _score, entry = pair
+            except Exception:
+                continue
+            text = str((entry or {}).get("text") or "")
+            placed = False
+            for cluster in clusters:
+                if any(float(memory_meta.lexical_overlap(text, rep)) >= 0.60
+                       for rep in cluster["texts"]):
+                    if cluster["count"] < 2:
+                        cluster["texts"].append(text)
+                        cluster["count"] += 1
+                        out.append(pair)
+                    placed = True
+                    break
+            if not placed:
+                clusters.append({"texts": [text], "count": 1})
+                out.append(pair)
+        return out
+
+    def _memory_maintenance_pass(self, now):
+        """Hourly real maintenance over MEMORY_DIR docs (decay + soft forget)."""
+        if _bio_tick is None:
+            return {"skipped": True, "reason": "no_module"}
+        try:
+            now = float(now)
+        except Exception:
+            return {"skipped": True, "reason": "bad_now"}
+        last = float(getattr(self, "_memory_maint_loop_ts", 0.0) or 0.0)
+        if last and (now - last) < 3600.0:
+            return {"skipped": True, "reason": "throttled"}
+        self._memory_maint_loop_ts = now
+        docs = []
+        all_entries = []
+        sizes = []
+        try:
+            paths = sorted(MEMORY_DIR.glob("*.json"))
+        except Exception:
+            paths = []
+        for path in paths:
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                continue
+            if not isinstance(doc, dict):
+                continue
+            entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+            docs.append((path, doc))
+            sizes.append(len(entries))
+            all_entries.extend(entries)
+        if not docs:
+            return {"skipped": True, "reason": "no_files"}
+        result = _bio_tick.memory_maintenance(
+            None, now, dt_hours=1.0, entries=all_entries)
+        if result.get("skipped"):
+            return result
+        out = result.get("entries") or []
+        cursor = 0
+        for (path, doc), count in zip(docs, sizes):
+            doc = dict(doc)
+            doc["entries"] = out[cursor:cursor + count]
+            cursor += count
+            try:
+                self._memory_save_doc_for_session(path, doc)
+            except Exception:
+                pass
+        logger.info("[biocore] memory maintenance decayed=%d forgotten=%d",
+                    int(result.get("decayed", 0) or 0),
+                    int(result.get("forgotten", 0) or 0))
+        return result
 
     def _memory_bio(self, core):
         if core is None:
@@ -11752,6 +10597,20 @@ class BioCorePlugin(Star):
                 if _admit:
                     scored.append((score, e))
         _sid, _sname = self._speaker(event)
+        try:
+            from .biocore_model import scheduler as _sched
+            _now = time.time()
+            _loops = [dict(row, id=str(row.get("topic") or index),
+                           due_ts=float(row.get("due_ts") or _now),
+                           last_ts=float(row.get("last_ts") or 0.0),
+                           weight=float(row.get("weight") or 1.0))
+                      for index, row in enumerate(getattr(core, "open_loops", None) or [])]
+            _speaker_label = (("%s（%s）" % (_sname or "未知", _sid)) if _sid else (_sname or ""))
+            if core is not None:
+                core.open_loops_due_ranked = [r["id"] for r in
+                                              _sched.due(_loops, _now, entity=_speaker_label)]
+        except Exception:
+            pass
         _source = memory_meta.source_for_input(text=text, extra=extra, voice=voice)
         # Mem0 UPDATE path: an explicit correction is an update request even
         # when embedding similarity is below the exact-duplicate threshold.
@@ -11944,10 +10803,32 @@ class BioCorePlugin(Star):
                             (getattr(self, "_rerank_stats", {}) or {}).get("fallback", 0) or 0) + 1)
             except Exception:
                 pass
-        scored.sort(key=lambda x: x[0], reverse=True)
+        try:
+
+            from biocore_model import memory_dual as _md
+
+            _dual = _md.select([_e for _s, _e in scored], now=float(now),
+
+                               limit=len(scored), min_score=0.0,
+
+                               context=getattr(self, "_last_memory_context", None))
+
+            _dual_rank = {str(row["id"]): row["score"] for row in _dual["picked"]}
+
+            scored.sort(key=lambda x: (-_dual_rank.get(str(x[1].get("id") or ""), 0.0),
+
+                                       -float(x[0])))
+
+        except Exception:
+
+            scored.sort(key=lambda x: x[0], reverse=True)
         top = memory_meta.select_top(
             scored, _top_k,
             lambda_=(0.72 if getattr(self, "hybrid_retrieval", True) else 1.0))
+        try:
+            top = self._dedup_memory_top(top)
+        except Exception:
+            pass
         try:
             self._apply_memory_trace(core, [e for _s, e in top])
         except Exception as exc:
@@ -12017,6 +10898,15 @@ class BioCorePlugin(Star):
                     e["id"] = _eid
                 e["last_recall_regulation"] = str(getattr(core, "regulation", "none") or "none")
                 _ids.append(e)
+                try:
+                    from biocore_model import memory_dual as _memdual_recall
+                    _upd = _memdual_recall.on_recall(e, now)
+                    e["storage_s"] = _upd["storage_s"]
+                    e["retrieval_s"] = _upd["retrieval_s"]
+                    e["access_count"] = _upd["access_count"]
+                    e["last_access_ts"] = _upd["last_access_ts"]
+                except Exception:
+                    pass
             except Exception:
                 pass
         # ACT-R-style spreading activation: co-recalled items become associated.
@@ -12097,6 +10987,10 @@ class BioCorePlugin(Star):
         # Opt-in cross-session recall: promote the same sender's memories from
         # other sessions into this session (marked, capped, never leaking to
         # other senders). Default off in config.
+        # _memory_save_doc_for_session() rebinds doc["entries"] to a new list;
+        # refresh the alias or cross-session copies append to the stale list.
+        if isinstance(doc.get("entries"), list):
+            entries = doc["entries"]
         _foreign_lines = []
         try:
             if getattr(self, "cross_session_memory", False):
@@ -12456,6 +11350,19 @@ class BioCorePlugin(Star):
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
+        try:
+            from biocore_model import policy_learning as _pl_recv
+            _pending = getattr(self, "_policy_pending", None)
+            if isinstance(_pending, dict) and _pending.get("action"):
+                _gap = max(0.0, time.time() - float(_pending.get("ts") or 0.0))
+                _table = _pl_recv.update(self._load_policy_q(),
+                                         _pending.get("ctx") or "",
+                                         _pending["action"],
+                                         _pl_recv.reward(True, _gap, 0.0))
+                self._save_policy_q(_table)
+                self._policy_pending = None
+        except Exception:
+            pass
         if not self.enabled or not self.inject_intent:
             return
         await self._ensure_profile(event)
@@ -12503,6 +11410,12 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _user_data = self._touch_user(event, core)
+        # Always-on life loop: the first message is a guaranteed async context
+        # (or a retry after plugin construction saw no running loop).
+        try:
+            self._ensure_life_task()
+        except Exception:
+            pass
         # Task-15: readiness is computed by L1 only when autonomy is enabled;
         # remember private sessions and start the P0-1 generator lazily.
         if (getattr(self, "proactive_autonomy", False)
@@ -12511,7 +11424,7 @@ class BioCorePlugin(Star):
                 self._update_autonomy_readiness(core, _user_data)
                 if self._is_private_event(event):
                     self._register_autonomy_session(event)
-                    self._ensure_autonomy_task()
+                    self._ensure_life_task()
             except Exception:
                 pass
         _continuity = {}
@@ -12527,8 +11440,35 @@ class BioCorePlugin(Star):
             pass
         _img = await self._image_context(event)
         _voice = await self._voice_context(event)
+        try:
+            _sat_ts = time.time()
+            try:
+                from .biocore_model import ui_settings as _ui_sat
+            except Exception:
+                from biocore_model import ui_settings as _ui_sat
+            _store_sat = _ui_sat.load(self)
+            _acc_sat = dict((_store_sat.get('autonomy') or {}).get('accumulator') or {})
+            _v_old = float(_acc_sat.get('V', 0.0) or 0.0)
+            _acc_sat['V'] = round(_v_old * 0.3, 4)
+            _acc_sat['last_user_msg_ts'] = round(_sat_ts, 3)
+            _ui_sat.save(self, {'autonomy': {'accumulator': _acc_sat}})
+            logger.info('[biocore] social satiety V %.3f -> %.3f', _v_old, _acc_sat['V'])
+        except Exception:
+            pass
+        # User appraisal is fire-and-forget: insult cooling is immediate, all
+        # numeric deltas come from the background dims call (fallback if it fails).
+        try:
+            self._schedule_user_appraisal(event, core, text)
+        except Exception as _appr_sched_exc:
+            logger.warning("[biocore] user appraisal schedule failed: %s",
+                           _appr_sched_exc)
         _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice,
                                          user_data=_user_data)
+        try:
+            from .biocore_model import runtime as _bc_reply_runtime
+            _bc_reply_runtime.run_reply(_bc_reply_runtime.make_request_ctx(self, event, core, text, _user_data, _mem))
+        except Exception as _bc_pipe_exc:
+            logger.warning("[biocore] reply pipeline fallback: %s", _bc_pipe_exc)
         try:
             asyncio.create_task(self._maybe_archive_events(event, core))
             asyncio.create_task(self._maybe_archive_strong_event(event, core, text))
@@ -12710,6 +11650,29 @@ class BioCorePlugin(Star):
         else:
             _compact = interpretation.render_compact(
                 *_render_args, **_render_kwargs).strip()
+        # PIPE-4: active mode may take over prompt assembly (config switch only).
+        # Any failure or empty result falls back to the original render path.
+        try:
+            _bc_mode = _bc_reply_runtime.get_mode()
+        except Exception:
+            _bc_mode = "shadow"
+        if _bc_mode == "active":
+            try:
+                _bc_pipe_ctx = _bc_reply_runtime.make_request_ctx(
+                    self, event, core, text, _user_data, _mem,
+                    meta={"pipeline_mode": "active", "observe_core": bool(
+                        getattr(self, "pipeline_observe_core", False))})
+                _bc_prompt = _bc_reply_runtime.run_active(_bc_pipe_ctx)
+                _bc_user = str((_bc_prompt or {}).get("prompt_user") or "").strip()
+                _bc_system = str((_bc_prompt or {}).get("prompt_system") or "").strip()
+                if _bc_user or _bc_system:
+                    _compact = (_bc_system + "\n" + _bc_user).strip()
+                    logger.info("[biocore] pipeline active prompt adopted chars=%d",
+                                len(_compact))
+                else:
+                    logger.warning("[biocore] pipeline active empty prompt; fallback")
+            except Exception as _bc_pipe_exc:
+                logger.warning("[biocore] pipeline active fallback: %s", _bc_pipe_exc)
         # 1.3.1: deterministic [BC] budget + duplicate-line removal.
         _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
         _budget_chars = (int(getattr(self, "bc_budget_chars", 700) or 700)
@@ -12802,6 +11765,272 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] temp content part injection failed: %s", exc)
             return False
 
+    def _emotion_probe_acquire(self) -> bool:
+        """True when a probe slot is free (busy -> False, no queueing)."""
+        limit = max(1, int(getattr(self, "emotion_probe_max_inflight", 1) or 1))
+        current = int(getattr(self, "_probe_inflight", 0) or 0)
+        if current >= limit:
+            return False
+        self._probe_inflight = current + 1
+        return True
+
+    def _emotion_probe_release(self) -> None:
+        self._probe_inflight = max(
+            0, int(getattr(self, "_probe_inflight", 0) or 0) - 1)
+
+
+    def _load_recent_proactive(self):
+        _cached = [str(x) for x in (getattr(self, "_recent_proactive", []) or [])
+                   if str(x).strip()]
+        if _cached:
+            self._recent_proactive_loaded = True
+            return _cached[-5:]
+        if getattr(self, "_recent_proactive_loaded", False):
+            return []
+        self._recent_proactive_loaded = True
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_rp
+            except Exception:
+                from biocore_model import ui_settings as _ui_rp
+            rows = ((_ui_rp.load(self).get("autonomy") or {}).get("recent_proactive")
+                    or [])
+            if isinstance(rows, list):
+                self._recent_proactive = [str(x) for x in rows if str(x).strip()][-5:]
+        except Exception:
+            pass
+        return list(getattr(self, "_recent_proactive", []) or [])
+
+    def _recent_proactive_prompt(self):
+        recent = self._load_recent_proactive()[-3:]
+        recent = [str(x).strip() for x in recent if str(x).strip()]
+        if not recent:
+            return ""
+        return ("你最近说过：\n" + "\n".join("- " + x for x in recent)
+                + "\n这次换一种开头，不要重复以上任何一句的前 6 个字。")
+
+    def _recent_proactive_context(self):
+        recent = [str(x).strip() for x in self._load_recent_proactive()[-2:]
+                  if str(x).strip()]
+        return ("我刚说过：" + "；".join(recent)) if recent else ""
+
+    def _opening_key(self, text, size=6):
+        raw = str(text or "").strip()
+        raw = "".join(ch for ch in raw if not ch.isspace())
+        return raw[:max(1, int(size))]
+
+    def _opening_repeats(self, text):
+        key = self._opening_key(text)
+        if not key:
+            return False
+        return any(self._opening_key(old) == key
+                   for old in self._load_recent_proactive())
+
+    def _rewrite_proactive_opening(self, text):
+        value = str(text or "").strip()
+        for _ in range(2):
+            if not self._opening_repeats(value):
+                return value
+            cut = value[6:].lstrip(" ，,。.！!？?、")
+            value = ("那个，" + cut).strip() if cut else ""
+        return value
+
+    def _record_proactive_sent(self, umo, text, reason="", event=None):
+        text = str(text or "").strip()
+        if not text:
+            return []
+        recent = self._load_recent_proactive()
+        recent = (recent + [text])[-5:]
+        self._recent_proactive = recent
+        self._recent_proactive_loaded = True
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_rp
+            except Exception:
+                from biocore_model import ui_settings as _ui_rp
+            _ui_rp.save(self, {"autonomy": {"recent_proactive": recent}})
+        except Exception:
+            pass
+        try:
+            self._append_event_archive({
+                "type": "proactive_sent", "kind": "proactive_sent",
+                "title": "主动消息", "text": text, "event": text,
+                "ts": time.time(), "reason": str(reason or ""),
+                "session": str(umo or "default"), "umo": str(umo or "")})
+        except Exception as exc:
+            logger.warning("[biocore] proactive event record failed: %s", exc)
+        return list(recent)
+    def _migration_payload(self):
+        """Visible migration state for page/status + page/debug (never raises)."""
+        report = getattr(self, "_migration_report", None)
+        report = report if isinstance(report, dict) else {}
+        version = 0
+        try:
+            try:
+                from .biocore_model import migrate as _migrate_mod
+            except Exception:
+                from biocore_model import migrate as _migrate_mod
+            version = _migrate_mod.schema_version(self)
+        except Exception:
+            version = 0
+        return {
+            "schema_version": int(version or 0),
+            "applied": list(report.get("applied") or []),
+            "warnings": list(report.get("warnings") or []),
+            "backup_dir": str(report.get("backup_dir") or ""),
+            "ts": report.get("ts"),
+        }
+
+    def _ensure_migration_retry_once(self):
+        """Second attempt on first panel open when startup did not finish."""
+        try:
+            try:
+                from .biocore_model import migrate as _migrate_mod
+            except Exception:
+                from biocore_model import migrate as _migrate_mod
+            if _migrate_mod.schema_version(self) >= 2:
+                return self._migration_payload()
+            if getattr(self, "_migration_retry_done", False):
+                return self._migration_payload()
+            self._migration_retry_done = True
+            self._migration_report = _migrate_mod.migrate(self)
+        except Exception as exc:
+            try:
+                logger.warning("[biocore] migration retry failed: %s", exc)
+            except Exception:
+                pass
+        return self._migration_payload()
+    def _user_appraisal_key(self, event):
+        umo = str(getattr(event, "unified_msg_origin", "default") or "default")
+        mid = str(getattr(event, "message_id", "") or "")
+        if not mid:
+            mid = str(round(time.time() * 1000))
+        return umo + "|" + mid
+
+    def _user_appraisal_immediate(self, event, text):
+        """Non-blocking part: insult cooling only (no state deltas)."""
+        try:
+            _cls = interpretation.classify_user_msg(text)
+            if (str(_cls.get("kind") or "") == "insult"
+                    and float(_cls.get("confidence", 0.0) or 0.0) >= 0.4):
+                self._last_insult_ts = time.time()
+        except Exception:
+            pass
+        return self._user_appraisal_key(event)
+
+    def _schedule_user_appraisal(self, event, core, text):
+        """Fire-and-forget dims appraisal; never blocks the reply."""
+        key = self._user_appraisal_immediate(event, text)
+        try:
+            task = asyncio.create_task(
+                self._user_appraisal_async(event, core, text, key))
+            self._user_appraisal_task = task
+            return task
+        except Exception:
+            return None
+
+    def _lexical_user_feedback(self, event, core, text, key):
+        """Fallback only: word-table user deltas (used when dims fail)."""
+        try:
+            try:
+                from .biocore_model import feedback_flow as _fb_flow_u
+            except Exception:
+                from biocore_model import feedback_flow as _fb_flow_u
+            _msg_class = interpretation.classify_user_msg(text)
+            _kind = str(_msg_class.get("kind") or "neutral")
+            _conf = float(_msg_class.get("confidence", 0.0) or 0.0)
+            if _conf < 0.4:
+                _kind = "neutral"
+            _msg_ts = time.time()
+            _event_id = str(getattr(event, "message_id", "") or "")
+            _fb_u = _fb_flow_u.apply_user({
+                "kind": _kind, "id": _event_id, "ts": _msg_ts}, core, _msg_ts)
+            _merged = dict(_fb_u.get("deltas") or {})
+            if _kind == "sad":
+                _extra = _fb_flow_u.apply_user(
+                    {"kind": "sad_empathy", "id": _event_id, "ts": _msg_ts},
+                    core, _msg_ts)
+                for _k, _v in (_extra.get("deltas") or {}).items():
+                    _merged[_k] = round(_merged.get(_k, 0.0) + _v, 4)
+            elif _kind == "affectionate":
+                _extra = _fb_flow_u.apply_user(
+                    {"kind": "affection", "id": _event_id, "ts": _msg_ts},
+                    core, _msg_ts)
+                for _k, _v in (_extra.get("deltas") or {}).items():
+                    _merged[_k] = round(_merged.get(_k, 0.0) + _v, 4)
+            logger.info("[biocore] user kind=%s conf=%.2f deltas=%s",
+                        _kind, _conf, _merged)
+            return True
+        except Exception as _fb_u_exc:
+            logger.warning("[biocore] fb.user failed: %s", _fb_u_exc)
+            return False
+
+    async def _user_appraisal_async(self, event, core, text, key):
+        """Background dims -> appraise -> write; idempotent per message key."""
+        seen = getattr(self, "_appraisal_seen", None)
+        if not isinstance(seen, dict):
+            seen = {}
+            self._appraisal_seen = seen
+        if key in seen:
+            return False
+        started = time.time()
+        try:
+            try:
+                from .biocore_model import appraisal as _appraisal_mod
+            except Exception:
+                from biocore_model import appraisal as _appraisal_mod
+
+            async def _llm_call(_prompt):
+                _raw = await self._llm_v2_call(
+                    "reply", _prompt, lambda raw: raw, event=event, timeout_ms=8000)
+                if not isinstance(_raw, str):
+                    _raw = str(getattr(_raw, "completion_text", "") or _raw or "")
+                return _raw
+
+            _out = await _appraisal_mod.probe(
+                text, "", _llm_call, timeout=8.0, core=core, now=time.time())
+        except Exception as _appr_exc:
+            logger.warning("[biocore] user appraisal failed: %s", _appr_exc)
+            _out = {}
+        latency_ms = (time.time() - started) * 1000.0
+        _dims = (_out or {}).get("dims") or {}
+        _conf = float((_out or {}).get("confidence", 0.0) or 0.0)
+        if _dims and _conf >= 0.4:
+            try:
+                _deltas = _appraisal_mod.appraise(_dims, confidence=_conf)
+            except Exception:
+                _deltas = {}
+            if _deltas:
+                try:
+                    try:
+                        from .biocore_model import feedback_flow as _fb_flow_a
+                    except Exception:
+                        from biocore_model import feedback_flow as _fb_flow_a
+                    _payload = _appraisal_mod.feedback_payload(
+                        _deltas, _conf, source="user")
+                    _fb_flow_a.apply_llm(_payload, core, time.time())
+                    _need = _appraisal_mod.needs_deltas(_dims)
+                    if _need and isinstance(getattr(core, "needs", None), dict):
+                        _needs = dict(core.needs)
+                        for _nk, _nv in _need.items():
+                            _needs[_nk] = round(max(0.0, min(1.0, float(
+                                _needs.get(_nk, 0.6) or 0.6) + _nv)), 4)
+                        core.needs = _needs
+                    seen[key] = time.time()
+                    if len(seen) > 512:
+                        self._appraisal_seen = dict(list(seen.items())[-256:])
+                    logger.info("[biocore] appraisal src=user dims=%s deltas=%s c=%.2f latency_ms=%.0f async=True",
+                                _dims, _deltas, _conf, latency_ms)
+                    return True
+                except Exception as _appr_apply_exc:
+                    logger.warning("[biocore] user appraisal apply failed: %s",
+                                   _appr_apply_exc)
+        # dims failed/low confidence -> fallback lexical deltas (default on).
+        if getattr(self, "lexical_fallback_enabled", True):
+            if self._lexical_user_feedback(event, core, text, key):
+                seen[key] = time.time()
+        return False
+
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse):
         if not self.enabled:
@@ -12811,6 +12040,17 @@ class BioCorePlugin(Star):
         _clean, _meta = interpretation.parse_response(_reply)
         if _meta:
             core.apply_affect(_meta)
+        if _meta:
+            try:
+                try:
+                    from .biocore_model import feedback_flow as _fb_flow
+                except Exception:
+                    from biocore_model import feedback_flow as _fb_flow
+                _fb = _fb_flow.apply_llm(_meta or {}, core, time.time())
+                logger.info('[biocore] fb.llm deltas=%s summary=%s',
+                            _fb.get('deltas'), _fb.get('summary'))
+            except Exception as _fb_exc:
+                logger.warning('[biocore] fb.llm failed: %s', _fb_exc)
         # 1.3.4: always write the cleaned text back. Unknown labels drop the
         # affect update, but the visible reply must still be sanitized.
         if _clean != _reply:
@@ -12824,6 +12064,96 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _reply = _clean
+        # emotion probe: one tiny async second call; never blocks the reply.
+        if getattr(self, "emotion_probe_enabled", True):
+            try:
+                try:
+                    from .biocore_model import appraisal as _appraisal_mod
+                except Exception:
+                    from biocore_model import appraisal as _appraisal_mod
+
+                async def _emotion_probe_task(_core=core, _reply_text=_reply,
+                                             _user_text=str(getattr(event, "message_str", "") or "")):
+                    logger.info("[biocore] emotion probe start")
+                    try:
+                        _probe_raw = {"value": None}
+
+                        async def _probe_llm(_prompt):
+                            _tmo_ms = max(8000, int(getattr(
+                                self, "outbound_timeout_ms", 3000) or 3000))
+                            logger.info("[biocore] probe llm call kind=reply timeout=%s",
+                                        _tmo_ms)
+                            _raw = None
+                            try:
+                                _raw = await self._llm_v2_call(
+                                    "reply", _prompt, lambda raw: raw,
+                                    event=event, timeout_ms=_tmo_ms)
+                            except Exception as _probe_llm_exc:
+                                logger.warning("[biocore] probe llm exc: %r",
+                                               _probe_llm_exc, exc_info=True)
+                            logger.info("[biocore] probe llm result type=%s len=%s",
+                                        type(_raw).__name__, len(str(_raw or "")))
+                            try:
+                                _tele = getattr(self, "_llm_telemetry", {}) or {}
+                                _rows = [row for row in (_tele.get("recent") or [])
+                                         if isinstance(row, dict)
+                                         and row.get("kind") == "reply"]
+                                if _rows:
+                                    logger.info("[biocore] probe llm telemetry=%s", _rows[0])
+                            except Exception:
+                                pass
+                            if _raw is None:
+                                logger.warning("[biocore] emotion probe llm returned None"
+                                               " (provider/budget/timeout/empty)")
+                            if not isinstance(_raw, str):
+                                _raw = str(getattr(_raw, "completion_text", "") or _raw or "")
+                            _probe_raw["value"] = _raw
+                            return _raw
+                        _probe = await _appraisal_mod.probe(
+                            _reply_text, _user_text, _probe_llm,
+                            timeout=None, core=_core, now=time.time())
+                        _dims = (_probe or {}).get("dims") or {}
+                        _conf = float((_probe or {}).get("confidence", 0.0) or 0.0)
+                        _deltas = (_appraisal_mod.appraise(_dims, confidence=_conf)
+                                   if _probe else {})
+                        _applied = False
+                        if _deltas:
+                            _probe_meta = _appraisal_mod.feedback_payload(
+                                _deltas, _conf, source="reply")
+                            if _probe_meta:
+                                try:
+                                    from .biocore_model import feedback_flow as _probe_flow
+                                except Exception:
+                                    from biocore_model import feedback_flow as _probe_flow
+                                _fb = _probe_flow.apply_llm(_probe_meta, _core, time.time())
+                                _applied = bool(_fb.get("written") or _fb.get("changed"))
+                        if not _deltas:
+                            logger.info("[biocore] emotion probe raw=%r type=%s",
+                                        str(_probe_raw.get("value") or "")[:200],
+                                        type(_probe_raw.get("value")).__name__)
+                        logger.info("[biocore] appraisal src=reply dims=%s deltas=%s c=%.2f",
+                                    _dims, _deltas, _conf)
+                    except Exception as _probe_exc:
+                        logger.warning("[biocore] emotion probe task failed: %s",
+                                       _probe_exc, exc_info=True)
+                    finally:
+                        try:
+                            self._emotion_probe_release()
+                        except Exception:
+                            pass
+
+                if not self._emotion_probe_acquire():
+                    logger.debug("[biocore] emotion probe skipped (inflight)")
+                else:
+                    try:
+                        asyncio.create_task(_emotion_probe_task())
+                    except Exception as _probe_create_exc:
+                        self._emotion_probe_release()
+                        logger.warning("[biocore] emotion probe create_task failed: %s",
+                                       _probe_create_exc, exc_info=True)
+            except Exception as _probe_outer_exc:
+                logger.warning("[biocore] emotion probe setup failed: %s",
+                               _probe_outer_exc, exc_info=True)
         # P1-3: opt-in REAL truncation when the L1 refusal posture is active.
         # Default OFF => the reply/result_chain are untouched (1.2.99 parity).
         if getattr(self, "refusal_brevity_enabled", False):
@@ -12905,7 +12235,7 @@ class BioCorePlugin(Star):
         # task-39 F2: triggered reflection (default OFF, silent fallback).
         if getattr(self, "think_reflect_enabled", False):
             try:
-                await self._maybe_think_reflect(event, core, _reply, text)
+                await self._maybe_think_reflect(event, core, _reply, _reply)
             except Exception:
                 pass
         # §6: read-only sycophancy / risky-agreement trace (never rewrites text).
@@ -13013,3 +12343,17 @@ class BioCorePlugin(Star):
             asyncio.create_task(self._maybe_relationship_narrative(event, core))
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------- block assembly
+# main.py declares no assembly logic: biocore_model/blocks.py owns the block
+# list (11 core mixins + routes/config plugin mixins + pipeline + feedback) and
+# assemble() builds the effective classes from ui_settings.blocks.enabled
+# (missing switch = enabled). The mixin implementation is the only copy now.
+try:
+    _ASSEMBLY_HOST = types.SimpleNamespace(data_dir=str(DATA_DIR))
+    _ASSEMBLY = _bc_blocks.assemble(_ASSEMBLY_HOST, BioCore, BioCorePlugin,
+                                    host_globals=globals())
+    BioCore = _ASSEMBLY["core_cls"]
+except Exception as _assembly_exc:  # pragma: no cover
+    logger.warning("[biocore] block assembly failed: %s", _assembly_exc)

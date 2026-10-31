@@ -1,0 +1,108 @@
+# -*- coding: utf-8 -*-
+"""BioCore-authoritative UI settings (survives AstrBot restarts)."""
+from __future__ import annotations
+import json
+import os
+import time
+from pathlib import Path
+
+SCHEMA = 1
+FILE_NAME = "ui_settings.json"
+
+DEFAULTS = {
+    "reply_soft": {"enabled": True, "target_chars": 10, "max_chars": 30},
+    "reply_split": {"enabled": False, "mode": "astrbot", "max_chars": 300, "inject_newlines": True},
+    "autonomy": {"enabled": False, "send": False, "threshold": 0.6, "max_chars": 120,
+                 "accumulator": {"V": 0.0, "ticks_since_fire": 0, "drift": 0.0, "leak": 0.15, "sigma": 0.06, "theta": 0.55, "last_tick_ts": 0.0}},
+}
+
+
+def base_dir(plugin=None) -> Path:
+    for attr in ("data_dir", "DATA_DIR"):
+        value = getattr(plugin, attr, None) if plugin is not None else None
+        if value:
+            return Path(str(value))
+    try:
+        return Path(__file__).resolve().parent.parent / "data"
+    except Exception:
+        return Path(".")
+
+
+def settings_path(plugin=None) -> Path:
+    return base_dir(plugin) / FILE_NAME
+
+
+def load(plugin=None) -> dict:
+    data = json.loads(json.dumps(DEFAULTS))
+    try:
+        path = settings_path(plugin)
+        if path.is_file():
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+            if isinstance(raw, dict):
+                for section, values in DEFAULTS.items():
+                    current = raw.get(section)
+                    if isinstance(current, dict):
+                        data[section].update(current)
+    except Exception:
+        pass
+    return data
+
+
+def _backup(path: Path) -> None:
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    try:
+        (path.with_name(path.name + ".bak_" + stamp)).write_bytes(path.read_bytes())
+    except Exception:
+        return
+    try:
+        backups = sorted(path.parent.glob(path.name + ".bak_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in backups[3:]:
+            old.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def save(plugin=None, updates=None) -> dict:
+    path = settings_path(plugin)
+    try:
+        data = load(plugin)
+        for section, values in (updates or {}).items():
+            if section in DEFAULTS and isinstance(values, dict):
+                data[section].update(values)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file():
+            _backup(path)
+        payload = dict(data)
+        payload["schema"] = SCHEMA
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return {"ok": True, "file": str(path)}
+    except Exception as error:
+        return {"ok": False, "file": str(path), "reason": type(error).__name__}
+
+
+def apply_to_plugin(plugin, data=None) -> dict:
+    """Startup: runtime attributes always mirror the file (authoritative)."""
+    data = data if isinstance(data, dict) else load(plugin)
+    soft = data.get("reply_soft") or {}
+    split = data.get("reply_split") or {}
+    auto = data.get("autonomy") or {}
+    try:
+        plugin.reply_soft_limit_enabled = bool(soft.get("enabled", True))
+        plugin.reply_soft_target_chars = int(soft.get("target_chars", 10))
+        plugin.reply_soft_max_chars = int(soft.get("max_chars", 30))
+    except Exception:
+        pass
+    try:
+        plugin.reply_split_enabled = bool(split.get("enabled", False))
+        plugin.reply_split_mode = str(split.get("mode", "astrbot"))
+        plugin.reply_split_max_chars = int(split.get("max_chars", 300))
+    except Exception:
+        pass
+    try:
+        plugin.proactive_autonomy = bool(auto.get("enabled", False))
+        plugin.proactive_send = bool(auto.get("send", False))
+    except Exception:
+        pass
+    return data

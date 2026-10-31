@@ -1,0 +1,147 @@
+<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>流水线 · 原型</title>
+<style>
+:root{--bg:#0b0d10;--panel:#11151a;--line:#1e242c;--fg:#e6e3dc;--muted:#8b8579;--accent:#ff6b00;--red:#d24b3e;--faint:#5d574d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 "Bahnschrift","Segoe UI",system-ui,sans-serif;padding:28px}
+.wrap{max-width:980px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px;letter-spacing:.02em}
+.sub{color:var(--muted);font-size:12px;margin-bottom:20px}
+.panel{background:var(--panel);border:1px solid var(--line);padding:16px 18px;margin-bottom:16px}
+.head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:12px}
+.head h2{font-size:13px;margin:0;font-weight:600;letter-spacing:.06em}
+.head span{font-family:ui-monospace,Consolas,monospace;font-size:10px;color:var(--faint);letter-spacing:.12em}
+.row{display:grid;grid-template-columns:18px 200px 62px 72px 1fr 46px;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:0}
+.row.off{opacity:.45}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--faint)}
+.dot.ok{background:var(--accent)}.dot.skipped{background:#3a3f47}.dot.timeout{background:var(--red)}
+.label{font-size:13px}
+.label em{font-style:normal;font-size:10px;color:var(--faint);border:1px solid var(--line);padding:0 4px;margin-left:6px;letter-spacing:.08em}
+.ms,.st{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--muted)}
+.st.ok{color:var(--accent)}.st.skipped{color:var(--faint)}.st.timeout{color:var(--red)}
+.note{font-size:11px;color:var(--muted)}
+.sw{position:relative;width:38px;height:18px;justify-self:end}
+.sw input{display:none}
+.sw i{position:absolute;inset:0;background:#1c222a;border:1px solid var(--line);transition:.15s}
+.sw i:after{content:"";position:absolute;top:2px;left:2px;width:12px;height:12px;background:var(--faint);transition:.15s}
+.sw input:checked + i{background:rgba(255,107,0,.12);border-color:rgba(255,107,0,.5)}
+.sw input:checked + i:after{left:22px;background:var(--accent)}
+.sw input:disabled + i{opacity:.4}
+.bar{height:4px;background:#1a1f26;margin-top:6px}
+.bar i{display:block;height:100%;width:73%;background:var(--accent)}
+.lib{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);padding:5px 9px;font-size:11px;color:var(--muted);background:#0f1318;cursor:default}
+.chip b{color:var(--fg);font-weight:500;margin-right:6px}
+.acts{display:flex;gap:10px;margin-top:14px}
+.btn{border:1px solid rgba(255,107,0,.5);background:rgba(255,107,0,.1);color:var(--accent);padding:7px 12px;font-size:12px;cursor:default}
+.btn.ghost{border-color:var(--line);background:#0f1318;color:var(--muted)}
+.trace{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--muted);line-height:1.9}
+.trace b{color:var(--fg);font-weight:500}
+</style></head><body><div class="wrap">
+<h1>流水线</h1>
+<div class="sub">一条主线：输入 → 感知 → 取记忆 → 情绪更新 → 决定 → 表达 → 思考 → 解析 → 反馈 → 呈现 → 输出</div>
+
+<div class="panel">
+  <div class="head"><h2>她现在多想找你</h2><span>V 0.44 / 阈值 0.55</span></div>
+  <div class="bar"><i></i></div>
+</div>
+
+<div class="panel">
+  <div class="head"><h2>当前线路</h2><span>9 STAGES · 1 DISABLED</span></div>
+  
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">感知<em>必需</em></span>
+    <span class="ms">12ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">解析消息、附件</span>
+    <label class="sw"><input type="checkbox" checked disabled><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">取记忆</span>
+    <span class="ms">88ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">召回 4 条 · 衰减更新</span>
+    <label class="sw"><input type="checkbox" checked ><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">情绪更新<em>必需</em></span>
+    <span class="ms">120ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">效价 0.42 → 0.44</span>
+    <label class="sw"><input type="checkbox" checked disabled><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">决定</span>
+    <span class="ms">3ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">回复（非主动）</span>
+    <label class="sw"><input type="checkbox" checked ><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">表达·语气</span>
+    <span class="ms">41ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">焦虑 ×0.8</span>
+    <label class="sw"><input type="checkbox" checked ><i></i></label>
+  </div>
+  <div class="row off">
+    <span class="dot skipped"></span>
+    <span class="label">表达·意图</span>
+    <span class="ms">—</span>
+    <span class="st skipped">skipped</span>
+    <span class="note">已关闭</span>
+    <label class="sw"><input type="checkbox"  ><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">思考<em>必需</em></span>
+    <span class="ms">390ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">18 字</span>
+    <label class="sw"><input type="checkbox" checked disabled><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">反馈·守卫</span>
+    <span class="ms">5ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">接受 2 · 拒绝 1</span>
+    <label class="sw"><input type="checkbox" checked ><i></i></label>
+  </div>
+  <div class="row">
+    <span class="dot ok"></span>
+    <span class="label">呈现<em>必需</em></span>
+    <span class="ms">1ms</span>
+    <span class="st ok">ok</span>
+    <span class="note">12 字</span>
+    <label class="sw"><input type="checkbox" checked disabled><i></i></label>
+  </div>
+  <div class="acts"><button class="btn">试运行一条</button><button class="btn ghost">重置为默认</button></div>
+</div>
+
+<div class="panel">
+  <div class="head"><h2>模块库</h2><span>ADD TO LINE</span></div>
+  <div class="lib">
+    <span class="chip"><b>+</b>心情层</span><span class="chip"><b>+</b>依恋动态</span><span class="chip"><b>+</b>归因</span>
+    <span class="chip"><b>+</b>社会疼痛</span><span class="chip"><b>+</b>连接邀请</span><span class="chip"><b>+</b>信任三层</span>
+    <span class="chip"><b>+</b>关系阶段</span><span class="chip"><b>+</b>挫折曲线</span><span class="chip"><b>+</b>可变强化</span>
+    <span class="chip"><b>+</b>自我生活</span><span class="chip"><b>+</b>遗忘衰减</span><span class="chip"><b>+</b>反刍</span>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="head"><h2>最近一次处理轨迹</h2><span>812ms TOTAL</span></div>
+  <div class="trace">
+    <div><b>12:34:51</b> 收到消息 · 私聊</div>
+    <div>感知 12ms · 取记忆 88ms（召回 4）· 情绪 120ms（v 0.42→0.44）</div>
+    <div>决定 3ms 回复 · 表达 141ms（意图=关心 语气=焦虑）· 思考 390ms（18 字）</div>
+    <div>解析 2ms（delta 3）· 反馈 5ms（接受 2 拒绝 1）· 呈现 1ms</div>
+    <div><b>输出</b> 12 字 · 已发送</div>
+  </div>
+</div>
+</div></body></html>

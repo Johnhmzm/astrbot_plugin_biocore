@@ -73,6 +73,160 @@ _LABEL_DELTAS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# L2 text-only inference (no <bc> tag): lexical + punctuation evidence.
+# The model is not required to emit tags; a clear feeling in the reply text is
+# translated here into the same validated delta structure as the tag path.
+_INFER_WORDS = {
+    "joy": {"开心": 1.0, "高兴": 1.0, "快乐": 1.0, "喜欢": 0.9, "爱你": 0.9,
+            "谢谢": 0.6, "太好了": 0.8, "好棒": 0.9, "真棒": 0.9, "哈哈": 0.6,
+            "嘿嘿": 0.5, "舒服": 0.7, "温暖": 0.6, "期待": 0.7, "满足": 0.7,
+            "幸福": 0.9, "可爱": 0.8, "抱抱": 0.7, "加油": 0.5, "晚安": 0.4,
+            "早安": 0.4, " lucky": 0.6},
+    "sadness": {"难过": 1.0, "伤心": 1.0, "想哭": 1.0, "哭": 0.7, "失落": 0.9,
+                "低落": 0.9, "委屈": 0.9, "心疼": 0.8, "遗憾": 0.7, "心累": 0.8,
+                "想念": 0.7, "绝望": 1.0, "无助": 1.0, "痛苦": 1.0, "崩溃": 1.0,
+                "唉": 0.5, "算了": 0.5, "难受": 1.0, "孤独": 0.9, "寂寞": 0.9},
+    "anger": {"生气": 1.0, "愤怒": 1.0, "讨厌": 0.9, "别烦": 1.0, "烦死": 1.0,
+              "烦": 0.6, "滚": 0.9, "闭嘴": 1.0, "恼火": 1.0, "气死": 1.0,
+              "凭什么": 0.9, "过分": 0.9, "无语": 0.6, "受不了": 0.9, "恶心": 0.8},
+    "fear": {"焦虑": 1.0, "紧张": 0.9, "害怕": 1.0, "担心": 0.9, "慌": 0.8,
+             "不安": 0.9, "压力": 0.8, "睡不着": 0.8, "恐惧": 1.0, "忐忑": 0.9,
+             "心慌": 0.9, "怕": 0.7},
+    "loneliness": {"孤独": 1.0, "寂寞": 1.0, "一个人": 0.8, "没人": 0.9,
+                   "没人陪": 1.0, "想见你": 0.8, "陪陪我": 0.8,
+                   "想有人陪": 0.9},
+}
+_INFER_EMOJI = {"😊": "joy", "😄": "joy", "😂": "joy", "😭": "sadness",
+                "😡": "anger", "😰": "fear", "❤": "joy"}
+_SARCASM_MARKERS = ("可真行", "可真", "可真是", "真是", "好啊", "呵呵", "行吧",
+                    "真棒啊", "厉害", "佩服", "你可真", "真行", "挺会")
+_INFER_CONFIDENCE_MIN = 0.4
+_NEGATION_PREFIX_WORDS = ("特别", "区别", "告别", "分别", "类别", "个别", "级别", "识别")
+
+
+def _negated(text: str, index: int) -> bool:
+    """True when the matched word is directly negated (别/不/没...).
+
+    Adverbs ending in 别 (特别/分别/区别) must not flip a positive word.
+    """
+    if index <= 0:
+        return False
+    prefix2 = text[max(0, index - 2):index]
+    if prefix2 in _NEGATION_PREFIX_WORDS:
+        return False
+    if prefix2 in ("没有", "并不", "从不", "从未", "不太"):
+        return True
+    return text[index - 1] in "不没别无未"
+
+
+def infer_from_text(text: str) -> dict:
+    """Infer {emotion, intensity, confidence} from reply text only.
+
+    Deterministic lexical + punctuation scoring. No tag, no IO, no model call.
+    Neutral/ambiguous text returns a low confidence (< 0.3) so callers drop it.
+    """
+    raw = str(text or "")
+    low = raw.lower()
+    scores = {name: 0.0 for name in _INFER_WORDS}
+    for emotion, words in _INFER_WORDS.items():
+        for word, weight in words.items():
+            start = 0
+            while True:
+                index = low.find(word, start)
+                if index < 0:
+                    break
+                if _negated(low, index):
+                    if emotion == "joy":
+                        scores["sadness"] += 0.7 * weight
+                    else:
+                        scores[emotion] -= weight
+                else:
+                    scores[emotion] += weight
+                start = index + len(word)
+    for char, emotion in _INFER_EMOJI.items():
+        hits = low.count(char)
+        if hits:
+            scores[emotion] += 0.5 * hits
+    exclamations = min(3, low.count("！") + low.count("!"))
+    questions = low.count("？") + low.count("?")
+    ellipsis = low.count("…") + low.count("...")
+    sarcasm = any(marker in raw for marker in _SARCASM_MARKERS)
+    top = max(scores, key=scores.get) if scores else "neutral"
+    top_score = max(0.0, scores.get(top, 0.0))
+    if top_score <= 0.0:
+        return {"emotion": "neutral", "intensity": 0.2,
+                "confidence": 0.05 + (0.05 if questions else 0.0)}
+    ranked = sorted(scores.values(), reverse=True)
+    second = ranked[1] if len(ranked) > 1 else 0.0
+    conflict = second > 0.6 * top_score
+    norm = min(1.0, top_score / 1.4)
+    confidence = 0.32 + 0.50 * norm + min(0.12, 0.04 * exclamations)
+    if ellipsis:
+        confidence -= 0.04
+    if conflict:
+        confidence *= 0.75
+    if questions and not exclamations:
+        confidence *= 0.90
+    if len(raw.strip()) <= 4:
+        confidence *= 0.85
+    if sarcasm:
+        confidence = min(confidence * 0.45, 0.35)
+    confidence = round(max(0.0, min(1.0, confidence)), 3)
+    intensity = 0.45 + 0.50 * norm + min(0.10, 0.05 * exclamations)
+    intensity = round(max(0.0, min(1.0, intensity)), 3)
+    return {"emotion": top, "intensity": intensity, "confidence": confidence}
+
+
+# ---------------------------------------------------------------------------
+# User-message classification (explanation layer input; never writes state).
+_USER_KINDS = ("insult", "reject", "sad", "praise", "affectionate", "neutral")
+_USER_WORDS = {
+    "insult": ("骂", "蠢", "废物", "闭嘴", "滚", "烦死", "你他妈", "傻",
+               "笨", "去死", "有病", "神经病", "滚开", "你妈"),
+    "reject": ("不用了", "别说了", "不想理你", "走开", "不需要", "别烦",
+               "算了", "别联系", "不想聊"),
+    "sad": ("难受", "难过", "想哭", "哭", "累了", "崩溃", "压力大",
+            "委屈", "伤心", "撑不住", "心累"),
+    "praise": ("厉害", "谢谢", "喜欢", "可爱", "真好", "夸", "棒",
+               "优秀", "感谢", "佩服"),
+    "affectionate": ("想你", "抱抱", "晚安", "在吗", "亲亲", "爱你",
+                     "么么", "陪陪我", "想见你"),
+}
+
+
+def classify_user_msg(text: str) -> dict:
+    """Classify one user message -> {kind, intensity, confidence}.
+
+    Kinds: praise | insult | reject | sad | affectionate | neutral.
+    Priority: insult > reject > sad > praise > affectionate. Sad requires a
+    first-person marker (我/自己), so quoting a sad word is not enough. A
+    confidence < 0.4 means the caller should treat it as neutral.
+    """
+    raw = str(text or "").strip()
+    low = raw.lower()
+    if not low:
+        return {"kind": "neutral", "intensity": 0.1, "confidence": 0.1}
+    counts = {}
+    for kind, words in _USER_WORDS.items():
+        hits = sum(low.count(word.lower()) for word in words)
+        if kind == "sad" and hits and not any(
+                marker in low for marker in ("我", "自己")):
+            hits = 0
+        if hits:
+            counts[kind] = hits
+    if not counts:
+        return {"kind": "neutral", "intensity": 0.1, "confidence": 0.1}
+    kind = next((name for name in _USER_KINDS if name in counts), "neutral")
+    hits = counts.get(kind, 1)
+    intensity = max(0.2, min(1.0, 0.35 + 0.20 * hits))
+    confidence = max(0.0, min(0.95, 0.45 + 0.22 * hits))
+    if len(low) <= 3:
+        confidence *= 0.9
+    return {"kind": kind, "intensity": round(intensity, 3),
+            "confidence": round(confidence, 3)}
+
+
 def _with_label_deltas(meta: dict) -> dict:
     """Map the compact model output (e/i/n/x) to validated state deltas.
 
@@ -239,6 +393,62 @@ def _strip_bare_json(text, whitelist):
     return clean, _payload_to_update(payload, whitelist)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Leak guard: protocol / rule echo stripping (added after a real tag leak).
+PROTOCOL_ECHO_PATTERNS = (
+    "标签只出现一次", "只出现一次", "必须隐藏", "不要解释", "输出协议",
+    "标签格式", "标签必须", "<bc>", "</bc>",
+)
+PROMPT_RULE_ECHO_PATTERNS = (
+    "先接住情绪", "不确定时用问句确认", "先缓和", "信息足够", "气氛不错",
+    "关系亲近且气氛轻松", "先回应对方在意的事", "不要抢话", "保持简洁",
+    "不编造未发生的事", "拿不准就说不确定", "语气保持自然平稳",
+)
+LEAK_GUARD = {"protocol_echo_stripped": 0, "prompt_rule_echo": 0, "protocol_echo_seen": 0}
+
+
+def _split_keep_sentences(text):
+    out, buf = [], ""
+    for ch in str(text or ""):
+        buf += ch
+        if ch in "。！？!?\n":
+            out.append(buf); buf = ""
+    if buf:
+        out.append(buf)
+    return out
+
+
+def strip_protocol_echo(text):
+    """Drop sentences that echo the hidden output protocol; keep normal ones."""
+    lines = _split_keep_sentences(text)
+    kept, hit = [], 0
+    for line in lines:
+        if any(pattern in line for pattern in PROTOCOL_ECHO_PATTERNS):
+            hit += 1
+        else:
+            kept.append(line)
+    if hit:
+        LEAK_GUARD["protocol_echo_stripped"] += hit
+        LEAK_GUARD["protocol_echo_seen"] += 1
+    return "".join(kept).strip()
+
+
+def note_prompt_rule_echo(text):
+    if any(pattern in str(text or "") for pattern in PROMPT_RULE_ECHO_PATTERNS):
+        LEAK_GUARD["prompt_rule_echo"] += 1
+
+
+def leak_guard_snapshot():
+    return {
+        "protocol_echo": int(LEAK_GUARD["protocol_echo_stripped"]),
+        "prompt_rule_echo": int(LEAK_GUARD["prompt_rule_echo"]),
+        "tag_missing": int(PARSE_STATS.get("tag_missing", 0)),
+        "tag_invalid": int(PARSE_STATS.get("tag_invalid", 0)),
+    }
+
+
 def parse_response(raw: str, whitelist=None):
     """Extract hidden contract via the central final-output sanitizer.
 
@@ -259,6 +469,26 @@ def parse_response(raw: str, whitelist=None):
     if delta > 0:
         PARSE_STATS["residual_stripped"] += delta
     update = _payload_to_update(payload, whitelist) if payload else None
+    if visible:
+        note_prompt_rule_echo(visible)
+        visible = strip_protocol_echo(visible)
+    # Tag path has priority; only text with no tag at all is inferred, so a
+    # malformed tag still drops instead of being reinterpreted as text.
+    if update is None and not payload:
+        inferred = infer_from_text(visible)
+        try:
+            confidence = float(inferred.get("confidence", 0.0))
+        except Exception:
+            confidence = 0.0
+        if confidence >= _INFER_CONFIDENCE_MIN:
+            mapped = _with_label_deltas({
+                "emotion": inferred.get("emotion"),
+                "intensity": inferred.get("intensity"),
+            })
+            if mapped:
+                mapped["confidence"] = round(confidence, 3)
+                mapped["source"] = "inferred"
+                update = mapped
     return visible, update
 
 

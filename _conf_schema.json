@@ -846,5 +846,23 @@
     "hint": "默认关=完全现状。开启后使用 biocore_memory 纯 Python 引擎影子适配（独立 .module.json，只读/不影响现有记忆）；后续 M2。",
     "type": "bool",
     "default": false
+  },
+  "core_client_enabled": {
+    "description": "启用 core 客户端（默认关）",
+    "hint": "默认关闭，关闭时行为零变化；开启后按 core_client_mode 走 shadow/primary。",
+    "type": "bool",
+    "default": false
+  },
+  "core_client_mode": {
+    "description": "core 模式（off/shadow/primary）",
+    "hint": "默认 off；shadow 双跑只记录差异，primary 以 core 为主并在失败时回退旧引擎。",
+    "type": "string",
+    "default": "off"
+  },
+  "core_client_store": {
+    "description": "core store 路径（留空=插件 data/core_store/memory.json）",
+    "hint": "默认留空；已迁移的 core_store 会被自动检测。",
+    "type": "string",
+    "default": ""
   }
 }

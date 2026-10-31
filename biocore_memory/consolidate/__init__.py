@@ -1,3 +1,4 @@
+# OWNER: engine-core
 # -*- coding: utf-8 -*-
 """Consolidation mechanisms (default OFF, pure functions, no engine wiring)."""
 from .gated import should_consolidate

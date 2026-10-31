@@ -1,0 +1,109 @@
+{
+  "ok": true,
+  "loop": {
+    "count": 1284,
+    "last_tick_ts": 1793440268,
+    "interval_s": 300
+  },
+  "bio": {
+    "discomfort": 0.37,
+    "intero": {
+      "fatigue": 0.31,
+      "tension": 0.22,
+      "warmth": 0.48,
+      "hunger": 0.12
+    },
+    "needs": {
+      "belonging": 0.42,
+      "self_esteem": 0.47,
+      "control": 0.35,
+      "meaningful_existence": 0.29
+    },
+    "pending_intent": {
+      "action": "approach",
+      "urgency": 0.41,
+      "code": "lonely"
+    },
+    "emotion_dist": {
+      "label": "lonely",
+      "confidence": 0.28,
+      "top": [
+        {
+          "label": "lonely",
+          "prob": 0.31
+        },
+        {
+          "label": "sadness",
+          "prob": 0.24
+        },
+        {
+          "label": "nostalgia",
+          "prob": 0.15
+        }
+      ]
+    }
+  },
+  "autonomy": {
+    "V": 0.412,
+    "theta": 0.55,
+    "ticks_since_fire": 7
+  },
+  "paths": {
+    "settings": "C:/AstrBot/data/config/astrbot_plugin_biocore_standalone_config.json",
+    "profile": "C:/AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/profile.json",
+    "data_dir": "C:/AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone"
+  },
+  "blocks": {
+    "enabled": [
+      "memory",
+      "expr_state",
+      "expr_tone"
+    ],
+    "skipped": [
+      "feedback"
+    ]
+  },
+  "pipeline": {
+    "mode": "shadow",
+    "last_trace": {
+      "ts": 1793440263,
+      "mode": "shadow",
+      "total_ms": 1912.4,
+      "stages": [
+        {
+          "name": "perceive",
+          "status": "ok",
+          "ms": 12.4
+        },
+        {
+          "name": "memory",
+          "status": "ok",
+          "ms": 88.1
+        },
+        {
+          "name": "bio",
+          "status": "ok",
+          "ms": 1.8
+        },
+        {
+          "name": "think",
+          "status": "ok",
+          "ms": 1740
+        },
+        {
+          "name": "present",
+          "status": "ok",
+          "ms": 4.3
+        }
+      ]
+    }
+  },
+  "policy": {
+    "q_size": 3,
+    "last_ctx": {
+      "tokens": 1180,
+      "budget": 2400,
+      "dropped": 2
+    }
+  }
+}

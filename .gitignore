@@ -10,3 +10,8 @@ settings.json
 api_config.json
 image_cache.json
 self_model.json
+
+# local backups (never ship)
+backups/
+main.py.bak_*
+*.bak_*

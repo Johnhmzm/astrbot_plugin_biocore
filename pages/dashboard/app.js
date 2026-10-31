@@ -1,6 +1,25 @@
 (() => {
   "use strict";
+  try{ window.__diagLog && window.__diagLog("init:0 loaded"); }catch(e){}
+  // ---- in-page error display (iframe-friendly; no console access needed) ----
+  function showDiag(msg){
+    try{ if(window.__diagError){ window.__diagError(msg); return; } }catch(e){}
+    try{
+      var el=document.getElementById('biocoreDiag');
+      if(!el){ el=document.createElement('div'); el.id='biocoreDiag';
+        el.style.cssText='position:fixed;left:8px;bottom:8px;right:8px;z-index:9999;background:#5a1a1a;color:#fff;font:12px/1.4 monospace;padding:6px 8px;border-radius:4px;white-space:pre-wrap;max-height:30vh;overflow:auto';
+        document.body.appendChild(el); }
+      el.textContent='JS 错误：'+msg;
+    }catch(_){}
+  }
+  window.addEventListener('error', function(e){ window.__biocoreLastError=(e&&e.message||'')+' @ '+(e&&e.filename||'')+':'+(e&&e.lineno||''); showDiag(window.__biocoreLastError); });
+  window.addEventListener('unhandledrejection', function(e){ var r=e&&e.reason; window.__biocoreLastError='promise: '+(r&&(r.stack||r.message)||r); showDiag(window.__biocoreLastError); });
+
   const $ = (id) => document.getElementById(id);
+  // Safe DOM setters: merged/removed switches must never throw during renders.
+  function setChecked(id, val){ const el=$(id); if(el){ el.checked = !!val; } }
+  function setText(id, val){ const el=$(id); if(el){ el.textContent = String(val); } }
+  function setVal(id, val){ const el=$(id); if(el){ el.value = String(val); } }
   let bridge = null;
   // P2: remote dashboard admin token (matches plugin config data_admin_token).
   function _adminHeaders(){
@@ -321,7 +340,7 @@
       localStorage.setItem("bio_vis_defaults_v3","1");
     }
   } catch (e) {}
-  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0",ripple:storeGet("bio_show_ripple","1")!=="0",dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings:storeGet("bio_show_emotion_rings","1")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed",memoryBallGravity:storeGet("bio_memory_ball_gravity","1")!=="0",orbLegend:storeGet("bio_show_orb_legend","1")!=="0",showAutonomyPanel:storeGet("bio_show_autonomy_panel","1")!=="0",showLearningPanel:storeGet("bio_show_learning_panel","1")!=="0",showChainList:storeGet("bio_show_chain_list","1")!=="0"};
+  const visual={noise:storeGet("bio_show_noise","1")!=="0",echo:storeGet("bio_show_echo","1")!=="0"||storeGet("bio_show_ripple","1")!=="0",ripple:true,dominance:storeGet("bio_show_dominance","1")!=="0",social:storeGet("bio_show_social","1")!=="0",links:storeGet("bio_show_links","1")!=="0",nodes:storeGet("bio_show_nodes","0")!=="0",nodeLinks:storeGet("bio_show_node_links","0")!=="0",memoryNodes:storeGet("bio_show_memory_nodes","1")!=="0",memoryBallsImportant:storeGet("bio_show_memory_balls_important","1")!=="0",emotionRings: storeGet("bio_show_emotion_rings","0")!=="0",intensity:Number(storeGet("bio_intensity","65")),memoryRingStyle:storeGet("bio_memory_ring_style","orbit")==="solid"?"solid":"orbit",memoryBallColorMode:storeGet("bio_memory_ball_color_mode","mixed")==="primary"?"primary":"mixed",memoryBallGravity:storeGet("bio_memory_ball_gravity","1")!=="0",orbLegend:storeGet("bio_show_orb_legend","1")!=="0",showAutonomyPanel:storeGet("bio_show_autonomy_panel","1")!=="0",showLearningPanel:storeGet("bio_show_learning_panel","1")!=="0",showChainList:storeGet("bio_show_chain_list","1")!=="0"};
   let themeInitialized=false;
   function applyTheme(dark){
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -338,6 +357,542 @@
     themeInitialized = true;
   }
 
+  function switchInput(id){ const el=$(id); return el&&el.type==="checkbox"?el:null; }
+  const SETTINGS_VIEW_KEY="biocore_settings_view";
+  // Memory-first: iframe localStorage may throw; a poll must never reset the view.
+  let _settingsViewMode=null;
+  let _appliedSettingsView=null;
+  function normalizeSettingsView(value){
+    const text=String(value||"").toLowerCase();
+    return text==="advanced"?"advanced":"simple";
+  }
+  function currentSettingsView(){
+    if(_settingsViewMode==="simple"||_settingsViewMode==="advanced") return _settingsViewMode;
+    try{ _settingsViewMode=normalizeSettingsView(window.localStorage.getItem(SETTINGS_VIEW_KEY)); }
+    catch(e){ _settingsViewMode="simple"; }
+    return _settingsViewMode;
+  }
+  function setSettingsView(mode){
+    _settingsViewMode=normalizeSettingsView(mode);
+    try{ window.localStorage.setItem(SETTINGS_VIEW_KEY,_settingsViewMode); }catch(e){}
+    applySettingsView(_settingsViewMode);
+  }
+  function initializeSettingsView(){
+    const mode=currentSettingsView();
+    if(_appliedSettingsView!==mode) applySettingsView(mode);
+  }
+  function applySettingsView(mode){
+    const view=normalizeSettingsView(mode);
+    if(_appliedSettingsView===view) return;
+    _appliedSettingsView=view;
+    const settings=$("view-settings");
+    if(settings){ settings.classList.toggle("mode-simple",view==="simple"); settings.classList.toggle("mode-advanced",view==="advanced"); }
+    const coreIndexRow=$("coreIndexRow"); if(coreIndexRow) coreIndexRow.hidden=view!=="advanced";
+    const simpleBtn=$("btnSimpleView"), advancedBtn=$("btnAdvancedView");
+    if(simpleBtn) simpleBtn.classList.toggle("active",view==="simple");
+    if(advancedBtn) advancedBtn.classList.toggle("active",view==="advanced");
+    try{ window.localStorage.setItem(SETTINGS_VIEW_KEY,view); }catch(e){}
+    updateCoreIndexCounts();
+  }
+  function updateCoreIndexCounts(){
+    const row=$("coreIndexText"); if(!row) return;
+    const d=(data&&typeof data==="object")?data:{};
+    const indexRows=Array.isArray(d.memory_index)?d.memory_index:((d.memory&&Array.isArray(d.memory.index))?d.memory.index:[]);
+    let entries=0, invalid=0;
+    indexRows.forEach((item)=>{ if(!item||typeof item!=="object") return;
+      const n=Number(item.count||item.entries||0); if(Number.isFinite(n)) entries+=n;
+      const bad=Number(item.invalid||0); if(Number.isFinite(bad)) invalid+=bad; });
+    const tombstones=Array.isArray(d.tombstones)?d.tombstones.length:Number(d.tombstone_count||0);
+    const graphRaw=d.graph||null;
+    const graph=graphRaw&&typeof graphRaw==="object"?(Number(graphRaw.nodes||0)+Number(graphRaw.edges||0)):Number(d.graph_count||0);
+    row.textContent="索引：entries "+entries+" · tombstones "+tombstones+" · invalid "+invalid+" · graph "+graph;
+  }
+  function setupSettingsView(){
+    const view=$("view-settings"); if(!view||$("settingsViewToggle")) return;
+    const bar=document.createElement("div");
+    bar.className="setting-row"; bar.id="settingsViewToggle";
+    bar.innerHTML='<div><b>视图</b><small>简单只显示组开关；高级显示全部 31 个细项与诊断</small></div><div class="inline-actions"><button class="btn active" id="btnSimpleView" type="button">简单</button><button class="btn" id="btnAdvancedView" type="button">高级</button></div>';
+    view.insertBefore(bar, view.firstChild);
+    $("btnSimpleView").addEventListener("click",()=>setSettingsView("simple"));
+    $("btnAdvancedView").addEventListener("click",()=>setSettingsView("advanced"));
+    initializeSettingsView();
+    updateCoreIndexCounts();
+  }
+  function setupSettingsLayout(rows){
+    if($("settingsBio")) return;  // static 4-tab layout (生物/记忆/模型/系统)
+    const bar=$("settingsTabs"); const view=$("view-settings");
+    const memoryPanel=$("settingsMemory"); if(!bar||!view||!memoryPanel) return;
+    const grid=memoryPanel.parentNode;
+    const makeTab=(id,label)=>{ if(bar.querySelector('[data-settings-target="'+id+'"]')) return;
+      const btn=document.createElement("button"); btn.type="button"; btn.className="settings-tab fold-panel folded";
+      btn.dataset.settingsTarget=id;
+      btn.innerHTML='<span class="fold-face"><small>'+label+'</small></span>';
+      const before=bar.querySelector('[data-settings-target="settingsMemory"]');
+      bar.insertBefore(btn, before||null);
+    };
+    const makePanel=(id)=>{ if($(id)) return $(id); const panel=document.createElement("div");
+      panel.className="panel settings settings-panel"; panel.id=id; grid.appendChild(panel); return panel; };
+    const statusPanel=makePanel("settingsCoreStatus");
+    const safetyPanel=makePanel("settingsSafety");
+    const llmPanel=makePanel("settingsLlm");
+    const expressionPanel=makePanel("settingsExpression");
+    makeTab("settingsCoreStatus","核心状态");
+    makeTab("settingsSafety","安全");
+    makeTab("settingsLlm","LLM 候选");
+    makeTab("settingsExpression","表达");
+    const moveRow=(input,panel)=>{ if(!input||!panel||!input.closest) return false; const row=input.closest(".setting-row"); if(row) panel.appendChild(row); return !!row; };
+    const moveById=(id,panel)=>moveRow($(id),panel);
+    // 索引诊断（核心模式已下线，2026-10-31）
+    if(!$("coreIndexRow")){ const indexRow=document.createElement("div"); indexRow.className="setting-row"; indexRow.id="coreIndexRow"; indexRow.hidden=true;
+      indexRow.innerHTML='<div><b>索引诊断</b><small id="coreIndexText">索引：—</small></div>'; statusPanel.appendChild(indexRow); }
+    // 安全：掩码/投毒开关 + 危机说明
+    moveById("swSafetyEnabled", safetyPanel);
+    const warn=$("safetyWarn"); if(warn&&warn.parentNode) safetyPanel.appendChild(warn);
+    if(!$("crisisNoteRow")){ const note=document.createElement("div"); note.className="setting-row"; note.id="crisisNoteRow";
+      note.innerHTML='<div><b>危机分级</b><small>只记录不拦截；critical/high 会携带安全契约（资源、must_ack、不放弃），并写入 crisis 日志。</small></div>'; safetyPanel.appendChild(note); }
+    // LLM 候选：候选开关 + 路由说明 + 预算提示
+    moveById("swLlmCandidates", llmPanel);
+    if(!$("llmRouteNoteRow")){ const note=document.createElement("div"); note.className="setting-row"; note.id="llmRouteNoteRow";
+      note.innerHTML='<div><b>功能路由</b><small>各功能路由 select 见「API」标签；此处只控制 LLM 候选开关与用量提示。</small></div>'; llmPanel.appendChild(note); }
+    if(!$("llmBudgetRow")){ const row=document.createElement("div"); row.className="setting-row"; row.id="llmBudgetRow";
+      row.innerHTML='<div><b>预算 / 用量</b><small id="llmBudgetText">LLM 闸关闭或未配置（gates 见核心状态）</small></div>'; llmPanel.appendChild(row); }
+    ["fn_empathy_hint_enabled","fn_pragmatics_hint_enabled","fn_tom_probe_enabled","fn_humor_hint_enabled"].forEach((id)=>moveById(id, expressionPanel));
+    try{ setupSettingsTabs(); }catch(e){}
+  }
+  function setupSwitchGroups(){
+    // 组开关已下线：静态 6 组行与 12 个确认按钮已删除，只剩 feature 层（FEATURE_TABLE / setupFeatureSwitches）。
+    setupSettingsLayout([]);
+    setupSettingsView();
+    setupFeatureSwitches();
+    initializeSettingsView();
+  }
+
+  // [PERSONA-COMPILE] one-shot action button (not a persistent switch)
+  function renderCurrentPersona(){
+    const d=(data&&typeof data==="object")?data:{};
+    const set=(id,v)=>{const el=$(id); if(el) el.textContent=String(v==null||v===""?"—":v);};
+    const profile=(d.persona_profile&&typeof d.persona_profile==="object")?d.persona_profile:{};
+    const cfg=(d.config&&typeof d.config==="object")?d.config:{};
+    const big5=(profile.big5&&typeof profile.big5==="object")?profile.big5:{};
+    const traits=["O","C","E","A","N"].map((k)=>{
+      const key=Object.keys(big5).find((name)=>String(name).toLowerCase().startsWith(k.toLowerCase()));
+      const value=key!=null?Number(big5[key]):NaN;
+      return k+" "+(Number.isFinite(value)?value.toFixed(2):"—");
+    }).join(" · ");
+    const personas=Array.isArray(d.personas)?d.personas:[];
+    const pid=String(d.persona_id||"");
+    const hit=personas.find((p)=>p&&(String(p.id)===pid||String(p.name)===pid))||null;
+    const fallbackPersona=personas[0]||null;   // AstrBot 默认人设通常是列表首项（能天使），不要优先 default
+    const name=(d.persona_name||profile.name||cfg.persona_name||(hit&&(hit.name||hit.id))||(!pid&&fallbackPersona?(fallbackPersona.name||fallbackPersona.id):"")||pid||"");
+    const nameText=name?("当前人设："+name):"当前人设：跟随 AstrBot 默认";
+    set("currentPersonaName",nameText);
+    set("currentPersonaNameModel",nameText);
+    set("currentPersonaSource", name?("AstrBot 当前人设（"+name+"）"):"AstrBot 当前人设");
+    const compiled=d.persona_compiled_hash||d.persona_version||"";
+    set("currentPersonaVersion", compiled?("已编译 v"+String(compiled).slice(0,8)+(d.persona_compiled_at?(" · "+d.persona_compiled_at):"")):"未编译（点右侧按钮）");
+    set("currentPersonaTraits", traits);
+    const text=String(d.persona_text||d.persona||"").trim();
+    set("currentPersonaSummary", text?(text.slice(0,60)+(text.length>60?"…":"")):"—");
+  
+    try{ renderPersonaTarget(); }catch(e){}}
+
+  function renderPersonaTarget(){
+    const sel=$("personaTargetSelect"); if(!sel) return;
+    const d=(data&&typeof data==="object")?data:{};
+    const personas=Array.isArray(d.personas)?d.personas:[];
+    const pid=String(d.persona_id||"");
+    const sig=personas.map((p)=>String(p&&p.id||"")+"|"+String(p&&p.name||"")).join(",")+"#"+pid;
+    if(sel.dataset.sig===sig) return;
+    sel.dataset.sig=sig;
+    sel.innerHTML="";
+    const follow=document.createElement("option");
+    follow.value=""; follow.textContent="跟随 AstrBot 默认人设";
+    sel.appendChild(follow);
+    personas.forEach((p)=>{
+      if(!p) return;
+      const o=document.createElement("option");
+      o.value=String(p.id||p.name||"");
+      o.textContent=(p.name&&p.id&&String(p.name)!==String(p.id))?(String(p.name)+"（"+String(p.id)+"）"):String(p.name||p.id||"");
+      sel.appendChild(o);
+    });
+    sel.value=pid||"";
+    if(!sel.dataset.bound){
+      sel.dataset.bound="1";
+      sel.addEventListener("change",()=>{
+        const v=sel.value||"";
+        const st=$("personaTargetState");
+        if(st) st.textContent="保存中…";
+        try{
+          if(bridge){ bridge.apiPost("page/toggle",{key:"persona_id",value:v}).then(()=>{ if(st) st.textContent="已保存"; }).catch(()=>{ if(st) st.textContent="保存失败"; }); }
+          else if(st) st.textContent="未连接";
+        }catch(e){ if(st) st.textContent="保存失败"; }
+      });
+    }
+  }
+  function setupPersonaCompile(){
+    renderCurrentPersona();
+    const btn=$("personaCompileBtn"); if(!btn||btn.dataset.bound) return; btn.dataset.bound="1";
+    const confirmRow=$("personaCompileConfirmRow");
+    const toast=(text)=>{ const el=$("personaCompileToast"); if(!el) return; el.textContent=String(text||""); el.hidden=false;
+      if(el._t) clearTimeout(el._t); el._t=setTimeout(()=>{el.hidden=true;},3000); };
+    const allowed=()=>{
+      if(!bridge) return false;
+      const fn=(data&&data.llm_functions&&data.llm_functions.persona_compile)||{};
+      return fn.enabled!==false;
+    };
+    const sync=()=>{ const ok=allowed(); btn.disabled=!ok; btn.title=ok?"":"需要 LLM（跟随主 LLM）"; };
+    btn.addEventListener("click",()=>{ if(btn.disabled) return; if(confirmRow) confirmRow.hidden=false; });
+    const yes=$("personaCompileConfirmYes");
+    if(yes&&!yes.dataset.bound){ yes.dataset.bound="1"; yes.addEventListener("click",async()=>{
+      if(confirmRow) confirmRow.hidden=true;
+      const old=btn.textContent; btn.disabled=true; btn.textContent="编译中…";
+      try{
+        const raw=await bridge.apiPost("page/persona_compile",{});
+        const payload=raw&&raw.data?raw.data:raw;
+        if(!payload||payload.ok===false){
+          const err=new Error((payload&&payload.message)||"编译失败");
+          err.code=(payload&&payload.error)||""; throw err;
+        }
+        toast("编译完成（version "+(payload.version||"?")+"）");
+      }catch(e){
+        const reason=(typeof describeBridgeError==="function")?describeBridgeError(e):String(e&&e.message||e);
+        toast("编译失败："+reason);
+      }
+      btn.textContent=old; sync();
+    }); }
+    const no=$("personaCompileConfirmNo");
+    if(no&&!no.dataset.bound){ no.dataset.bound="1"; no.addEventListener("click",()=>{ if(confirmRow) confirmRow.hidden=true; }); }
+    sync();
+  }
+
+  // [FEATURE-SWITCHES] 11 function-domain switches over the 27 advanced switches.
+  const FEATURE_TABLE = {
+    feat_memory_compress: ["swCompress"],
+    feat_memory_retrieval: ["swHybridRetrieval"],
+    feat_memory_insight: ["fn_event_summary_enabled","fn_event_ranking_enabled","fn_insight_enabled","swInsightAuto","fn_memory_summary_enabled"],
+    feat_memory_relation: ["fn_relationship_impression_enabled","fn_repair_hint_enabled","fn_diary_enabled","fn_relationship_narrative_enabled"],
+    feat_expression_rules: ["fn_empathy_hint_enabled"],
+    feat_visual_nodes: ["swShowMemoryNodes"],
+    feat_visual_links: ["swShowLinks"],
+    feat_visual_rings: ["swShowEcho","swShowDominance","swShowSocial"],
+    feat_safety: ["swSafetyEnabled"],
+    feat_llm_image: ["fn_image_caption_enabled"],
+  };
+  window.LLM_ADVANCED_IDS = ["fn_event_summary_enabled","fn_event_ranking_enabled","fn_insight_enabled","fn_memory_summary_enabled","fn_relationship_impression_enabled","fn_repair_hint_enabled","fn_diary_enabled","fn_relationship_narrative_enabled","fn_image_caption_enabled","fn_pragmatics_hint_enabled","fn_tom_probe_enabled","fn_humor_hint_enabled","swInsightAuto"];
+  const FEATURE_ORDER = ["feat_memory_compress","feat_memory_retrieval","feat_memory_insight","feat_memory_relation","feat_expression_rules","feat_visual_nodes","feat_visual_links","feat_visual_rings","feat_safety","feat_llm_image"];
+  const FEATURE_LOCAL_DEFAULT_ON = { feat_expression_rules: true };
+  function setupLlmConsolidation(){
+    const route=$("llm_route_default");
+    if(route&&!route.dataset.bound){
+      route.dataset.bound="1";
+      try{ route.value=window.localStorage.getItem("bio_llm_route_default")||"follow_llm"; }catch(e){}
+      route.addEventListener("change",()=>{ try{ window.localStorage.setItem("bio_llm_route_default",String(route.value||"follow_llm")); }catch(e){} });
+    }
+    const btn=$("feat_llm_insight_btn");
+    if(btn&&!btn.dataset.bound){
+      btn.dataset.bound="1";
+      btn.addEventListener("click",()=>{
+        const chk=switchInput("fn_insight_enabled");
+        if(!bridge||!chk) return;
+        chk.checked=!chk.checked;
+        try{ chk.dispatchEvent(new Event("change",{bubbles:true})); }catch(e){}
+        refreshFeatureStates();
+      });
+    }
+  }
+  function featureValues(){
+    const values={};
+    FEATURE_ORDER.forEach((id)=>{ (FEATURE_TABLE[id]||[]).forEach((kid)=>{ const el=switchInput(kid); if(el) values[kid]=el.checked===true; }); });
+    return values;
+  }
+  function featureStateOf(id, values){
+    const kids=FEATURE_TABLE[id]||[];
+    if(!kids.length) return "off";
+    const on=kids.filter((kid)=>values[kid]===true).length;
+    return on===0?"off":(on===kids.length?"on":"mixed");
+  }
+  function refreshFeatureStates(){
+    const values=featureValues();
+    FEATURE_ORDER.forEach((id)=>{
+      const box=$(id); if(!box) return;
+      if(FEATURE_LOCAL_DEFAULT_ON[id]){
+        let stored=null; try{ stored=window.localStorage.getItem("bio_"+id); }catch(e){}
+        const on=(stored===null)?true:(stored!=="0");
+        box.checked=on; box.indeterminate=false;
+        const child=switchInput((FEATURE_TABLE[id]||[])[0]);
+        if(child&&child.checked!==on) child.checked=on;
+        return;
+      }
+      const state=featureStateOf(id,values);
+      box.checked=state==="on";
+      box.indeterminate=state==="mixed";
+    });
+  }
+  function bindCompressSave(){
+    const btn=$("compressSaveBtn");
+    if(!btn||btn.dataset.bound) return;
+    btn.dataset.bound="1";
+    btn.addEventListener("click",async()=>{
+      const st=$("compressSaveState");
+      const setState=(t)=>{ if(st) st.textContent=String(t||""); };
+      if(!bridge){ setState("未连接 AstrBot 页面桥"); return; }
+      const body={compression:{
+        enabled: !!($("swCompress")&&$("swCompress").checked),
+        threshold: Number($("compressThreshold")?$("compressThreshold").value:6000),
+        max_chars: Number($("compressMax")?$("compressMax").value:800)
+      }};
+      setState("保存中…");
+      try{
+        const raw=await bridge.apiPost("page/api_config",body);
+        const payload=raw&&raw.data?raw.data:raw;
+        if(!payload||payload.status==="error"||payload.status==="fail") throw new Error((payload&&payload.message)||"保存失败");
+        if(data) data.api_config=payload;
+        setState("已保存");
+      }catch(err){ setState("保存失败："+String((err&&err.message)||err)); }
+    });
+  }
+  function setupFeatureSwitches(){
+    FEATURE_ORDER.forEach((id)=>{
+      const box=$(id); if(!box||box.dataset.bound) return; box.dataset.bound="1";
+      box.addEventListener("change",()=>{
+        const target=!!box.checked;
+        if(FEATURE_LOCAL_DEFAULT_ON[id]){ try{ window.localStorage.setItem("bio_"+id,target?"1":"0"); }catch(e){} }
+        (FEATURE_TABLE[id]||[]).forEach((kid)=>{
+          const el=switchInput(kid); if(!el) return;
+          if(el.checked!==target){ el.checked=target; try{ el.dispatchEvent(new Event("change",{bubbles:true})); }catch(e){} }
+        });
+        refreshFeatureStates();
+      });
+    });
+    window.LLM_ADVANCED_IDS.forEach((kid)=>{
+      const el=switchInput(kid); if(!el||!el.closest) return;
+      const row=el.closest(".setting-row"); if(!row) return;
+      const label=row.querySelector("b"); if(label&&!label.textContent.includes("[LLM]")) label.textContent="[LLM] "+label.textContent;
+    });
+    refreshFeatureStates();
+  }
+
+  function _initStep(name, fn){
+    try{ window.__diagLog && window.__diagLog("init:2 "+name); }catch(e){}
+    try{ fn(); window.__diagLog && window.__diagLog("init:2ok "+name); }
+    catch(e){ try{ window.__diagError && window.__diagError("init fail: "+name+" "+(e&&e.message||e)); }catch(x){} }
+  }
+  function safeRender(name, fn){ try { fn(); } catch(e){ try{ if(window.console&&window.console.warn) window.console.warn("[biocore] render failed:",name,e); }catch(x){} } }
+  function bindAutonomy(){
+    const d=(data&&typeof data==="object")?data:{};
+    const auto=(d.autonomy&&typeof d.autonomy==="object")?d.autonomy:{};
+    if(auto.state&&typeof auto.state==="object"){ try{ renderAutonomyState(auto.state); }catch(e){} }
+    if(auto.motive||(auto.state&&auto.state.motive)){ const M=auto.motive||auto.state.motive; setText("autonomyMotive","等你 "+(M.hours||0).toFixed(1)+"h（×"+(M.silence_mult||1).toFixed(2)+"）· 被压 ×"+(M.frust_mult||1).toFixed(2)+" · 综合 ×"+(M.total_mult||1).toFixed(2)); }
+    if(auto.attachment_style&&$("autonomyAttachment")) setVal("autonomyAttachment",auto.attachment_style);
+    if(auto.tick_engine&&$("autonomyTickEngine")) setVal("autonomyTickEngine",auto.tick_engine);
+    if(auto.state&&auto.state.intent){ const I=auto.state.intent; setText("autonomyIntent","这次想说："+(I.text_hint||I.kind||"—")+"（"+I.kind+"）"); }
+    if(auto.state&&auto.state.mood){ const M=auto.state.mood; setText("autonomyMood","心情："+(M.label||"—")+"（效价 "+(Number(M.valence||0).toFixed(2))+"）"); }
+    if(auto.state&&auto.state.attribution){ const A=auto.state.attribution; const zh={internal:"内部",external:"外部",neutral:"中性",stable:"稳定",unstable:"不稳定",controllable:"可控",uncontrollable:"不可控",shame:"自责",anger:"愤怒",sadness:"难过",guilt:"内疚",neutral:"中性"}; setText("autonomyAttribution","归因："+(zh[A.locus]||A.locus)+"·"+(zh[A.stability]||A.stability)+"·"+(zh[A.controllability]||A.controllability)+" → "+(zh[A.emotion_hint]||A.emotion_hint)); }
+    if(auto.state&&auto.state.social_pain){ const P=auto.state.social_pain; const zh={rising:"上升",falling:"下降",flat:"平稳"}; setText("autonomySocialPain","社会疼痛 "+Number(P.value||0).toFixed(2)+"（"+(zh[P.trend]||P.trend)+"）"); }
+    if(auto.state&&auto.state.self_esteem){ setText("autonomySelfEsteem","自尊 "+Number(auto.state.self_esteem.value||0).toFixed(2)); }
+    if(auto.state&&auto.state.gratitude!==undefined){ setText("autonomyGratitude","感激："+Number(auto.state.gratitude||0).toFixed(2)); }
+    if(auto.state&&auto.state.empathy){ const E=auto.state.empathy; setText("autonomyEmpathy","共情：情感 "+(Number(E.affective||0).toFixed(2))+" · 认知 "+(Number(E.cognitive||0).toFixed(2))+"（"+E.mode+"）"); }
+    if(auto.state&&auto.state.frustration){ const F=auto.state.frustration; setText("autonomyFrustration","挫折："+(F.n||0)+" 次 · "+(F.phase||"—")+" · drive ×"+(Number(F.drive_mult||1).toFixed(2))); }
+    if(auto.state&&auto.state.schedule){ const S=auto.state.schedule; setText("autonomySchedule","间隔：等待被拦 "+(S.wait_blocked||0)+" 次"+(S.burst?" · burst":"")); }
+    if(auto.state&&auto.state.appraisal){ const A=auto.state.appraisal; setText("autonomyAppraisal","评价：有利 "+(Number(A.goal_congruence||0).toFixed(2))+" · 卷入 "+(Number(A.ego_involvement||0).toFixed(2))+" · 应对 "+(Number(A.coping_potential||0).toFixed(2))); }
+    if(auto.state&&auto.state.action){ const A=auto.state.action; setText("autonomyAction","行动倾向："+(A.tone||"—")+(A.emotion?"（"+A.emotion+"）":"")); }
+    if(auto.state&&auto.state.attachment&&auto.state.attachment.style){ const A=auto.state.attachment; setText("autonomyAttachment","依恋："+A.style+" · 激活 "+(Number(A.activation||0).toFixed(2))+"（"+A.mode+"）"); }
+    if(auto.state&&auto.state.regulation){ const R=auto.state.regulation; setText("autonomyRegulation","调节："+R.strategy+" · 努力 "+(Number(R.effort||0).toFixed(2))+(R.suppressed?" · 压着":"")); }
+    if(auto.state&&auto.state.relationship){ const R=auto.state.relationship; const zh={stranger:"陌生人",acquaintance:"熟人",friend:"朋友",close:"亲密"}; setText("autonomyStage","关系阶段："+(zh[R.stage]||R.stage)+"（累计 "+(R.hours_total||0)+"h · Tau "+(R.tau_hours||0)+"h · 每日 "+(R.daily_cap||0)+"）"); }
+    if(auto.state&&auto.state.self_life){ const S=auto.state.self_life; const first=(S.today&&S.today[0])?S.today[0].text:""; const U=(auto.state.user_model||{}); setText("autonomySelfLife","她今天："+(first||"—")+(U.busy_hint==="busy"?" · 她猜你：有点忙":(U.mood_hint==="low"?" · 她猜你：心情一般":""))); }
+    if(auto.state&&auto.state.bid){ const B=auto.state.bid; setText("autonomyBid","连接邀请："+B.sent+" 次 · 接住 "+(B.toward||0)+" · 落空 "+(B.away||0)+"（频率 ×"+(Number(B.frequency||1).toFixed(2))+"）"); }
+    if(auto.state&&auto.state.trust){ const T=auto.state.trust; setText("autonomyTrust","信任：可预测 "+(Number(T.predictability||0).toFixed(2))+" · 可靠 "+(Number(T.dependability||0).toFixed(2))+" · 信念 "+(Number(T.faith||0).toFixed(2))+"（总 "+(Number(T.overall||0).toFixed(2))+"）"); }
+    if(auto.state&&auto.state.needs){ const N=auto.state.needs; const names={belonging:"归属",self_esteem:"自尊",control:"控制",meaningful_existence:"意义"}; setText("autonomyNeeds","需求："+Object.keys(names).map(k=>names[k]+" "+(Number(N[k]||0).toFixed(2))+(N.dominant===k?"（主导）":"")).join(" · ")); }
+    if(auto.state&&auto.state.rumination&&auto.state.rumination.text){ setText("autonomyRumination",auto.state.rumination.text); }
+    if(auto.state&&auto.state.sleep){ const S=auto.state.sleep; setText("autonomySleep","她现在："+(S.sleeping?"睡着":"醒着")+"（精力 "+(Number(S.energy||0).toFixed(2))+"，节律 "+(Number(S.circadian||0).toFixed(2))+"）"); }
+    if(auto.state&&auto.state.loop){ const L=auto.state.loop; const lat=Number(L.avg_latency_s||0); setText("autonomyLoop","主动 "+(L.sent||0)+" 次 · 被回 "+(L.responded||0)+" 次（"+Math.round((L.response_rate||0)*100)+"%）"+(lat>0?" · 平均 "+ (lat/3600).toFixed(1)+"h 回复":"")); }
+    if(auto.state&&auto.state.motive){ const M=auto.state.motive; setText("autonomyBlame","自责 "+(M.self_blame==null?"0.00":Number(M.self_blame).toFixed(2))+" · 表达自信 "+(M.confidence==null?"1.00":Number(M.confidence).toFixed(2))); }
+    if(auto.state&&auto.state.limit){ const L=auto.state.limit; setText("autonomyLimit","本小时 "+(L.hour_sent||0)+"/"+(L.hourly_cap||2)+"（每日 "+(L.daily_cap||5)+"） · 被压 "+(L.frustration||0)+" 次（冲动 +"+Math.round(((L.drive_mult||1)-1)*100)+"%） · 累计被限制 "+(L.total_blocked||0)+" 次"); }
+    if(auto.state&&auto.state.silence){ const s=auto.state.silence; const zh={expect:"期待",protest:"抗议期：有点急",loss:"失落",withdraw:"抽离"}; setText("autonomySilence","她等了你 "+(Number(s.hours||0).toFixed(1))+" 小时（"+(zh[s.phase]||s.phase||"—")+"）"); }
+    if(auto.last_reason&&typeof auto.last_reason==="object"){ const r=auto.last_reason; setText("autonomyLastReason","上次主动："+(r.ts?new Date(Number(r.ts)*1000).toLocaleString("zh-CN"):"—")+" · 原因："+(r.text||r.code||"—")); }
+    const st=(auto.state&&typeof auto.state==="object")?auto.state:{};
+    const pick=(k)=>(auto[k]!==undefined?auto[k]:st[k]);
+    const set=(id,v)=>{const el=$(id); if(el) el.textContent=String(v==null||v===""?"—":v);};
+    setChecked("autonomyEnabled", pick("enabled")!==undefined?pick("enabled"):!!d.proactive_autonomy);
+    setChecked("autonomySend", pick("send")!==undefined?pick("send"):!!d.proactive_send);
+    set("autonomyReady", "ready "+(pick("ready")!==undefined?pick("ready"):"—"));
+    set("autonomyThreshold", "threshold "+(pick("threshold")!==undefined?pick("threshold"):"—"));
+    set("autonomyMaxChars", "max_chars "+(pick("max_chars")!==undefined?pick("max_chars"):"—"));
+    set("autonomyImpulse", "impulse "+(pick("impulse")!==undefined?pick("impulse"):"—"));
+    set("autonomySent", "sent "+(pick("sent")!==undefined?pick("sent"):"—"));
+    const th=auto.threshold!==undefined?auto.threshold:0.6;
+    const mc=auto.max_chars!==undefined?auto.max_chars:120;
+    if($("autonomyThresholdInput")&&!$("autonomyThresholdInput").dataset.bound){ setVal("autonomyThresholdInput",th); }
+    if($("autonomyMaxCharsInput")&&!$("autonomyMaxCharsInput").dataset.bound){ setVal("autonomyMaxCharsInput",mc); }
+    if($("autonomyDailyCap")&&!$("autonomyDailyCap").dataset.bound){ setVal("autonomyDailyCap",(auto.daily_cap||5)); }
+    const _zh={ready:"可发送",not_ready:"未达阈值",cooldown:"冷却中",daily_cap:"今日已达上限",quiet_hours:"静默时段",no_session:"无可用会话",not_private:"非私聊会话"};
+    const renderAutonomyState=(r)=>{
+      r=r||{};
+      const V=Number(r.V||0), theta=Number(r.theta||0.55);
+      const pct=Math.max(0,Math.min(100,Math.round(theta?V/theta*100:0)));
+      const fill=$("autonomyVBarFill");
+      if(fill){ fill.style.width=pct+"%"; fill.style.background=pct>=85?"var(--red)":"var(--accent)"; }
+      setText("autonomyVPct",pct+"%");
+      setText("autonomyVText","V "+(V||0).toFixed(3)+" / "+theta.toFixed(2));
+      const zhParts={social_gap:"社交缺口",lonely:"寂寞",anxiety_fear:"焦虑",sadness:"悲伤",distress:"难受",joy:"愉悦",anger_conflict:"愤怒",boredom:"无聊",activity:"勤快",stress_load:"压力",drive_dev:"需求缺口",open_loops:"未了话题",nostalgia:"怀旧",repair_urge:"修复",memory_due:"记忆到期"};
+      const parts=r.parts||{}; const keys=Object.keys(parts).filter(k=>Number(parts[k])>0).sort((a,b)=>parts[b]-parts[a]).slice(0,6);
+      const shown=keys.map(k=>(zhParts[k]||k)+" "+(+parts[k]).toFixed(2)).join(" · ");
+      const eta=(r.eta_hours==null)?"—":("约 "+Number(r.eta_hours).toFixed(1)+" 小时可达");
+      setText("autonomyParts","drift "+(Number(r.drift||0)).toFixed(3)+" = "+(shown||"其余 ≈0")+" · "+eta+(Object.keys(parts).filter(k=>Number(parts[k])>0).length>6?" · 其余 ≈0":""));
+      if(r.block_reason!==undefined) setText("autonomyBlockReason",( {ready:"可发送",not_ready:"未达阈值",cooldown:"冷却中",daily_cap:"今日已达上限",quiet_hours:"静默时段",no_session:"无可用会话",not_private:"非私聊会话"}[r.block_reason]||r.block_reason||"—"));
+    };
+    const renderCheck=(payload)=>{
+      const r=payload.readiness||{}; const g=payload.gate||{};
+      renderAutonomyState(r);
+      const V=Number(r.V||0), theta=Number(r.theta||0.55);
+      const pct=Math.max(0,Math.min(100,Math.round(theta?V/theta*100:0)));
+      const fill=$("autonomyVBarFill");
+      if(fill){ fill.style.width=pct+"%"; fill.style.background=pct>=85?"var(--red)":"var(--accent)"; }
+      setText("autonomyVPct",pct+"%");
+      setText("autonomyVText","V "+(V||0).toFixed(3)+" / "+theta.toFixed(2));
+      const zhParts={social_gap:"社交缺口",lonely:"寂寞",anxiety_fear:"焦虑",sadness:"悲伤",distress:"难受",joy:"愉悦",anger_conflict:"愤怒",boredom:"无聊",activity:"勤快",stress_load:"压力",drive_dev:"需求缺口",open_loops:"未了话题",nostalgia:"怀旧",repair_urge:"修复",memory_due:"记忆到期"};
+      const parts=r.parts||{}; const keys=Object.keys(parts).filter(k=>Number(parts[k])>0).sort((a,b)=>parts[b]-parts[a]).slice(0,6);
+      const shown=keys.map(k=>(zhParts[k]||k)+" "+(+parts[k]).toFixed(2)).join(" · ");
+      setText("autonomyParts","drift "+(Number(r.drift||0)).toFixed(3)+" = "+(shown||"其余 ≈0")+(Object.keys(parts).filter(k=>Number(parts[k])>0).length>6?" · 其余 ≈0":""));
+      setText("autonomyBlockReason",_zh[g.reason]||g.reason||"—");
+    };
+    const _show=(id,v)=>{const el=$(id);if(el)el.hidden=!v;};
+    const testBtn=$("autonomyTestBtn"), resetBtn=$("autonomyResetBtn");
+    const yes=$("autonomyTestConfirmYes"), no=$("autonomyTestConfirmNo");
+    if(testBtn&&!testBtn.dataset.bound){
+      testBtn.dataset.bound="1";
+      testBtn.addEventListener("click",()=>{_show("autonomyTestConfirm",true);_show("autonomyTestConfirmYes",true);_show("autonomyTestConfirmNo",true);});
+      if(yes&&!yes.dataset.bound){yes.dataset.bound="1";yes.addEventListener("click",async()=>{
+        _show("autonomyTestConfirm",false);_show("autonomyTestConfirmYes",false);_show("autonomyTestConfirmNo",false);
+        if(!bridge){setText("autonomyTestState","桥接未连接");return;}
+        setText("autonomyTestState","设置中…");
+        try{const raw=await bridge.apiPost("page/autonomy_test",{arm:true});const p=raw&&raw.data?raw.data:raw;
+          if(!p||p.ok===false)throw new Error((p&&p.message)||"失败");
+          setText("autonomyTestState","已设置 V="+p.V_set+"（theta "+p.theta+"），等下一 tick 触发");
+        }catch(e){setText("autonomyTestState","失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e)));}
+      });}
+      if(no&&!no.dataset.bound){no.dataset.bound="1";no.addEventListener("click",()=>{_show("autonomyTestConfirm",false);_show("autonomyTestConfirmYes",false);_show("autonomyTestConfirmNo",false);});}
+    }
+    if(resetBtn&&!resetBtn.dataset.bound){resetBtn.dataset.bound="1";resetBtn.addEventListener("click",async()=>{
+      if(!bridge){setText("autonomyTestState","桥接未连接");return;}
+      setText("autonomyTestState","复位中…");
+      try{const raw=await bridge.apiPost("page/autonomy_test",{reset:true});const p=raw&&raw.data?raw.data:raw;
+        if(!p||p.ok===false)throw new Error((p&&p.message)||"失败");
+        setText("autonomyTestState","已复位（V=0）");
+      }catch(e){setText("autonomyTestState","失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e)));}
+    });}
+    const check=$("autonomyCheckBtn");
+    if(check&&!check.dataset.bound){
+      check.dataset.bound="1";
+      check.addEventListener("click",async()=>{
+        if(!bridge){ setText("autonomyCheckState","桥接未连接"); return; }
+        setText("autonomyCheckState","评估中…");
+        try{
+          const raw=await bridge.apiPost("page/autonomy_check",{});
+          const payload=raw&&raw.data?raw.data:raw;
+          if(!payload||payload.ok===false) throw new Error((payload&&payload.message)||"评估失败");
+          const gate=payload.gate||{}; const ready=payload.readiness||{};
+          const zh={ready:"可发送",not_ready:"未达阈值",cooldown:"冷却中",daily_cap:"今日已达上限",quiet_hours:"静默时段",no_session:"无可用会话",not_private:"非私聊会话"};
+          renderCheck(payload);
+          setText("autonomyCheckState","ready "+(ready.ready===true?"是":"否")+" · impulse "+(ready.impulse==null?"—":ready.impulse)+" · threshold "+(ready.threshold==null?"—":ready.threshold)+" · "+(zh[gate.reason]||gate.reason||"—"));
+        }catch(e){ setText("autonomyCheckState","评估失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e))); }
+      });
+    }
+    const btn=$("autonomySaveBtn");
+    if(btn&&!btn.dataset.bound){
+      btn.dataset.bound="1";
+      btn.addEventListener("click",async()=>{
+        if(!bridge){ setText("autonomySaveState","桥接未连接（静态预览）"); return; }
+        const body={ enabled:($("autonomyEnabled")||{}).checked===true, send:($("autonomySend")||{}).checked===true, clingy:($("autonomyClingy")||{}).checked===true, attachment_style:($("autonomyAttachment")||{}).value||"secure", tick_engine:($("autonomyTickEngine")||{}).value||"legacy", rejection_sensitivity:Number(($("autonomyRS")||{}).value||0.4),
+          threshold:Number(($("autonomyThresholdInput")||{}).value), max_chars:Number(($("autonomyMaxCharsInput")||{}).value), daily_cap:Number(($("autonomyDailyCap")||{}).value||5) };
+        setText("autonomySaveState","保存中…");
+        try{
+          const raw=await bridge.apiPost("page/autonomy", body);
+          const payload=raw&&raw.data?raw.data:raw;
+          if(!payload||payload.ok===false||payload.status==="error") throw new Error((payload&&payload.message)||"保存失败");
+          setText("autonomySaveState","已保存");
+        }catch(e){
+          setText("autonomySaveState","保存失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e)));
+        }
+      });
+    }
+  }
+  try{
+    const _schema="biocore_ui_schema";
+    if(Number(window.localStorage.getItem(_schema)||0)<2){
+      const _map={swShowNodes:"feat_visual_nodes",swShowMemoryNodes:"feat_visual_nodes",swShowLinks:"feat_visual_links",swShowNodeLinks:"feat_visual_links",swShowEmotionRings:"feat_visual_rings",fn_empathy_hint_enabled:"feat_expression_rules",fn_pragmatics_hint_enabled:"feat_expression_rules",fn_tom_probe_enabled:"feat_expression_rules",fn_humor_hint_enabled:"feat_expression_rules",swCompress:"feat_memory_compress",swHybridRetrieval:"feat_memory_retrieval",swSafetyEnabled:"feat_safety"};
+      for(const oldKey in _map){ if(window.localStorage.getItem("bio_feat_"+oldKey)==="1" && window.localStorage.getItem("bio_feat_"+_map[oldKey])!=="1"){ window.localStorage.setItem("bio_feat_"+_map[oldKey],"1"); } }
+      window.localStorage.setItem(_schema,"2");
+    }
+  }catch(e){}
+  function renderReplyLimit(){
+    const d=(data&&typeof data==="object")?data:{};
+    const info=(d.reply_limit&&typeof d.reply_limit==="object")?d.reply_limit:{};
+    const tokens=Number(info.max_tokens||0);
+    setText("replyLimitText","当前 max_tokens = "+(tokens||"—")+"（≈中文 250–300 字）"+(info.provider_name?(" · "+info.provider_name):""));
+    const input=$("replyLimitInput");
+    if(input&&document.activeElement!==input) input.value=tokens||200;
+    const btn=$("replyLimitSaveBtn");
+    if(btn&&!btn.dataset.bound){
+      btn.dataset.bound="1";
+      btn.addEventListener("click",async()=>{
+        if(!bridge){ setText("replyLimitState","桥接未连接"); return; }
+        const value=Number((input||{}).value);
+        setText("replyLimitState","保存中…");
+        try{
+          const raw=await bridge.apiPost("page/reply_limit",{max_tokens:value});
+          const payload=raw&&raw.data?raw.data:raw;
+          if(!payload||payload.ok===false) throw new Error((payload&&payload.message)||"保存失败");
+          setText("replyLimitState",payload.restart_required?"需重启 AstrBot 生效":"已同步到 AstrBot");
+        }catch(e){ setText("replyLimitState","保存失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e))); }
+      });
+    }
+  }
+  function renderReplySplit(){
+    const d=(data&&typeof data==="object")?data:{};
+    const info=(d.reply_split&&typeof d.reply_split==="object")?d.reply_split:{};
+    setChecked("replySplitEnabled", info.enabled===true);
+    if($("replySplitMode")&&document.activeElement!==$("replySplitMode")) setVal("replySplitMode", info.mode||"astrbot");
+    const eff=info.effective||{};
+    setText("replySplitEffective","AstrBot 当前："+(eff.enable?"启用":"关闭")+" / 阈值 "+(eff.threshold==null?"—":eff.threshold)+" / "+String(eff.mode||"—"));
+    if($("replySplitMaxChars")&&document.activeElement!==$("replySplitMaxChars")) setVal("replySplitMaxChars", info.max_chars||400);
+    const btn=$("replySplitSaveBtn");
+    if(btn&&!btn.dataset.bound){
+      btn.dataset.bound="1";
+      btn.addEventListener("click",async()=>{
+        if(!bridge){ setText("replySplitState","桥接未连接"); return; }
+        const body={enabled:($("replySplitEnabled")||{}).checked===true, mode:($("replySplitMode")||{}).value||"punct", max_chars:Number(($("replySplitMaxChars")||{}).value)};
+        setText("replySplitState","保存中…");
+        try{
+          const raw=await bridge.apiPost("page/reply_split",body);
+          const payload=raw&&raw.data?raw.data:raw;
+          if(!payload||payload.ok===false) throw new Error((payload&&payload.message)||"保存失败");
+          setText("replySplitState","已保存（由 BioCore 控制）");
+        }catch(e){ setText("replySplitState","保存失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e))); }
+      });
+    }
+  }
+  function renderReplySoft(){
+    const d=(data&&typeof data==="object")?data:{};
+    const info=(d.reply_soft&&typeof d.reply_soft==="object")?d.reply_soft:{};
+    setChecked("replySoftEnabled", info.enabled!==false);
+    if($("replySoftTargetChars")&&document.activeElement!==$("replySoftTargetChars")) setVal("replySoftTargetChars", info.target_chars||10);
+    if($("replySoftMaxChars")&&document.activeElement!==$("replySoftMaxChars")) setVal("replySoftMaxChars", info.max_chars||30);
+    const btn=$("replySoftSaveBtn");
+    if(btn&&!btn.dataset.bound){
+      btn.dataset.bound="1";
+      btn.addEventListener("click",async()=>{
+        if(!bridge){ setText("replySoftState","桥接未连接"); return; }
+        setText("replySoftState","保存中…");
+        try{
+          const raw=await bridge.apiPost("page/reply_soft",{enabled:($("replySoftEnabled")||{}).checked===true,target_chars:Number(($("replySoftTargetChars")||{}).value),max_chars:Number(($("replySoftMaxChars")||{}).value)});
+          const payload=raw&&raw.data?raw.data:raw;
+          if(!payload||payload.ok===false) throw new Error((payload&&payload.message)||"保存失败");
+          setText("replySoftState","已保存（写入提示词）");
+        }catch(e){ setText("replySoftState","保存失败："+(typeof describeBridgeError==="function"?describeBridgeError(e):String(e&&e.message||e))); }
+      });
+    }
+  }
   async function load(){
     clearTimeout(timer);
     try { bridge = window.AstrBotPluginView || window.AstrBotPluginPage || window.astrbotPluginView || null; if (!bridge && window.parent && window.parent !== window) bridge = window.parent.AstrBotPluginView || window.parent.AstrBotPluginPage || null; } catch (e) { bridge = null; }
@@ -361,12 +916,12 @@
           new Promise((_,reject)=>setTimeout(()=>reject(new Error("页面桥 8 秒无响应，可能不是在 AstrBot 插件视图 iframe 内打开")),8000))
         ]);
         data=raw&&raw.data?raw.data:raw;
-        $("linkState").textContent="已连接"; $("topStatus").textContent="已连接";
+        setText("linkState", "已连接"); setText("topStatus", "已连接");
         $("statusDot").style.background="var(--green)";
       }else{
         if(!themeInitialized) chooseTheme(false);
         data=demo;
-        $("linkState").textContent="预览"; $("topStatus").textContent="预览";
+        setText("linkState", "预览"); setText("topStatus", "预览");
         $("statusDot").style.background="var(--amber)";
       }
       if(!data||!data.profile) throw new Error("empty status");
@@ -385,13 +940,13 @@
       } else if (/empty status/.test(_raw)) {
         _friendly = "已连上 AstrBot，但 page/status 返回为空；请确认 BioCore 插件已启用。";
       }
-      $("linkState").textContent="离线"; $("topStatus").textContent="离线";
+      setText("linkState", "离线"); setText("topStatus", "离线");
       $("statusDot").style.background="var(--red)";
-      $("heroTitle").textContent="连接不上 BioCore";
-      $("heroSub").textContent = _friendly + (_friendly === _raw ? "" : "（原始：" + _raw.slice(0, 120) + "）");
+      setText("heroTitle", "连接不上 BioCore");
+      setText("heroSub", _friendly + (_friendly === _raw ? "" : "（原始：" + _raw.slice(0, 120) + "）"));
       checkOrbAlive();
     }
-    $("footTime").textContent=new Date().toLocaleTimeString();
+    setText("footTime", new Date().toLocaleTimeString());
     timer=setTimeout(load,5000);
   }
 
@@ -1360,7 +1915,7 @@
   function renderSelfPanels(s) {
     const sm = data.self_model || {};
     const hist = Array.isArray(sm._history) ? sm._history.slice(-3) : [];
-    if ($("selfVersion")) $("selfVersion").textContent = "v" + Number(sm.version || 0) + " · 最近 " + hist.length + " 次更新";
+    if ($("selfVersion")) setText("selfVersion", "v" + Number(sm.version || 0) + " · 最近 " + hist.length + " 次更新");
     if ($("selfHistory")) {
       const rows = hist.slice().reverse();
       $("selfHistory").innerHTML = rows.length ? rows.map(h => {
@@ -1369,15 +1924,15 @@
           esc(h.who_am_i || "—") + '</b>' + (h.narrative ? '<small>' + esc(h.narrative) + '</small>' : '') + '</div></div>';
       }).join("") : '<div class="empty-mini">还没有自我模型历史。</div>';
     }
-    if ($("coreSelf")) $("coreSelf").textContent = s.core_self || "未形成";
-    if ($("narrativeSelf")) $("narrativeSelf").textContent = s.narrative_self || "未形成";
+    if ($("coreSelf")) setText("coreSelf", s.core_self || "未形成");
+    if ($("narrativeSelf")) setText("narrativeSelf", s.narrative_self || "未形成");
     const tl = s.self_timeline || {};
     if ($("tlPast")) $("tlPast").innerHTML = (Array.isArray(tl.past) ? tl.past.slice(-5).reverse() : []).map(x => '<li>' + esc(x) + '</li>').join("") || '<li class="muted">—</li>';
-    if ($("tlPresent")) $("tlPresent").textContent = tl.present || "—";
+    if ($("tlPresent")) setText("tlPresent", tl.present || "—");
     if ($("tlFuture")) $("tlFuture").innerHTML = (Array.isArray(tl.future) ? tl.future.slice(0, 5) : []).map(x => '<li>' + esc(x) + '</li>').join("") || '<li class="muted">—</li>';
     const tree = s.reflection_tree || { roots: [], count: 0 };
     const _hidden = _treeHiddenCount(tree);
-    if ($("treeCount")) $("treeCount").textContent = "COUNT " + Number(tree.count || 0) + " · ROOTS " + ((Array.isArray(tree.roots) ? tree.roots : []).length) + (_hidden ? (" · 隐藏 " + _hidden) : "");
+    if ($("treeCount")) setText("treeCount", "COUNT " + Number(tree.count || 0) + " · ROOTS " + ((Array.isArray(tree.roots) ? tree.roots : []).length) + (_hidden ? (" · 隐藏 " + _hidden) : ""));
     if ($("reflectionTree")) $("reflectionTree").innerHTML = renderTree(tree);
     const probs = Array.isArray(s.spectrum_probs) ? s.spectrum_probs.slice(0, 3) : [];
     if ($("spectrumProbs")) $("spectrumProbs").innerHTML = probs.length ? probs.map(x => {
@@ -1483,8 +2038,17 @@
     const enabled=!!(data&&data.safety_enabled);
     warn.hidden=enabled;
     if(!enabled){
-      warn.textContent="公开部署建议开启：敏感记忆/图片/危机边界依赖此开关；私人使用可关。";
+      warn.textContent="该开关控制敏感信息掩码与投毒过滤；危机分级/日志由核心 GA-03 模块提供（默认只记录不拦截）。";
     }
+  }
+  // [/CORE-STATUS-MAP]
+  function describeBridgeError(error){
+    const err=(error&&typeof error==="object")?error:{};
+    const status=err.status||err.statusCode||err.httpStatus||(err.response&&err.response.status)||"";
+    const code=err.code||(err.payload&&err.payload.code)||"";
+    const message=err.message||(err.payload&&err.payload.message)||(typeof error==="string"?error:"")||"未知错误";
+    const head=status?("HTTP "+status+(code?" "+String(code):"")):(code?String(code):"");
+    return head?(head+"："+message):String(message);
   }
   function renderEnvChecks(){
     try{
@@ -1549,7 +2113,7 @@
     if(tb){const d=tb.today||{};const est=(d.estimated||Number(d.estimated_calls||0)>0)?" · 估算":"";set("mtCost","in "+Number(d.input_tokens||0)+" / out "+Number(d.output_tokens||0)+" · ¥"+Number(d.cost||0).toFixed(4)+est);}
   }
   function renderRecallMeta(core){
-    try { renderInlineNotices(); renderSafetyWarn(); renderEnvChecks(); } catch (e) {}
+    // 初始化步骤不在这里：已移到 _boot（load 前 setup*，首次 load 后 safeRender）。
     const meta=(data&&data.last_memory_meta&&typeof data.last_memory_meta==="object")?data.last_memory_meta:null;
     const trace=(data&&data.last_memory_trace&&typeof data.last_memory_trace==="object")?data.last_memory_trace:null;
     const ws=(core&&core.working_set&&typeof core.working_set==="object")?core.working_set:null;
@@ -1605,21 +2169,29 @@
   function renderAutonomyPanel(s,coreKey){
     const set=(id,value)=>{const el=$(id); if(el) el.textContent=value;};
     const note=$("autonomyNote"), sourcesEl=$("autonomySources");
-    const auto=(s&&s.proactive_autonomy&&typeof s.proactive_autonomy==="object")?s.proactive_autonomy:null;
+    const _statusAuto=(data&&data.autonomy&&typeof data.autonomy==="object")?data.autonomy:null;
+    const _statusState=(_statusAuto&&_statusAuto.state&&typeof _statusAuto.state==="object")?_statusAuto.state:{};
+    const auto=(s&&s.proactive_autonomy&&typeof s.proactive_autonomy==="object"&&Object.keys(s.proactive_autonomy).length)
+      ? s.proactive_autonomy
+      : (_statusAuto ? {enabled:_statusAuto.enabled, send:_statusAuto.send,
+          threshold:_statusAuto.threshold, max_chars:_statusAuto.max_chars,
+          ready:_statusState.ready, impulse:_statusState.impulse,
+          impulse_ema:_statusState.impulse_ema, sent:_statusState.sent,
+          sources:_statusState.sources} : null);
     const type=parseSessionKey(coreKey||"").type;
     const isGroup=(type==="GroupMessage"||type==="GuildMessage");
     if(isGroup){
       set("autoEnabled","仅私聊");
       ["autoReady","autoThreshold","autoMaxChars","autoImpulse","autoSent"].forEach(id=>set(id,"—"));
       if(sourcesEl) sourcesEl.innerHTML='<span class="chip">当前会话：群聊</span><span class="chip">只在私聊生效</span>';
-      if(note) note.textContent="群聊不显示可触发状态：自主行为只走私聊路径。开关在 AstrBot 插件配置（proactive_autonomy / proactive_send）。";
+      if(note) note.textContent="群聊不显示可触发状态：自主行为只走私聊路径。在左侧「自主行为」页设置（proactive_autonomy / proactive_send）。";
       return;
     }
     if(!auto||!auto.enabled){
       set("autoEnabled","已关闭");
       ["autoReady","autoThreshold","autoMaxChars","autoImpulse","autoSent"].forEach(id=>set(id,"—"));
       if(sourcesEl) sourcesEl.innerHTML='<span class="chip">未启用</span><span class="chip">默认关</span>';
-      if(note) note.textContent="已关闭（默认关）：不计算 readiness；仅在私聊路径、proactive_autonomy 开启后写入 threshold / max_chars / impulse。开关在 AstrBot 插件配置。";
+      if(note) note.textContent="已关闭（默认关）：不计算 readiness；仅在私聊路径、proactive_autonomy 开启后写入 threshold / max_chars / impulse。在 表达意图 → 自主行为 页设置。";
       return;
     }
     const src=(auto.sources&&typeof auto.sources==="object")?auto.sources:{};
@@ -1738,6 +2310,7 @@
       _ballPool=_ballPool.concat(_extra);
     }
     window.__biocoreState={intent:it,snapshot:s,visual:Object.assign({},visual),events:data.events||[],memories:_ballPool};
+    window.__biocoreData=data;
     updateOrbLegend();
     renderSessionMemory();
     renderMemoryMeta();
@@ -1751,66 +2324,66 @@
     renderAutonomyPanel(s, core.key);
     renderLearningPanel(s);
     renderChainLinks();
-    $("pluginBadge").textContent=data.enabled?"BioCore · ON":"BioCore · OFF";
-    $("heroTitle").textContent=L(it.emotion)+" · "+L(it.intent);
-    $("heroSub").textContent=it.need==="be_heard"?"现在更像是想被听见，不急着解决问题。":it.need==="space"?"现在更像是需要一点空间，不想被追问。":it.need==="share"?"现在更像是想分享，语气可以轻一点。":it.need==="vent"?"现在更像是想吐槽，先接住，不用讲道理。":"现在像是普通聊天，接不接都可以。";
+    setText("pluginBadge", data.enabled?"BioCore · ON":"BioCore · OFF");
+    setText("heroTitle", L(it.emotion)+" · "+L(it.intent));
+    setText("heroSub", it.need==="be_heard"?"现在更像是想被听见，不急着解决问题。":it.need==="space"?"现在更像是需要一点空间，不想被追问。":it.need==="share"?"现在更像是想分享，语气可以轻一点。":it.need==="vent"?"现在更像是想吐槽，先接住，不用讲道理。":"现在像是普通聊天，接不接都可以。");
     $("tagRow").innerHTML=[["emotion",it.emotion],["compound",it.compound],["spectrum",it.spectrum&&it.spectrum[0]?it.spectrum[0].name:""],["intent",it.intent],["tone",it.tone],["distance",it.distance],["expression",it.expression]].filter(x=>x[1]).map(x=>'<span class="chip">'+esc(x[0])+" · "+esc(x[1])+"</span>").join("");
-    $("orbValence").textContent=fmt(s.v,2);
-    $("teleSys").textContent = data.enabled ? "NOMINAL" : "OFFLINE";
-    $("teleMode").textContent = L(it.intent) || "HOLD";
-    $("teleLayers").textContent = "FIELD / AFFECT / CORE";
-    $("teleSync").textContent = fmt(s.echo_trace,2);
-    $("teleTicks").textContent = String(s.ticks==null?"--":s.ticks);
+    setText("orbValence", fmt(s.v,2));
+    setText("teleSys", data.enabled ? "NOMINAL" : "OFFLINE");
+    setText("teleMode", L(it.intent) || "HOLD");
+    setText("teleLayers", "FIELD / AFFECT / CORE");
+    setText("teleSync", fmt(s.echo_trace,2));
+    setText("teleTicks", String(s.ticks==null?"--":s.ticks));
     const _n=s.noise||{}, _rp=s.ripple||{}, _sp=s.spiking||{};
-    $("orbNoise").textContent=fmt((Number(_n.stress||0)+Number(_n.energy||0))/2,3);
-    $("orbEcho").textContent=fmt(s.echo,3);
-    $("orbRipple").textContent=Number(_rp.overlap||0).toFixed(2);
-    $("orbSpike").textContent=Number(_sp.rate||0).toFixed(3);
+    setText("orbNoise", fmt((Number(_n.stress||0)+Number(_n.energy||0))/2,3));
+    setText("orbEcho", fmt(s.echo,3));
+    setText("orbRipple", Number(_rp.overlap||0).toFixed(2));
+    setText("orbSpike", Number(_sp.rate||0).toFixed(3));
     setMetric("mStress","bStress",s.stress); setMetric("mEnergy","bEnergy",s.energy); setMetric("mTrust","bTrust",s.trust); setMetric("mArousal","bArousal",s.a);
-    const _dom=Number(s.d==null?0.5:s.d); $("mDominance").textContent=_dom.toFixed(2); $("bDominance").style.width=pct((_dom+1)/2);
+    const _dom=Number(s.d==null?0.5:s.d); setText("mDominance", _dom.toFixed(2)); $("bDominance").style.width=pct((_dom+1)/2);
     setMetric("mSocial","bSocial",s.social==null?0.5:s.social);
     const noise=s.noise||{};
     $("noiseList").innerHTML=["stress","energy","social","attention","valence"].map(k=>{
       const v=Number(noise[k]||0); const w=pct((v+0.3)/0.6);
       return '<div class="noise-row"><span>'+k+'</span><div class="noise-track"><i style="width:'+w+'"></i></div><b>'+fmt(v,3)+'</b></div>';
     }).join("");
-    $("sEcho").textContent=fmt(s.echo,3); $("sEchoTrace").textContent=fmt(s.echo_trace,3);
-    $("sUpper").textContent=Number((s.ripple||{}).upper||0).toFixed(2);
-    $("sLower").textContent=Number((s.ripple||{}).lower||0).toFixed(2);
-    $("sOverlap").textContent=Number((s.ripple||{}).overlap||0).toFixed(2);
-    $("sRate").textContent=Number((s.spiking||{}).rate||0).toFixed(3);
+    setText("sEcho", fmt(s.echo,3)); setText("sEchoTrace", fmt(s.echo_trace,3));
+    setText("sUpper", Number((s.ripple||{}).upper||0).toFixed(2));
+    setText("sLower", Number((s.ripple||{}).lower||0).toFixed(2));
+    setText("sOverlap", Number((s.ripple||{}).overlap||0).toFixed(2));
+    setText("sRate", Number((s.spiking||{}).rate||0).toFixed(3));
     const _ap=s.appraisal||{};
     const _spec=(it.spectrum&&it.spectrum[0])?it.spectrum[0].name:"";
     const _exprKey=String(it.expression||"normal").toLowerCase();
     const _exprPct={none:5,closed:15,restrained:30,normal:55,open:80,high:92}[_exprKey]||55;
-    $("intentLabel").textContent=L(it.intent)||"hold";
-    $("intentText").textContent="还有"+(Number(s.energy)>.6?"力气":"点累")+"；压力"+(Number(s.stress)>.55?"偏高":"不高")+"。现在更想"+L(it.need)+"；计划是"+(it.plan||"自然回应")+"。";
+    setText("intentLabel", L(it.intent)||"hold");
+    setText("intentText", "还有"+(Number(s.energy)>.6?"力气":"点累")+"；压力"+(Number(s.stress)>.55?"偏高":"不高")+"。现在更想"+L(it.need)+"；计划是"+(it.plan||"自然回应")+"。");
     if($("intentTags"))$("intentTags").innerHTML=[L(it.emotion),L(it.intent),L(it.need),it.compound,_spec].filter(Boolean).map(x=>'<span class="intent-tag">'+esc(x)+'</span>').join("");
-    if($("intentStrengthText"))$("intentStrengthText").textContent=L(it.expression)||"--";
+    if($("intentStrengthText"))setText("intentStrengthText", L(it.expression)||"--");
     if($("intentStrengthBar"))$("intentStrengthBar").style.width=_exprPct+"%";
-    if($("intentUrgencyText"))$("intentUrgencyText").textContent="紧迫度 "+Number(_ap.urgency||0).toFixed(2);
-    if($("iFlowEmotion"))$("iFlowEmotion").textContent=L(it.emotion)||"--";
-    if($("iFlowNeed"))$("iFlowNeed").textContent=L(it.need)||"--";
-    if($("iFlowExpr"))$("iFlowExpr").textContent=L(it.expression)||"--";
-    if($("iFlowPlan"))$("iFlowPlan").textContent=it.plan||"--";
-    $("iEmotion").textContent=L(it.emotion); $("iNeed").textContent=L(it.need); $("iExpr").textContent=L(it.expression);
-    if($("iCompound"))$("iCompound").textContent=it.compound||"-";
-    if($("iSpectrum"))$("iSpectrum").textContent=_spec||"-";
-    if($("iPlan"))$("iPlan").textContent=it.plan||"-";
-    if($("iNovelty"))$("iNovelty").textContent=Number(_ap.novelty||0).toFixed(2);
-    if($("iGoal"))$("iGoal").textContent=Number(_ap.goal_relevance||0).toFixed(2);
-    if($("iCoping"))$("iCoping").textContent=Number(_ap.coping==null?.5:_ap.coping).toFixed(2);
-    if($("iReg"))$("iReg").textContent=_regLabel(it.regulation);
-    if($("iSelf"))$("iSelf").textContent=(data.self_model&&data.self_model.who_am_i)?data.self_model.who_am_i:"未建立";
-    if($("iNorm"))$("iNorm").textContent=Number(_ap.norm_compatibility||0.5).toFixed(2);
-    if($("iExpected"))$("iExpected").textContent=Number(_ap.expectedness==null?1:_ap.expectedness).toFixed(2);
-    if($("iUrgency"))$("iUrgency").textContent=Number(_ap.urgency||0).toFixed(2);
-    if($("iOpponent")){const op=s.opponent||{}; $("iOpponent").textContent=Number(op.v||0).toFixed(2)+" / "+Number(op.a||0).toFixed(2);}
-    if($("iAttention"))$("iAttention").textContent=Number(s.attention==null?.5:s.attention).toFixed(2);
-    if($("iMeta"))$("iMeta").textContent=s.meta_emotion||"-";
+    if($("intentUrgencyText"))setText("intentUrgencyText", "紧迫度 "+Number(_ap.urgency||0).toFixed(2));
+    if($("iFlowEmotion"))setText("iFlowEmotion", L(it.emotion)||"--");
+    if($("iFlowNeed"))setText("iFlowNeed", L(it.need)||"--");
+    if($("iFlowExpr"))setText("iFlowExpr", L(it.expression)||"--");
+    if($("iFlowPlan"))setText("iFlowPlan", it.plan||"--");
+    setText("iEmotion", L(it.emotion)); setText("iNeed", L(it.need)); setText("iExpr", L(it.expression));
+    if($("iCompound"))setText("iCompound", it.compound||"-");
+    if($("iSpectrum"))setText("iSpectrum", _spec||"-");
+    if($("iPlan"))setText("iPlan", it.plan||"-");
+    if($("iNovelty"))setText("iNovelty", Number(_ap.novelty||0).toFixed(2));
+    if($("iGoal"))setText("iGoal", Number(_ap.goal_relevance||0).toFixed(2));
+    if($("iCoping"))setText("iCoping", Number(_ap.coping==null?.5:_ap.coping).toFixed(2));
+    if($("iReg"))setText("iReg", _regLabel(it.regulation));
+    if($("iSelf"))setText("iSelf", (data.self_model&&data.self_model.who_am_i)?data.self_model.who_am_i:"未建立");
+    if($("iNorm"))setText("iNorm", Number(_ap.norm_compatibility||0.5).toFixed(2));
+    if($("iExpected"))setText("iExpected", Number(_ap.expectedness==null?1:_ap.expectedness).toFixed(2));
+    if($("iUrgency"))setText("iUrgency", Number(_ap.urgency||0).toFixed(2));
+    if($("iOpponent")){const op=s.opponent||{}; setText("iOpponent", Number(op.v||0).toFixed(2)+" / "+Number(op.a||0).toFixed(2));}
+    if($("iAttention"))setText("iAttention", Number(s.attention==null?.5:s.attention).toFixed(2));
+    if($("iMeta"))setText("iMeta", s.meta_emotion||"-");
     $("personaBars").innerHTML=["O","C","E","A","N"].map(k=>'<div class="p-row"><span>'+k+'</span><div class="p-track"><i style="width:'+pct(p[k])+'"></i></div><b>'+Number(p[k]||0).toFixed(2)+"</b></div>").join("");
-    $("personaNote").textContent="stress "+Number(p.stress_reactivity||0).toFixed(2)+" · recovery "+Number(p.recovery_rate||0).toFixed(2)+" · social "+Number(p.social_baseline||0).toFixed(2);
-    if($("selfWho")){const sm=data.self_model||{}; $("selfWho").value=sm.who_am_i||""; $("selfNarrative").value=sm.narrative||""; $("selfBoundaries").value=(sm.boundaries||[]).join("\n"); $("selfConsistency").value=(sm.consistency||[]).join("\n");}
+    setText("personaNote", "stress "+Number(p.stress_reactivity||0).toFixed(2)+" · recovery "+Number(p.recovery_rate||0).toFixed(2)+" · social "+Number(p.social_baseline||0).toFixed(2));
+    if($("selfWho")){const sm=data.self_model||{}; setVal("selfWho", sm.who_am_i||""); setVal("selfNarrative", sm.narrative||""); setVal("selfBoundaries", (sm.boundaries||[]).join("\n")); setVal("selfConsistency", (sm.consistency||[]).join("\n"));}
     if($("goalList")){const gs=s.goals||[]; const cf=s.goal_conflict||[]; $("goalList").innerHTML=(gs.length?gs.map(g=>'<div><small>'+esc(g.name||"")+'</small><b>'+Number(g.progress||0).toFixed(2)+'</b></div>').join(""):'<div><small>goals</small><b>-</b></div>')+(cf.length?'<div><small>conflict</small><b>'+esc(cf.join(" / "))+'</b></div>':'');}
     if($("autoBioList")){
       const ab=s.autobiography||[];
@@ -1906,37 +2479,68 @@
   function switchView(name){
     document.querySelectorAll(".nav-item").forEach(x=>x.classList.toggle("active",x.dataset.view===name));
     document.querySelectorAll(".view").forEach(v=>v.classList.toggle("active",v.id==="view-"+name));
-    const names={overview:"情绪概览",intent:"表达意图",persona:"人格自我",sessions:"活动会话",settings:"设置"};
-    $("crumbView").textContent=names[name]||name;
+    const names={overview:"情绪概览",now:"她现在",relationship:"关系",records:"记录",intent:"表达意图",persona:"人格自我",sessions:"活动会话",pipeline:"流水线",autonomy:"自主行为",settings:"设置"};
+    setText("crumbView", names[name]||name);
   }
-  document.querySelectorAll(".nav-item").forEach(a=>a.addEventListener("click",()=>switchView(a.dataset.view)));
-  function visualSave(){storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);storeSet("bio_memory_ball_gravity",visual.memoryBallGravity?"1":"0");storeSet("bio_show_orb_legend",visual.orbLegend?"1":"0");storeSet("bio_show_autonomy_panel",visual.showAutonomyPanel?"1":"0");storeSet("bio_show_learning_panel",visual.showLearningPanel?"1":"0");storeSet("bio_show_chain_list",visual.showChainList?"1":"0");if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
-  $("swShowNoise").checked=visual.noise; $("swShowEcho").checked=visual.echo; $("swShowRipple").checked=visual.ripple;
-  if($("swShowDominance"))$("swShowDominance").checked=visual.dominance;
-  if($("swShowSocial"))$("swShowSocial").checked=visual.social;
-  if($("swShowLinks"))$("swShowLinks").checked=visual.links;
-  if($("swShowNodes"))$("swShowNodes").checked=visual.nodes;
-  if($("swShowNodeLinks"))$("swShowNodeLinks").checked=visual.nodeLinks;
-  if($("swShowMemoryNodes"))$("swShowMemoryNodes").checked=visual.memoryNodes;
-  if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").checked=visual.memoryBallsImportant;
-  if($("swOrbLegend"))$("swOrbLegend").checked=visual.orbLegend;
-  if($("swShowAutonomyPanel"))$("swShowAutonomyPanel").checked=visual.showAutonomyPanel;
-  if($("swShowLearningPanel"))$("swShowLearningPanel").checked=visual.showLearningPanel;
-  if($("swShowChainList"))$("swShowChainList").checked=visual.showChainList;
-  if($("swShowEmotionRings"))$("swShowEmotionRings").checked=visual.emotionRings;
-  $("orbIntensity").value=visual.intensity;
-  if($("selMemoryRingStyle"))$("selMemoryRingStyle").value=visual.memoryRingStyle;
-  if($("selMemoryBallColorMode"))$("selMemoryBallColorMode").value=visual.memoryBallColorMode;
-  if($("swMemoryBallGravity"))$("swMemoryBallGravity").checked=visual.memoryBallGravity;
+
+  // Debug deep-link: ?view=settings&tab=settingsVisual&mode=advanced
+  try{
+    const _qp=new URLSearchParams(location.search);
+    const _v=_qp.get("view"); const _t=_qp.get("tab"); const _m=_qp.get("mode");
+    if(_m){ try{ setSettingsView? setSettingsView(_m):null; }catch(e){} }
+    if(_t && _v!=="settings"){
+      setTimeout(()=>{
+        try{
+          const btn=document.querySelector('[data-intent-tab="'+_t+'"]');
+          if(btn&&btn.click) btn.click();
+        }catch(e){}
+      },400);
+    }
+    if(_v==="settings"&&_t){
+      setTimeout(()=>{
+        try{
+          const btn=document.querySelector('#settingsTabs [data-settings-target="'+_t+'"]');
+          if(btn&&btn.click) btn.click();
+        }catch(e){}
+      },300);
+    }
+    if(_v){ setTimeout(()=>{try{switchView(_v);}catch(e){}},350); }
+  }catch(e){}
+  function visualSave(){storeSet("bio_show_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_node_links",visual.links?"1":"0");storeSet("bio_show_ripple",visual.echo?"1":"0");storeSet("bio_show_noise",visual.noise?"1":"0");storeSet("bio_show_echo",visual.echo?"1":"0");storeSet("bio_show_ripple",visual.ripple?"1":"0");storeSet("bio_show_dominance",visual.dominance?"1":"0");storeSet("bio_show_social",visual.social?"1":"0");storeSet("bio_show_links",visual.links?"1":"0");storeSet("bio_show_nodes",visual.nodes?"1":"0");storeSet("bio_show_node_links",visual.nodeLinks?"1":"0");storeSet("bio_show_memory_nodes",visual.memoryNodes?"1":"0");storeSet("bio_show_memory_balls_important",visual.memoryBallsImportant?"1":"0");storeSet("bio_show_emotion_rings",visual.emotionRings?"1":"0");storeSet("bio_intensity",visual.intensity);storeSet("bio_memory_ring_style",visual.memoryRingStyle);storeSet("bio_memory_ball_color_mode",visual.memoryBallColorMode);storeSet("bio_memory_ball_gravity",visual.memoryBallGravity?"1":"0");storeSet("bio_show_orb_legend",visual.orbLegend?"1":"0");storeSet("bio_show_autonomy_panel",visual.showAutonomyPanel?"1":"0");storeSet("bio_show_learning_panel",visual.showLearningPanel?"1":"0");storeSet("bio_show_chain_list",visual.showChainList?"1":"0");if(window.__biocoreState)window.__biocoreState.visual=Object.assign({},visual);}
+  setChecked("swShowNoise", visual.noise); setChecked("swShowEcho", visual.echo);
+  if($("swShowDominance"))setChecked("swShowDominance", visual.dominance);
+  if($("swShowSocial"))setChecked("swShowSocial", visual.social);
+  if($("swShowLinks"))setChecked("swShowLinks", visual.links);
+  if($("swShowMemoryNodes"))setChecked("swShowMemoryNodes", visual.memoryNodes);
+  if($("swMemoryBallsImportant"))setChecked("swMemoryBallsImportant", visual.memoryBallsImportant);
+  if($("swOrbLegend"))setChecked("swOrbLegend", visual.orbLegend);
+  if($("swShowAutonomyPanel"))setChecked("swShowAutonomyPanel", visual.showAutonomyPanel);
+  if($("swShowLearningPanel"))setChecked("swShowLearningPanel", visual.showLearningPanel);
+  if($("swShowChainList"))setChecked("swShowChainList", visual.showChainList);
+  if($("swShowEmotionRings"))setChecked("swShowEmotionRings", visual.emotionRings);
+  setVal("orbIntensity", visual.intensity);
+  if($("selMemoryRingStyle"))setVal("selMemoryRingStyle", visual.memoryRingStyle);
+  if($("selMemoryBallColorMode"))setVal("selMemoryBallColorMode", visual.memoryBallColorMode);
+  if($("swMemoryBallGravity"))setChecked("swMemoryBallGravity", visual.memoryBallGravity);
   $("swShowNoise").addEventListener("change",e=>{visual.noise=e.target.checked;visualSave();});
-  $("swShowEcho").addEventListener("change",e=>{visual.echo=e.target.checked;visualSave();});
-  $("swShowRipple").addEventListener("change",e=>{visual.ripple=e.target.checked;visualSave();});
+  $("swShowEcho").addEventListener("change",e=>{visual.echo=e.target.checked;visual.ripple=e.target.checked;visualSave();});
   if($("swShowDominance"))$("swShowDominance").addEventListener("change",e=>{visual.dominance=e.target.checked;visualSave();});
   if($("swShowSocial"))$("swShowSocial").addEventListener("change",e=>{visual.social=e.target.checked;visualSave();});
-  if($("swShowLinks"))$("swShowLinks").addEventListener("change",e=>{visual.links=e.target.checked;visualSave();});
-  if($("swShowNodes"))$("swShowNodes").addEventListener("change",e=>{visual.nodes=e.target.checked;visualSave();});
-  if($("swShowNodeLinks"))$("swShowNodeLinks").addEventListener("change",e=>{visual.nodeLinks=e.target.checked;visualSave();});
-  if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visualSave();updateOrbLegend();});
+  if($("swShowLinks"))$("swShowLinks").addEventListener("change",e=>{visual.links=e.target.checked;visual.nodeLinks=e.target.checked;visualSave();});
+  if($("swShowMemoryNodes"))$("swShowMemoryNodes").addEventListener("change",e=>{visual.memoryNodes=e.target.checked;visual.nodes=e.target.checked;visualSave();updateOrbLegend();});
+  const applyAdvancedOpen=(on)=>{
+  const box=$("visualAdvancedBody"); if(!box) return;
+  box.hidden=!on;
+  [...box.children].forEach((row)=>{
+    if(!row||!row.classList||!row.classList.contains("setting-row")) return;
+    if(on) row.style.setProperty("display","flex","important");
+    else row.style.removeProperty("display");
+  });
+};
+if($("swVisualAdvanced")){
+  $("swVisualAdvanced").addEventListener("change",e=>applyAdvancedOpen(!!e.target.checked));
+  applyAdvancedOpen($("swVisualAdvanced").checked === true);
+};
   if($("swMemoryBallsImportant"))$("swMemoryBallsImportant").addEventListener("change",e=>{visual.memoryBallsImportant=e.target.checked;visualSave();updateOrbLegend();});
   if($("swOrbLegend"))$("swOrbLegend").addEventListener("change",e=>{visual.orbLegend=e.target.checked;visualSave();updateOrbLegend();});
   if($("swShowAutonomyPanel"))$("swShowAutonomyPanel").addEventListener("change",e=>{visual.showAutonomyPanel=e.target.checked;visualSave();applyPanelVisibility();});
@@ -1966,6 +2570,7 @@
       }
     });
   }
+  bindBehaviorToggle("swMemEmbedding","memory_dedup_embedding");
   bindBehaviorToggle("swSafetyEnabled","safety_enabled");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
@@ -2057,9 +2662,9 @@
     apiBlock("rerank", "rerank", cfg.rerank || {}, defs.rerank || null);
     apiBlock("tts", "tts", cfg.tts || {}, defs.tts || null);
     apiBlock("image", "image", cfg.image || {}, defs.image || null);
-    if ($("ttsVoice")) $("ttsVoice").value = (cfg.tts || {}).voice || "";
-    if ($("ttsFormat")) $("ttsFormat").value = (cfg.tts || {}).format || "mp3";
-    if ($("imageSize")) $("imageSize").value = (cfg.image || {}).size || "";
+    if ($("ttsVoice")) setVal("ttsVoice", (cfg.tts || {}).voice || "");
+    if ($("ttsFormat")) setVal("ttsFormat", (cfg.tts || {}).format || "mp3");
+    if ($("imageSize")) setVal("imageSize", (cfg.image || {}).size || "");
     const comp = cfg.compression || {};
     const swc = $("swCompress"), th = $("compressThreshold"), mx = $("compressMax");
     if (swc) swc.checked = !!comp.enabled;
@@ -2428,31 +3033,49 @@
       }
     });
   }
+  const TAB_KEYS={settings:"biocore_settings_tab",persona:"biocore_persona_tab",session:"biocore_session_tab",intent:"biocore_intent_tab"};
+  // Memory-first: iframe sandboxes may throw on localStorage (SecurityError).
+  let _activeSettingsTab=null, _activePersonaTab=null, _activeSessionTab=null;
+  function _tabRead(key){ try{ return window.localStorage.getItem(key)||""; }catch(e){ return ""; } }
+  function _tabWrite(key,value){ try{ window.localStorage.setItem(key,value); }catch(e){} }
+  function _tabValid(tabs,attr){ return tabs.map(t=>t.dataset[attr]).filter(Boolean); }
+  function _tabPick(tabs,attr,key,mem,fallback){ const valid=_tabValid(tabs,attr); const stored=_tabRead(key);
+    if(mem&&valid.includes(mem)) return mem;
+    if(stored&&valid.includes(stored)) return stored;
+    return fallback; }
   function setupSettingsTabs(){
     const bar=$("settingsTabs"); if(!bar) return;
     const tabs=[...bar.querySelectorAll(".settings-tab")];
     if(!tabs.length) return;
-    const activate=(name)=>{
+    const activate=(name,remember)=>{
       tabs.forEach(t=>t.classList.toggle("active",t.dataset.settingsTarget===name));
       document.querySelectorAll("#view-settings .settings-panel").forEach(p=>p.classList.toggle("active",p.id===name));
       document.querySelectorAll("#view-settings .section-title[data-settings-title]").forEach(t=>t.classList.toggle("active",t.dataset.settingsTitle===name));
+      _activeSettingsTab=name;
+      if(remember) _tabWrite(TAB_KEYS.settings,name);
     };
-    tabs.forEach(t=>t.addEventListener("click",()=>{
-      activate(t.dataset.settingsTarget||"settingsApi");
-    }));
-    activate(tabs[0].dataset.settingsTarget||"settingsApi");
+    if(!bar.dataset.bound){
+      bar.dataset.bound="1";
+      tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.settingsTarget||"settingsBio",true)));
+    }
+    activate(_tabPick(tabs,"settingsTarget",TAB_KEYS.settings,_activeSettingsTab,"settingsBio"),false);
   }
   function setupPersonaTabs(){
     const bar=$("personaTabs"); if(!bar) return;
     const tabs=[...bar.querySelectorAll(".persona-tab")];
     const panels=[...document.querySelectorAll("#view-persona .persona-tabpanel")];
     if(!tabs.length) return;
-    const activate=(name)=>{
+    const activate=(name,remember)=>{
       tabs.forEach(t=>t.classList.toggle("active",t.dataset.personaTab===name));
       panels.forEach(p=>p.classList.toggle("active",p.dataset.personaTab===name));
+      _activePersonaTab=name;
+      if(remember) _tabWrite(TAB_KEYS.persona,name);
     };
-    tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab)));
-    activate(tabs[0].dataset.personaTab||"baseline");
+    if(!bar.dataset.bound){
+      bar.dataset.bound="1";
+      tabs.forEach(t=>t.addEventListener("click",()=>activate(t.dataset.personaTab,true)));
+    }
+    activate(_tabPick(tabs,"personaTab",TAB_KEYS.persona,_activePersonaTab,"baseline"),false);
   }
   function setupSessionTabs(){
     const bar=$("sessionTabs"); if(!bar) return;
@@ -2463,13 +3086,47 @@
       tabs.forEach(t=>t.classList.toggle("active",!!name&&t.dataset.sessionTab===name));
       panels.forEach(p=>p.classList.toggle("active",!!name&&p.dataset.sessionTab===name));
     };
-    // Default: everything folded; first click opens one small square.
-    activate(null);
-    tabs.forEach(t=>t.addEventListener("click",()=>{
-      const name=t.dataset.sessionTab||"records";
-      if(t.classList.contains("active")) activate(null); else activate(name);
-    }));
+    const activateTab=(name,remember)=>{
+      _activeSessionTab=name||null;
+      activate(name);
+      if(remember) _tabWrite(TAB_KEYS.session,name||"");
+    };
+    if(!bar.dataset.bound){
+      bar.dataset.bound="1";
+      tabs.forEach(t=>t.addEventListener("click",()=>{
+        const name=t.dataset.sessionTab||"records";
+        if(t.classList.contains("active")) activateTab(null,true); else activateTab(name,true);
+      }));
+    }
+    const restored=_tabPick(tabs,"sessionTab",TAB_KEYS.session,_activeSessionTab,null);
+    activate(restored);
   }
+  const AUTONOMY_PANEL_HTML = `
+<div class="section-title"><div><div class="eyebrow">AUTONOMY</div><h2>自主行为</h2></div><span class="hint">仅在私聊路径生效；群聊不主动发消息</span></div>
+<div class="panel settings">
+  <div class="setting-row"><div><b>启用自主主动发消息</b><small>总开关；关闭时不做任何主动行为</small></div><label class="switch"><input type="checkbox" id="autonomyEnabled"><span></span></label></div>
+  <div class="setting-row"><div><b>允许真正发送</b><small>关闭时只计算不发送</small></div><label class="switch"><input type="checkbox" id="autonomySend"><span></span></label></div>
+  <div class="setting-row"><div><b>黏人模式（不放弃）</b><small>抽离期仍低频尝试（按小时额度）</small></div><label class="switch"><input type="checkbox" id="autonomyClingy" checked><span></span></label></div>
+  <div class="setting-row"><div><b>依恋风格</b><small>决定沉默曲线的形状</small></div><select id="autonomyAttachment"><option value="secure">安全型</option><option value="anxious">焦虑型</option><option value="avoidant">回避型</option></select></div>
+  <div class="setting-row"><div><b>拒绝敏感性</b><small>0-1，越高越容易自责</small></div><input type="number" id="autonomyRS" min="0" max="1" step="0.05" value="0.4"></div>
+
+  <div class="setting-row"><div><b>她现在多想找你</b></div></div>
+  <div class="setting-row"><div style="flex:1"><div style="display:flex;justify-content:space-between;align-items:baseline;gap:12px"><b style="font-size:14px" id="autonomyVPct">0%</b><small id="autonomyVText">V — / —</small></div><div class="bar" style="height:4px;margin-top:8px"><i id="autonomyVBarFill"></i></div><small id="autonomyParts">drift —</small><small id="autonomyBlockReason">点击「立即评估」查看</small></div></div>
+  <div class="setting-row"><div><b>动机分解</b><small id="autonomyMotive">等你 — · 被压 — · 综合 —</small></div></div>
+  <div class="setting-row"><div><b>她等了你多久</b><small id="autonomySilence">—</small></div></div>
+  <div class="setting-row"><div><b>自责与自信</b><small id="autonomyBlame">自责 — · 自信 —</small></div></div>
+  <div class="setting-row"><div><b>本小时额度</b><small id="autonomyLimit">本小时已发 — · 被限制 —</small></div></div>
+  <div class="setting-row"><div><b>闭环统计</b><small id="autonomyLoop">主动 — · 被回 —</small></div></div>
+  <div class="setting-row"><div><b>上次主动</b><small id="autonomyLastReason">—</small></div></div>
+
+  <div class="setting-row"><div><b>立即评估</b><small id="autonomyCheckState">会推进一次 tick</small></div><button class="btn" id="autonomyCheckBtn" type="button">立即评估</button></div>
+  <div class="setting-row"><div><b>测试触发</b><small id="autonomyTestState">把 V 抬到阈值以上，等下一 tick</small></div><div class="inline-actions"><button class="btn" id="autonomyTestBtn" type="button">测试触发一次</button><button class="btn" id="autonomyResetBtn" type="button">复位</button></div></div>
+  <div class="setting-row" id="autonomyTestConfirm" hidden><div><b>确认测试触发？</b><small>下一次 tick 会触发一次主动消息</small></div><div class="inline-actions"><button class="btn" id="autonomyTestConfirmYes" type="button">确认</button><button class="btn" id="autonomyTestConfirmNo" type="button">取消</button></div></div>
+  <div class="setting-row"><div><b>阈值（0-1）</b><small>越高越难触发</small></div><input type="number" id="autonomyThresholdInput" min="0" max="1" step="0.05" value="0.55"></div>
+  <div class="setting-row"><div><b>最大字数</b><small>20–4000</small></div><input type="number" id="autonomyMaxCharsInput" min="20" max="4000" step="10" value="120"></div>
+  <div class="setting-row"><div><b>保存</b><small id="autonomySaveState">未修改</small></div><button class="btn" id="autonomySaveBtn" type="button">保存自主行为设置</button></div>
+  <p class="api-note">仅在私聊路径生效；群聊不主动发消息。</p>
+</div>`;
   function setupIntentTabs(){
     const bar=$('intentTabs'); if(!bar) return;
     const tabs=[...bar.querySelectorAll('.persona-tab')];
@@ -2477,7 +3134,20 @@
     if(!tabs.length) return;
     const activate=(name)=>{
       tabs.forEach(t=>t.classList.toggle('active',!!name&&t.dataset.intentTab===name));
-      panels.forEach(p=>p.classList.toggle('active',!!name&&p.dataset.intentTab===name));
+      panels.forEach(p=>{
+        const on=!!name&&p.dataset.intentTab===name;
+        p.classList.toggle('active',on);
+        p.style.display=on?'block':'none';   // hard guard: nesting/cache must not leak panels
+      });
+      const host=$("intentAutonomyHost");
+      if(host){
+        if(name==="autonomy"){
+          if(!host.dataset.filled){ host.innerHTML=AUTONOMY_PANEL_HTML; host.dataset.filled="1"; }
+          try{ bindAutonomy(); }catch(e){}
+        }else if(host.dataset.filled){
+          host.innerHTML=""; host.dataset.filled="";
+        }
+      }
     };
     activate(null); // default folded; click one tile to open
     tabs.forEach(t=>t.addEventListener('click',()=>{
@@ -2485,8 +3155,9 @@
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.3.4";
+  const BIO_VERSION = "v1.4.0";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
+  setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
   const GITEE_KEY = "bio_gitee_repo";
   let giteeRepo = String(storeGet(GITEE_KEY, "johnhim/astrbot_plugin_biocore") || "").trim();
@@ -3243,6 +3914,9 @@
     _heroFocusSaved = null;
     _heroFocusDetail = null;
   }
+  document.addEventListener("biocore:open-archive", () => {
+    try { switchView("sessions"); } catch (e) {}
+  });
   document.addEventListener("biocore:focus", (e) => {
     showHeroMemoryPanel(e && e.detail);
   });
@@ -3250,5 +3924,31 @@
     restoreHeroFocusPanel();
   });
 
-  if (document.readyState === 'complete') load(); else window.addEventListener('load', () => load());
+  const _boot = () => {
+    try {
+      try{ window.__diagLog && window.__diagLog("init:1 dom-ready"); }catch(_e){}
+      setTimeout(()=>{ try{ const el=$("topStatus"); if(el&&String(el.textContent||"").indexOf("连接中")>=0){ el.textContent="超时：load 未执行"; if(window.console&&window.console.warn) window.console.warn("[biocore] load did not start"); } }catch(_){} },8000);
+      _initStep("setupSettingsTabs", setupSettingsTabs);
+      _initStep("setupPersonaTabs", setupPersonaTabs);
+      _initStep("setupSessionTabs", setupSessionTabs);
+      _initStep("setupFeatureSwitches", setupFeatureSwitches);
+      _initStep("bindCompressSave", bindCompressSave);
+      _initStep("setupLlmConsolidation", setupLlmConsolidation);
+      try{ window.__diagLog && window.__diagLog("init:3 before load"); }catch(_e){}
+      const _p = load();
+      try{ window.__diagLog && window.__diagLog("init:3 load called"); }catch(_e){}
+      _p.then(() => { try{ window.__diagLog && window.__diagLog("init:4 after first load"); window.__diagHide && window.__diagHide(); }catch(_e){} safeRender("inlineNotices", renderInlineNotices); safeRender("safetyWarn", renderSafetyWarn); safeRender("envChecks", renderEnvChecks); safeRender("personaCompile", setupPersonaCompile); safeRender("autonomy", bindAutonomy); safeRender("replyLimit", renderReplyLimit); safeRender("replySoft", renderReplySoft); safeRender("replySplit", renderReplySplit); _initStep("setupSwitchGroups", setupSwitchGroups); }).catch((err) => {
+        const el=$("topStatus");
+        if(el) el.textContent="连接失败："+String(err&&err.message||err||"未知错误");
+      });
+    }
+    catch (e) {
+      const el=$("topStatus");
+      if(el) el.textContent="初始化失败（见右下）";
+      showDiag("init: "+String(e&&e.message||e));
+      try { load(); } catch (e2) { showDiag("init-load: "+String(e2&&e2.message||e2)); }
+    }
+  };
+  try { if (document.readyState === 'complete') _boot(); else window.addEventListener('load', _boot); }
+  catch (e) { try { const el=$("topStatus"); if(el) el.textContent="初始化失败（见右下）"; } catch(_){} showDiag("init: "+String(e&&e.message||e)); }
 })();

@@ -1,3 +1,4 @@
+# OWNER: engine-core
 # -*- coding: utf-8 -*-
 """BioCore memory layer (pure Python; no astrbot, no prompt text).
 

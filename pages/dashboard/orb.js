@@ -380,6 +380,7 @@
   const _linkFade = new Float32Array(LINK_PAIRS.length);
   let _hoverOrb = false;
   const _memHit = [];
+  let _archiveHit = null;
   const _mouse = { x: -1, y: -1, inside: false };
   // task-48: per-ball smooth focus dim state + last frame timestamp.
   const _ballDims = new Map();
@@ -654,10 +655,19 @@
             + interference * .34 + jitter * .20 + (hist.echo[i] - .5) * echo * .24;
       reflection = reflection * .93 + v * .18;
       v += reflection * .55 + (hist.spike[i] - .5) * spike * .50;
-      vals.push(Math.max(-1, Math.min(1, v)));
+      // soft saturation instead of hard clamp: hard clamping flattened
+      // the upper peaks into horizontal plateaus.
+      vals.push(Math.tanh(v * 0.85));
     }
     const X = i => LEFT + i / (n - 1) * (SW - LEFT - RIGHT);
-    const Y = v => zero - v * (BOT - TOP) / 2 * .92;
+    // auto-centre: normalise by the series peak so the waveform stays in the
+    // vertical middle of the chart instead of hugging the top.
+    // Vertical centring only: shift by the series mean, but keep the ORIGINAL
+    // amplitude (scale 1.0) so peaks look exactly as before.
+    let _sum = 0;
+    vals.forEach(v => { _sum += v; });
+    const _mid = Math.max(-0.6, Math.min(0.6, _sum / Math.max(1, vals.length)));
+    const Y = v => zero - (v - _mid) * (BOT - TOP) / 2 * .92;
 
     // soft glow under the single line
     sig.beginPath();
@@ -845,12 +855,15 @@
     // particle links: fixed topology + per-edge alpha fade, only on hover or
     // high attention. Never rewired per frame, so edges cannot pop/flash.
     {
-      const linksOn = (!state.visual || state.visual.links !== false) &&
-        (_pAttention > .65 || _hoverOrb);
+      // Visible whenever the toggle is on; attention/hover only brighten it.
+      const linksEnabled = (!state.visual || state.visual.links !== false);
+      const _linkBase = linksEnabled ? (0.20 + 0.25 * clamp(_pAttention)) : 0;
       ctx.save();
       ctx.lineWidth = .45;
       for (let k = 0; k < LINK_PAIRS.length; k++) {
-        const target = linksOn ? .20 * LINK_PAIRS[k].w : 0;
+        const target = linksEnabled
+          ? (_linkBase + (_hoverOrb ? 0.16 : 0)) * LINK_PAIRS[k].w
+          : 0;
         _linkFade[k] += (target - _linkFade[k]) * .12;
         const fade = _linkFade[k];
         if (fade < .004) continue;
@@ -1013,24 +1026,35 @@
         awkwardness:"neutral", relief:"trust" };
       const _memN0 = .55;                 // mean motion at a = 1 orb unit
       if (_memExtra > 0) {
-        // events beyond the display cap collapse into an outer archive belt
+        // archive density belt: 3-5 fading arcs say "there is more history",
+        // never one tick per entry (not clickable individually); clicking the
+        // arc opens the archived memory list instead.
         const beltR = R * 2.12;
-        const ticks = Math.min(24, _memExtra);
+        const total = _memExtra + _memShown.length;
+        const ratio = total > 0 ? Math.min(1, _memExtra / total) : 0;
+        const segs = Math.max(3, Math.min(5, Math.round(2 + ratio * 3)));
+        const base = -Math.PI * .5 - 0.22;
+        const span = Math.PI * .44;
+        const step = span / segs;
+        const alpha0 = .12 + .30 * ratio;
+        const stroke = isDark() ? "rgba(225,220,205," : "rgba(96,88,74,";
         ctx.save();
-        ctx.globalAlpha = .16;
-        ctx.strokeStyle = isDark() ? "rgba(225,220,205,.9)" : "rgba(96,88,74,.9)";
-        ctx.lineWidth = .8;
-        for (let k = 0; k < ticks; k++) {
-          const ang = -Math.PI * .5 + (k / Math.max(1, ticks)) * Math.PI * 2;
-          const x1 = CX + Math.cos(ang) * (beltR - 3), y1 = cy + Math.sin(ang) * (beltR - 3);
-          const x2 = CX + Math.cos(ang) * (beltR + 3), y2 = cy + Math.sin(ang) * (beltR + 3);
-          ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        ctx.lineWidth = 1.6;
+        for (let k = 0; k < segs; k++) {
+          const a1 = base + k * step + step * .12;
+          const a2 = base + (k + 1) * step - step * .12;
+          ctx.globalAlpha = Math.max(.05, alpha0 * (1 - k / segs));
+          ctx.strokeStyle = stroke + String(Math.max(.05, alpha0 * (1 - k / segs)).toFixed(3)) + ")";
+          ctx.beginPath(); ctx.arc(CX, cy, beltR, a1, a2); ctx.stroke();
         }
         ctx.globalAlpha = .55;
-        ctx.fillStyle = isDark() ? "rgba(225,220,205,.9)" : "rgba(96,88,74,.9)";
+        ctx.fillStyle = stroke + ".9)";
         ctx.font = "9px ui-monospace, monospace";
-        ctx.fillText("档案 +" + _memExtra, CX + beltR + 4, cy - beltR * .28);
+        ctx.fillText("档案 " + _memExtra, CX + beltR + 4, cy - beltR * .28);
         ctx.restore();
+        _archiveHit = (_memExtra > 2)
+          ? { cx: CX, cy, r: beltR, a1: base, a2: base + span }
+          : null;
       } else if (!_memEvents.length) {
         // empty archive: show the empty memory orbit, never fake balls
         ctx.save();

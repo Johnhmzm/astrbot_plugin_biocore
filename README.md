@@ -12,7 +12,7 @@
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
-- 当前版本：以 `metadata.yaml` 为准（当前 `1.3.4`）
+- 当前版本：以 `metadata.yaml` 为准（当前 `1.4.0`）
 - 作者：`Johnhmzm`
 - GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
 - Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
@@ -146,6 +146,7 @@ AstrBot/data/plugin_data/astrbot_plugin_biocore_standalone/
 - 只有在启用对应 LLM 功能且配置了 Provider 时，相关摘要/洞察请求才会发送给该 Provider；发送内容限于该功能所需的事件/记忆摘要，不包含完整聊天上下文。
 - `safety_enabled: true` 是新装默认值；公开部署建议保持开启，私人使用可关闭，并按需配置敏感信息掩码和跨会话记忆限制。
 - 更新/卸载前请备份上述数据目录。
+- 升级时自动备份到 `backups/pre-migration-<时间戳>/`，可用 `from biocore_model.migrate import restore` 回滚。
 
 ## 平台与兼容性
 
@@ -176,8 +177,8 @@ A：正常市场/仓库更新不会；持久化数据在 `plugin_data`。升级�
 
 ## 更新日志
 
-- 当前版本：`1.3.4`（以 `metadata.yaml` 为准）
-- 发版口径：**`1.3.4` 为发版目标；市场记录已同步为 `1.3.4`**，公开仓库与市场在发布时同步
+- 当前版本：`1.4.0`（以 `metadata.yaml` 为准）
+- 发版口径：**`1.4.0` 为发版目标；市场记录已同步为 `1.4.0`**，公开仓库与市场在发布时同步
 - 详细历史见 [CHANGELOG.md](CHANGELOG.md) 与 [UPDATE.md](UPDATE.md)
 - 版本更新由 AstrBot 插件市场/GitHub 源同步；市场记录版本必须与 `metadata.yaml` 一致
 
