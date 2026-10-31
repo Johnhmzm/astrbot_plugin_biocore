@@ -17,3 +17,9 @@ main.py.bak_*
 *.bak_*
 
 main.py.broken_*
+
+# UI scratch / build artifacts (not shipped)
+docs/mockups/
+.ruff_cache/
+biocore_model_ruff_backup.zip
+*.zip
