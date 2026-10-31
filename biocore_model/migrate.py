@@ -8,14 +8,20 @@ top-level schema_version; field backfills are also safe to repeat (missing-only)
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 from pathlib import Path
 
 from . import ui_settings
 
-logger = logging.getLogger(__name__)
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
 
 SCHEMA_VERSION = 2
 OLD_SCHEMA_VERSION = 1

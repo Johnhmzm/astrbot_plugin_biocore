@@ -86,6 +86,5 @@ def compose_prompt(persona, speak, rest, protocol):
     text = "\n".join(part for part in parts if part)
     if len(text) > 400 and speak:
         keep = str(speak).strip()
-        room = max(0, 400 - len(keep) - 1)
         text = (keep + "\n" + str(rest or "").strip())[:400] if persona else text[:400]
     return text

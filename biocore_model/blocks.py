@@ -19,9 +19,15 @@ tests and headless services can import it without AstrBot.
 from __future__ import annotations
 
 import json
-import logging
 
-logger = logging.getLogger("astrbot")
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
 
 try:  # package import (plugin runtime)
     from . import plugin_routes as _routes

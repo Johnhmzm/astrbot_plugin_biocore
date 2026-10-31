@@ -6,11 +6,17 @@ Reuses the plugin's existing page auth (_page_is_local_admin) and config save pa
 """
 from __future__ import annotations
 
-import logging
 import time
 
 MODES = ("off", "shadow", "primary")
-LOGGER = logging.getLogger("astrbot")
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger as LOGGER
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    LOGGER = _NullLogger()
 
 
 class CoreModeError(Exception):

@@ -121,7 +121,6 @@ class ReplySanitizer:
         return json.dumps(data, ensure_ascii=False) if isinstance(data, dict) else None
 
     def _strip_bare_json(self, text):
-        keep = []
         def _bare(match):
             candidate = match.group(0)
             parsed = self._payload(candidate)

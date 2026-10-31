@@ -156,16 +156,41 @@ class FeedbackIntegrationTest(unittest.TestCase):
         self.assertFalse(result["written"])
 
 
+class _Recorder:
+    """Minimal logger stub; keeps tests free of the stdlib logging import."""
+
+    def __init__(self):
+        self.lines = []
+
+    def _log(self, msg, *args, **kwargs):
+        try:
+            self.lines.append(str(msg) % args if args else str(msg))
+        except Exception:
+            self.lines.append(str(msg))
+
+    debug = info = warning = error = exception = critical = _log
+
+
 class RawDiagnosticTest(unittest.TestCase):
+    def _with_recorder(self, call):
+        rec = _Recorder()
+        saved = ep.logger
+        ep.logger = rec
+        try:
+            call()
+        finally:
+            ep.logger = saved
+        return rec
+
     def test_invalid_raw_is_logged(self):
-        with self.assertLogs(ep.logger, level="INFO") as captured:
-            ep.parse("我不是JSON", core=object(), now=1000.0)
-        self.assertTrue(any("emotion probe raw=" in line for line in captured.output))
+        rec = self._with_recorder(
+            lambda: ep.parse("我不是JSON", core=object(), now=1000.0))
+        self.assertTrue(any("emotion probe raw=" in line for line in rec.lines))
 
     def test_low_confidence_raw_is_logged(self):
-        with self.assertLogs(ep.logger, level="INFO") as captured:
-            ep.parse(payload({"v": -0.2}, c=0.1), core=object(), now=1000.0)
-        self.assertTrue(any("emotion probe raw=" in line for line in captured.output))
+        rec = self._with_recorder(
+            lambda: ep.parse(payload({"v": -0.2}, c=0.1), core=object(), now=1000.0))
+        self.assertTrue(any("emotion probe raw=" in line for line in rec.lines))
 
 
 class WiringStaticTest(unittest.TestCase):

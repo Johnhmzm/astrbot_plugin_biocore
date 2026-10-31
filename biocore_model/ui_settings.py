@@ -10,12 +10,18 @@ authority path, so the 60s tick, page/status and the dashboard always agree.
 from __future__ import annotations
 
 import json
-import logging
 import os
 import time
 from pathlib import Path
 
-logger = logging.getLogger(__name__)
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
 
 SCHEMA = 1
 FILE_NAME = "ui_settings.json"

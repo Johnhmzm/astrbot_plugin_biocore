@@ -27,10 +27,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 from pathlib import Path
 
-logger = logging.getLogger("astrbot")
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
 
 
 def _sha256(text: str) -> str:
