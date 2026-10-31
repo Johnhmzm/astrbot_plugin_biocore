@@ -1,0 +1,63 @@
+import assert from 'node:assert'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { switchIds } from '../switch_groups.mjs'
+const here = dirname(fileURLToPath(import.meta.url))
+const html = readFileSync(join(here, '..', '..', 'pages', 'dashboard', 'index.html'), 'utf8')
+const markup = html.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
+const css = readFileSync(join(here, '..', '..', 'pages', 'dashboard', 'styles.css'), 'utf8')
+const tabButtons = [...markup.matchAll(/<button[^>]*data-settings-target="([^"]+)"[\s\S]*?<\/button>/g)].map((m) => m[0])
+assert.equal(tabButtons.length, 5, 'tab buttons=' + tabButtons.length)
+for (const button of tabButtons) assert.ok(button.includes('<svg'), 'tab without svg')
+const tabIds = [...new Set([...html.matchAll(/data-settings-target="([^"]+)"/g)].map((m) => m[1]))].filter((id) => /^settings(Bio|Memory|Model|Visual|System)$/.test(id))
+assert.deepEqual(tabIds, ['settingsBio', 'settingsMemory', 'settingsModel', 'settingsVisual', 'settingsSystem'])
+function regionOf(panelId) {
+  const start = html.indexOf('id="' + panelId + '"')
+  if (start < 0) return ''
+  const next = html.indexOf('settings-panel', start + 10)
+  return html.slice(start, next > start ? next : html.length)
+}
+assert.ok(regionOf('settingsBio').includes('id="feat_expression_rules"'), 'bio tab content')
+assert.ok(regionOf('settingsMemory').includes('id="feat_memory_compress"') && regionOf('settingsMemory').includes('id="swSafetyEnabled"'), 'memory tab content')
+const modelRegion = regionOf('settingsModel')
+for (const id of ['replySoftEnabled','replySoftTargetChars','replySoftMaxChars','replySoftSaveBtn']) assert.ok(modelRegion.includes('id="' + id + '"'), 'reply soft missing ' + id)
+for (const id of ['replySplitEnabled','replySplitMode','replySplitMaxChars','replySplitSaveBtn','replySplitEffective']) assert.ok(modelRegion.includes('id="' + id + '"'), 'reply split missing ' + id)
+assert.ok(modelRegion.includes('id="replyLimitInput"') && modelRegion.includes('id="replyLimitSaveBtn"') && modelRegion.includes('id="replyLimitState"'), 'reply limit controls missing')
+assert.ok(modelRegion.includes('id="llm_route_default"') && modelRegion.includes('id="personaCompileBtn"'), 'model tab content')
+for (const id of ['currentPersonaRow', 'currentPersonaVersion', 'currentPersonaTraits']) assert.ok(modelRegion.includes('id="' + id + '"'), 'missing ' + id)
+assert.ok(modelRegion.includes('未编译'), 'missing 未编译 state')
+const visual = regionOf('settingsVisual')
+assert.ok(visual.includes('id="selMemoryRingStyle"') && visual.includes('id="swShowMemoryNodes"') && visual.includes('id="orbIntensity"'), 'visual content missing')
+assert.ok(visual.includes('id="swShowEmotionRings"') && visual.includes('id="swMemoryBallGravity"'), 'visual switches missing')
+assert.ok(visual.indexOf('id="swVisualAdvanced"') < visual.indexOf('id="swShowEmotionRings"'), 'emotion ring must follow advanced toggle')
+assert.ok(visual.indexOf('id="visualAdvancedBody"') < visual.indexOf('id="swShowEmotionRings"'), 'emotion ring must be inside advanced body')
+assert.ok(visual.includes('每个情绪色环的粗细/亮度 = 该维度的当前强度'), 'missing ring copy')
+assert.ok(visual.includes('跟球走'), 'missing per-ball ring distinction')
+// autonomy is an intent sub-tab injected on demand: static HTML must NOT carry
+// its ids (they are injected from AUTONOMY_PANEL_HTML at click time).
+assert.ok(!html.includes('data-view="autonomy"'), 'autonomy must not be a left-nav page')
+assert.ok(html.includes('data-intent-tab="autonomy"'), 'autonomy intent tab missing')
+assert.ok(html.includes('id="intentAutonomyHost"'), 'autonomy host container missing')
+assert.equal((markup.match(/id="autonomyEnabled"/g) || []).length, 0, 'autonomy ids must not be static')
+assert.ok(html.includes('AUTONOMY_PANEL_HTML'), 'autonomy injected template missing')
+assert.ok(regionOf('settingsSystem').includes('id="coreIndexRow"') && regionOf('settingsSystem').includes('id="backupBtn"'), 'system tab content')
+assert.ok(!html.includes('id="coreModeShadow"') && !html.includes('id="coreStatusTitle"'), 'core-mode block removed')
+const ids = [...markup.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1])
+const dupes = [...new Set(ids.filter((id, i) => ids.indexOf(id) !== i))]
+assert.deepEqual(dupes, [], 'duplicate ids: ' + dupes.join(','))
+for (const id of switchIds()) assert.equal((markup.match(new RegExp('id="' + id + '"', 'g')) || []).length, 1, id)
+assert.equal((markup.match(/id="personaCompileBtn"/g) || []).length, 1)
+assert.ok(!/<script[^>]*src="\.\/(app|orb|orb_math)\.js/.test(html), 'scripts must be inlined')
+assert.ok(html.includes('init:0 loaded'), 'inlined app.js marker missing')
+assert.ok(html.includes('__biocoreEmotionRings'), 'inlined orb.js marker missing')
+assert.ok(html.includes('INLINE-PLACEHOLDER') === false)
+assert.ok(/<style>[\s\S]*\[hidden\]\s*\{\s*display\s*:\s*none\s*!important/.test(html), 'styles must be inlined')
+assert.ok(!/<link[^>]*href="\.\/styles\.css/.test(html), 'stylesheet must be inlined')
+assert.ok(/\[hidden\]\s*\{\s*display\s*:\s*none\s*!important/.test(css), 'missing [hidden]')
+assert.ok(/mode-simple\s+\[data-advanced\]\s*\{\s*display\s*:\s*none/.test(css), 'missing mode-simple rule')
+assert.equal((markup.match(/data-advanced="1"/g) || []).length, 27, 'advanced rows')
+assert.equal((markup.match(/data-feature-row="1"/g) || []).length, 10, 'feature rows')
+assert.equal((markup.match(/switchGroup_/g) || []).length, 0, 'group switches removed')
+for (const match of html.matchAll(/<div[^>]*id="([^"]*ConfirmRow)"[^>]*>/g)) assert.ok(/\shidden(\s|>)/.test(match[0]), 'confirm hidden ' + match[1])
+console.log('PANEL HTML OK: tabs=5 advanced=31 feature=11 visual-controls=14 switches=27 dupes=0')

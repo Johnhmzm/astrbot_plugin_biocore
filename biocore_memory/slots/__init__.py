@@ -1,3 +1,4 @@
+# OWNER: legacy
 # -*- coding: utf-8 -*-
 """Attention-window slots (default OFF; host-neutral, no astrbot/L1)."""
 from .registry import (DEFAULT_BUDGET_CHARS, DEFAULT_SLOT_COUNT, FIXED_KINDS,

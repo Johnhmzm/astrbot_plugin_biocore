@@ -55,6 +55,8 @@ RATE_LIMIT_PER_MIN = 30
 COMPRESS_MAX_CHARS = 200
 AUDIT_TAIL = 50
 COOC_MAX_ENTRIES = 400
+# after-turn auto consolidation: every N successful remember() calls
+CONSOLIDATE_AUTO_TURNS = 10
 
 
 # Per-mechanism flags: safety/read-path filters default ON; every optional
@@ -63,6 +65,8 @@ COOC_MAX_ENTRIES = 400
 # (and MemoryEngine.set_flags(..., persist=True) rewrites it).
 FLAGS = {
     # safety / read-path (default ON)
+    # GA-03: keep engine default ON. DSH private mode disables it per-store via
+    # <dsh store>/flags.json; the shared engine must not be relaxed globally.
     "security": True,          # store/security.should_reject before write
     "provenance": True,        # provenance hash tag + chained tombstones
     "source_filter": True,     # low-confidence candidates are counted/dropped
@@ -111,7 +115,9 @@ FLAGS = {
     "ledger": False,
     # index / graph
     "graph": False,
+    "cue_writeback": True,      # store cue_index fields on each new entry (index-only, no recall change)
     # consolidation modules (default OFF)
+    "consolidate_auto": False,  # after-turn auto consolidate every CONSOLIDATE_AUTO_TURNS remembers
     "consolidate_gated": False,
     "consolidate_tree": False,
     "consolidate_reflection": False,

@@ -15,8 +15,8 @@ deterministic text that L2 injects.
 from __future__ import annotations
 
 from .render import (
-    TEXT_LIMIT,
     TEXT_LEGEND_LINES,
+    TEXT_LIMIT,
     derive_event_links,
     render_compact,
     render_semantic,

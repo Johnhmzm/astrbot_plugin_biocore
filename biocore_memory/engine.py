@@ -19,9 +19,10 @@ import os
 import time
 from pathlib import Path
 
-from .core.config import (COMPRESS_MAX_CHARS, DEFAULT_BUDGET, FLAGS,
-                          MEMORY_POINT_MIN_IMPORTANCE, MEMORY_POINT_MIN_SELF,
-                          MEMORY_POINT_MIN_VALUE, RATE_LIMIT_PER_MIN)
+from .core.config import (COMPRESS_MAX_CHARS, CONSOLIDATE_AUTO_TURNS,
+                          DEFAULT_BUDGET, FLAGS, MEMORY_POINT_MIN_IMPORTANCE,
+                          MEMORY_POINT_MIN_SELF, MEMORY_POINT_MIN_VALUE,
+                          RATE_LIMIT_PER_MIN)
 from .core.util import clamp01, now_ts, sha12
 from .engine_helpers import (annotate_tiers, check_after_remember,
                              cosine_vectors, explicit_number,
@@ -30,7 +31,7 @@ from .engine_helpers import (annotate_tiers, check_after_remember,
 from .store.json_store import MemoryStore
 from .event.extract import event_from_any
 from .event._types import MemoryEvent
-from .index import cue_score
+from .index import cue_score, cues as cue_extract
 from .recall import recall_entries
 from .evict import eviction_order, eviction_score
 from .identity import identity_snapshot as _identity_snapshot, is_identity
@@ -74,7 +75,10 @@ class MemoryEngine:
         overrides = (self.config.get("flags")
                      if isinstance(self.config.get("flags"), dict) else {})
         for key, value in overrides.items():
-            if isinstance(value, bool):
+            if isinstance(value, bool) or (
+                    str(key) == "consolidate_auto_turns"
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)):
                 self.flags[str(key)] = value
         _dir = Path(data_dir) if data_dir is not None else None
         if _dir is None and path is not None:
@@ -134,6 +138,8 @@ class MemoryEngine:
         self._last_consistency = None
         self._last_source_consistency = None
         self._last_narrative = None
+        self._remember_turns = 0
+        self._last_auto_consolidate = None
         if store is not None:
             self.store = store
         else:
@@ -163,7 +169,10 @@ class MemoryEngine:
             return False
         changed = False
         for key, value in data.items():
-            if isinstance(value, bool):
+            if isinstance(value, bool) or (
+                    str(key) == "consolidate_auto_turns"
+                    and isinstance(value, (int, float))
+                    and not isinstance(value, bool)):
                 self.flags[str(key)] = value
                 changed = True
         return changed
@@ -179,7 +188,10 @@ class MemoryEngine:
         changed = {}
         if isinstance(overrides, dict):
             for key, value in overrides.items():
-                if isinstance(value, bool):
+                if isinstance(value, bool) or (
+                        str(key) == "consolidate_auto_turns"
+                        and isinstance(value, (int, float))
+                        and not isinstance(value, bool)):
                     self.flags[str(key)] = value
                     changed[str(key)] = value
         self._sync_attributes()
@@ -215,6 +227,50 @@ class MemoryEngine:
                 self.slot_registry = None
         elif not self.slots_enabled:
             self.slot_registry = None
+
+    def _auto_turn_limit(self):
+        """Resolve the auto-consolidate interval (default 10, flags/config)."""
+        for raw in (self.flags.get("consolidate_auto_turns"),
+                    self.config.get("consolidate_auto_turns")):
+            try:
+                limit = int(raw)
+            except Exception:
+                continue
+            if limit > 0:
+                return limit
+        return int(CONSOLIDATE_AUTO_TURNS)
+
+    def touch(self, now=None):
+        """Count one successful remember turn; auto-consolidate when enabled.
+
+        Default OFF: with consolidate_auto False (shipped default) this only
+        increments a counter and the old remember path is unchanged. When
+        consolidate_auto is True and consolidate_gated is on, every N remember
+        calls trigger consolidate(auto=True). Never raises.
+        """
+        self._remember_turns = int(getattr(self, "_remember_turns", 0)) + 1
+        info = {"turn": self._remember_turns, "triggered": False}
+        try:
+            if not self._flag("consolidate_auto"):
+                return info
+            limit = self._auto_turn_limit()
+            info["every"] = limit
+            if self._remember_turns % limit != 0:
+                return info
+            if not self._flag("consolidate_gated"):
+                info["reason"] = "consolidate_gated_off"
+                return info
+            result = self.consolidate(auto=True, now=now)
+            self._last_auto_consolidate = result
+            info["triggered"] = bool((result or {}).get("enabled"))
+            info["consolidate"] = result
+        except Exception:
+            info["error"] = "auto_consolidate_failed"
+        return info
+
+    def after_turn(self, now=None):
+        """Alias for touch(): after-turn counter used by the caller loop."""
+        return self.touch(now=now)
 
     def _bump(self, key, amount=1):
         try:
@@ -932,6 +988,7 @@ class MemoryEngine:
                 self._audit_write("remember_merge", existing.get("id"), "remember")
                 self._flush_stats()
                 self._write_snapshot_safe()
+                self.touch(now=stamp)
                 return existing
         entry = {
             "id": (str(getattr(ev, "id", "") or "") or sha12(text + str(stamp))),
@@ -992,6 +1049,14 @@ class MemoryEngine:
         entry = self._apply_media(entry)
         entry = self._apply_notes(entry)
         entry = self._apply_notes_link(entry)
+        if self._flag("cue_writeback", True):
+            try:
+                _cue = cue_extract(text, ref_ts=stamp)
+                entry["cues"] = {key: _cue.get(key) for key in
+                                 ("event_name", "entities", "place",
+                                  "time_coarse")}
+            except Exception:
+                pass
         added = self.store.add(entry)
         if added is None:
             return None
@@ -1027,6 +1092,7 @@ class MemoryEngine:
                           "source=%s" % str(added.get("memory_source") or ""))
         self._flush_stats()
         self._write_snapshot_safe()
+        self.touch(now=stamp)
         return added
 
     # -- recall -----------------------------------------------------------

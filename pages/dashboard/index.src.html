@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
+<link rel="stylesheet" href="./styles.css?v=1.4.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261031-2135">
+<script>window.__BIOCORE_BUILD__="build 2026-10-31 09:30 +08";</script>
+</head>
+<body>
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="mark"><span></span><span></span><span></span></div><div><b>BioCore</b><small>EMOTION CORE</small></div></div>
+    <div class="side-label">WORKSPACE</div>
+    <nav class="nav" id="navHost"></nav>
+    <div class="side-box">
+      <div class="side-box-title">生物层状态</div>
+      <div class="side-line"><span class="dot" id="statusDot"></span><span id="linkState">连接中</span><span id="buildStamp" style="opacity:.6;margin-left:8px;font-size:9px"></span></div>
+      <div class="side-line small"><span id="pluginBadge">BioCore</span></div>
+    </div>
+    <div class="side-foot" id="sideVersion">BioCore · tendency layer</div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div><div class="crumb">BioCore / <span id="crumbView">情绪概览</span></div><h1>生物情绪核心</h1></div>
+      <div class="top-actions"><span class="status-pill"><span class="dot"></span><span id="topStatus">连接中…</span></span><button class="btn" id="themeToggle">深色</button>
+        <button class="btn" id="refreshBtn" title="重新加载整个界面（HTML/JS/CSS），用于更新后生效">刷新界面</button></div>
+    </header>
+
+    <div class="telemetry-strip">
+      <div><span>SYS</span><b id="teleSys">NOMINAL</b></div>
+      <div><span>MODE</span><b id="teleMode">--</b></div>
+      <div><span>LAYERS</span><b id="teleLayers">FIELD / AFFECT / CORE</b></div>
+      <div><span>SYNC</span><b id="teleSync">--</b></div>
+      <div><span>TICKS</span><b id="teleTicks">--</b></div>
+    </div>
+    <section class="view" id="view-overview">
+      <div class="hero">
+        <div class="hero-index">01</div>
+        <div class="hero-rail" aria-hidden="true"></div>
+        <div class="hero-side">EMOTION CORE / LIVE TELEMETRY</div>
+        <div class="hero-scale" aria-hidden="true"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
+        <div class="hero-copy">
+          <div class="eyebrow">CURRENT EMOTION</div>
+          <h2 id="heroTitle">读取中…</h2>
+          <p id="heroSub">情绪不是台词，是会影响回复倾向的内部状态。</p>
+          <div class="chips" id="tagRow"></div>
+          <div class="legend"><span><i class="lg-noise"></i>粒子</span><span><i class="lg-echo"></i>外层环 01</span><span><i class="lg-ripple"></i>外层环 02</span><span><i class="lg-spike"></i>核心脉冲</span></div>
+        </div>
+        <div class="orb-wrap">
+          <div class="orb-stage">
+            <div id="orbTip" class="orb-tip" hidden></div>
+            <canvas id="orbCanvas" width="520" height="520"></canvas>
+            <span class="orb-tag ot-noise">core <b id="orbNoise">--</b></span>
+            <span class="orb-tag ot-echo">orbit 01 <b id="orbEcho">--</b></span>
+            <span class="orb-tag ot-ripple">orbit 02 <b id="orbRipple">--</b></span>
+            <span class="orb-tag ot-spike">sync <b id="orbSpike">--</b></span>
+          </div>
+          <div class="orb-meta"><b id="orbValence">+0.00</b><span>PAD valence</span></div>
+          <div class="orb-mem-legend" id="orbMemLegend">事件总结球：已归档的重要事件 · 球大小=重要度 · 记忆总结后会追加记忆球 · 悬停查看</div>
+        </div>
+      </div>
+
+      <div class="metrics">
+        <div class="metric"><span>压力</span><b id="mStress">--</b><div class="bar"><i id="bStress"></i></div></div>
+        <div class="metric"><span>能量</span><b id="mEnergy">--</b><div class="bar"><i id="bEnergy"></i></div></div>
+        <div class="metric"><span>信任</span><b id="mTrust">--</b><div class="bar"><i id="bTrust"></i></div></div>
+        <div class="metric"><span>控制感</span><b id="mDominance">--</b><div class="bar"><i id="bDominance"></i></div></div>
+        <div class="metric"><span>社交连接</span><b id="mSocial">--</b><div class="bar"><i id="bSocial"></i></div></div>
+        <div class="metric"><span>唤醒</span><b id="mArousal">--</b><div class="bar"><i id="bArousal"></i></div></div>
+      </div>
+
+      <div class="grid">
+        <div class="panel">
+          <div class="panel-head"><h3>噪声通道</h3><span class="hint">OU / random walk</span></div>
+          <div class="noise-list" id="noiseList"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>回声与波纹</h3><span class="hint">echo / ripple</span></div>
+          <div class="signal-grid">
+            <div><small>echo</small><b id="sEcho">--</b></div>
+            <div><small>echo_trace</small><b id="sEchoTrace">--</b></div>
+            <div><small>ripple upper</small><b id="sUpper">--</b></div>
+            <div><small>ripple lower</small><b id="sLower">--</b></div>
+            <div><small>overlap</small><b id="sOverlap">--</b></div>
+            <div><small>spiking rate</small><b id="sRate">--</b></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h3>稳态与姿态</h3><span class="hint">ALLOSTATIC / CIRCADIAN / POSTURE · READ-ONLY</span></div>
+        <div class="signal-grid" id="steadyGrid">
+          <div><small>circadian / 昼夜警觉</small><b id="sCircadian">--</b></div>
+          <div><small>allostatic / 稳态负荷</small><b id="sAllostatic">--</b></div>
+          <div><small>L_int / 内部失配</small><b id="sLint">--</b></div>
+          <div><small>readiness / 准备度</small><b id="sReadiness">--</b></div>
+          <div><small>need / 主导缺口</small><b id="sNeedDominant">--</b></div>
+          <div><small>intero / 内感受</small><b id="sIntero">--</b></div>
+          <div><small>boundary / 边界压力</small><b id="sBoundary">--</b></div>
+          <div><small>refusal_readiness / 拒绝就绪</small><b id="sRefusalLevel">--</b></div>
+          <div><small>reply_consistency / 回复一致性</small><b id="sReplyConsistency">--</b></div>
+        </div>
+        <p class="api-note" id="steadyNote">只读投影：昼夜警觉与稳态负荷只反映内部状态；边界压力 / 拒绝就绪只是倾向标记，不决定是否回复。</p>
+      </div>
+      <details class="panel" id="envChecksPanel" hidden><summary>环境检查（只读）</summary><p class="api-note" id="envChecksText">—</p></details>
+      <div class="panel" id="panelModelTrace" hidden>
+        <div class="panel-head"><h3>本轮注入 / 模型层只读</h3><span class="hint">INJECTION TRACE · REVERSE CHECK · COST · READ-ONLY</span></div>
+        <div class="signal-grid" id="modelTraceGrid">
+          <div><small>[BC] 字符 / 估算 token</small><b id="mtInj">--</b></div>
+          <div><small>注入字数 / 浪费项</small><b id="mtCut">--</b></div>
+          <div><small>F1 反向检查</small><b id="mtReverse">--</b></div>
+          <div><small>复读检测 F3</small><b id="mtRepeat">--</b></div>
+          <div><small>路径依赖监控</small><b id="mtPath">--</b></div>
+          <div><small>今日 token / 费用</small><b id="mtCost">--</b></div>
+        </div>
+        <details class="mt-l1" id="mtL1Block" hidden>
+          <summary>L1 新信号 · 折叠（冲突 / 反刍 / 锚定 / 谄媚检查）</summary>
+          <div class="signal-grid" id="mtL1Grid">
+            <div><small>conflict_ema / 冲突</small><b id="mtConflict">--</b><div class="bar"><i id="bConflict"></i></div></div>
+            <div><small>rumination_ema / 反刍</small><b id="mtRumination">--</b><div class="bar"><i id="bRumination"></i></div></div>
+            <div><small>anchor_weight / 锚定</small><b id="mtAnchor">--</b><div class="bar"><i id="bAnchor"></i></div></div>
+            <div><small>sycophancy_check / 谄媚</small><b id="mtSyco">--</b></div>
+          </div>
+          <p class="api-note" id="mtL1Note">只读投影：L1 思维前兆信号（冲突 EMA / 反刍 EMA / 锚定权重 / 谄媚检查）只用于观察，不改变回复，也不写生物层；字段缺失时整块隐藏。</p>
+        </details>
+        <p class="api-note" id="modelTraceNote">只读投影：注入 trace / 反向检查 / 路径依赖 / 费用估算只用于观察，不改变回复，也不写生物层。</p>
+      </div>
+      <div class="panel" id="panelAutonomy">
+        <div class="panel-head"><h3>自主行为就绪度</h3><span class="hint">AUTONOMY READINESS · 只读 · 默认关</span></div>
+        <div class="signal-grid" id="autonomyGrid">
+          <div><small>enabled / 启用</small><b id="autoEnabled">--</b></div>
+          <div><small>ready / 就绪</small><b id="autoReady">--</b></div>
+          <div><small>threshold / 阈值</small><b id="autoThreshold">--</b></div>
+          <div><small>max_chars / 最大字数</small><b id="autoMaxChars">--</b></div>
+          <div><small>impulse / 冲动</small><b id="autoImpulse">--</b></div>
+          <div><small>sent / 已发送</small><b id="autoSent">--</b></div>
+        </div>
+        <div class="chips" id="autonomySources"></div>
+        <p class="api-note" id="autonomyNote">只读投影：默认关闭，仅私聊路径计算；开关在 AstrBot 插件配置（proactive_autonomy / proactive_send）。</p>
+      </div>
+      <div class="panel" id="panelLearning">
+        <div class="panel-head"><h3>学习状态</h3><span class="hint">L1 LEARNING · 只读</span></div>
+        <div class="signal-grid" id="learningGrid">
+          <div><small>version / 版本</small><b id="learnVersion">--</b></div>
+          <div><small>updates / 更新次数</small><b id="learnUpdates">--</b></div>
+          <div><small>last_update / 最近更新</small><b id="learnLast">--</b></div>
+          <div><small>trust_alpha</small><b id="learnTrustAlpha">--</b></div>
+          <div><small>learning_rate</small><b id="learnRate">--</b></div>
+          <div><small>Q / top 项</small><b id="learnQTop">--</b></div>
+        </div>
+        <div class="chips" id="learningLog"></div>
+        <p class="api-note" id="learningNote">只读投影：Q 值与参数由后端确定性更新（最小样本 5、单步 ≤0.02）；开关在 AstrBot 插件配置（bio_learning）。</p>
+      </div>
+      <div class="panel signal-panel">
+        <div class="panel-head"><h3>实时生物信号</h3><span class="hint">COMPOSITE · INTERFERENCE · DECAY</span></div>
+        <canvas id="signalCanvas" style="height:160px;width:100%"></canvas>
+        <div class="signal-legend"><span><i style="background:#ff6b00"></i>COMPOSITE SIGNAL</span><span class="legend-note">状态驱动：valence / arousal / energy / stress / echo · 噪声仅作高频纹理</span></div>
+      </div>
+    </section>
+
+    <section class="view" id="view-intent">
+      <div class="section-title"><div><div class="eyebrow">TRANSLATION</div><h2>表达意图</h2></div><span class="hint">只看倾向，不生成台词</span></div>
+      <div class="persona-tabs fold-grid" id="intentTabs">
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="autonomy"><span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8a6 6 0 0 1 12 0v5l2 3H4l2-3z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg></span><small>自主行为</small></span></button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="hero">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></span><small>当前意图</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="flow">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M4 12h13M4 17h7"/><path d="M16 5l4 2-4 2M16 10l4 2-4 2M12 15l4 2-4 2"/></svg></span><small>表达流程</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="feeling">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20s-7-4.5-7-9a4 4 0 0 1 7-2 4 4 0 0 1 7 2c0 4.5-7 9-7 9Z"/></svg></span><small>她的感受</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="response">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v6h16v-6"/><path d="M8 8l4-4 4 4"/><path d="M12 4v10"/></svg></span><small>想怎么回应</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-intent-tab="context">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="7" cy="18" r="2"/></svg></span><small>内部参考</small></span>
+        </button>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelHero" data-intent-tab="hero">
+        <div class="panel-head"><h3>当前意图</h3><span class="hint">CURRENT INTENT</span></div>
+        <div class="intent-hero">
+          <div>
+            <div class="intent-kicker">CURRENT INTENT</div>
+            <div class="intent-headline"><b id="intentLabel">hold</b><p id="intentText">读取中…</p></div>
+            <div class="intent-tags" id="intentTags"></div>
+          </div>
+          <div class="intent-strength">
+            <div class="intent-strength-head"><span>表达强度</span><b id="intentStrengthText">--</b></div>
+            <div class="intent-track"><i id="intentStrengthBar"></i></div>
+            <div class="intent-strength-foot"><span id="intentUrgencyText">紧迫度 --</span><span>不直接展示原始状态</span></div>
+          </div>
+        </div>
+        <div class="intent-legend">EMOTION → NEED → EXPRESSION → PLAN：这一层只解释“为什么/想怎样”，不生成回复文本；LLM 只读这一层。</div>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelFlow" data-intent-tab="flow">
+        <div class="panel-head"><h3>表达流程</h3><span class="hint">EMOTION → NEED → EXPRESSION → PLAN</span></div>
+        <div class="intent-flow">
+          <div class="intent-step"><small>01 / 情绪</small><b id="iFlowEmotion">--</b><span>她先感到了什么</span></div>
+          <div class="intent-arrow">→</div>
+          <div class="intent-step"><small>02 / 需求</small><b id="iFlowNeed">--</b><span>她现在想要什么</span></div>
+          <div class="intent-arrow">→</div>
+          <div class="intent-step"><small>03 / 表达</small><b id="iFlowExpr">--</b><span>可以说多少</span></div>
+          <div class="intent-arrow">→</div>
+          <div class="intent-step"><small>04 / 计划</small><b id="iFlowPlan">--</b><span>准备怎么接</span></div>
+        </div>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelFeeling" data-intent-tab="feeling">
+        <div class="panel-head"><h3>她现在的感受</h3><span class="hint">FEELING</span></div>
+        <div class="intent-row"><small>emotion / 情绪</small><b id="iEmotion">--</b></div>
+        <div class="intent-row"><small>compound / 复合情绪</small><b id="iCompound">--</b></div>
+        <div class="intent-row"><small>spectrum / 最接近原型</small><b id="iSpectrum">--</b></div>
+        <div class="intent-row"><small>novelty / 意外程度</small><b id="iNovelty">--</b></div>
+        <div class="intent-row"><small>goal / 目标相关</small><b id="iGoal">--</b></div>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelResponse" data-intent-tab="response">
+        <div class="panel-head"><h3>她想怎么回应</h3><span class="hint">RESPONSE</span></div>
+        <div class="intent-row"><small>need / 需要</small><b id="iNeed">--</b></div>
+        <div class="intent-row"><small>expression / 表达程度</small><b id="iExpr">--</b></div>
+        <div class="intent-row"><small>plan / 计划</small><b id="iPlan">--</b></div>
+        <div class="intent-row"><small>regulation / 调节策略</small><b id="iReg">--</b></div>
+        <div class="intent-row"><small>coping / 应对余量</small><b id="iCoping">--</b></div>
+      </div>
+
+      <div class="panel intent-tabpanel" id="intentPanelContext" data-intent-tab="context">
+        <div class="panel-head"><h3>内部参考</h3><span class="hint">CONTEXT</span></div>
+        <div class="intent-row"><small>self / 自我定位</small><b id="iSelf">--</b></div>
+        <div class="intent-row"><small>norm / 规范匹配</small><b id="iNorm">--</b></div>
+        <p class="api-note">已移除重复/长期为空项：expected（=1-novelty）、urgency（=arousal）、attention、opponent、meta；内部参考只保留对表达有用的 self / norm。</p>
+      </div>
+    
+
+      
+      <div class="panel intent-tabpanel" data-intent-tab="autonomy" id="intentAutonomyHost"></div>
+    </section>
+
+    <section class="view" id="view-persona">
+      <div class="section-title"><div><div class="eyebrow">PERSONA &amp; SELF</div><h2>人格自我</h2></div><span class="hint">persona → numbers → self</span></div>
+      
+      
+      <div class="setting-row" id="currentPersonaNameRow"><div><b>当前人设</b><small id="currentPersonaName">当前人设：—</small></div></div>
+      <div class="persona-tabs fold-grid" id="personaTabs">
+        <button type="button" class="persona-tab fold-panel folded active" data-persona-tab="baseline">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V12M10 20V5M16 20v-9M22 20H2"/></svg></span>
+            <small>人格基线</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="self">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-4 3-6 7-6s7 2 7 6"/></svg></span>
+            <small>自我模型</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="goals">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/></svg></span>
+            <small>目标</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="editor">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l4-1 10-10-3-3L5 16l-1 4Z"/><path d="M13 5l3 3"/></svg></span>
+            <small>编辑</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="autobio">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5a3 3 0 0 1 3-3h13v18H7a3 3 0 0 1-3-3V5Z"/><path d="M8 2v18"/></svg></span>
+            <small>自传</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="tree">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="4" r="2"/><path d="M12 6v5M12 11l-5 3v4M12 11l5 3v4"/><circle cx="7" cy="20" r="2"/><circle cx="17" cy="20" r="2"/></svg></span>
+            <small>洞察树</small>
+          </span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-persona-tab="spectrum">
+          <span class="fold-face">
+            <span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><ellipse cx="12" cy="12" rx="10" ry="3.5" transform="rotate(-25 12 12)"/></svg></span>
+            <small>光谱</small>
+          </span>
+        </button>
+      </div>
+      <div class="panel persona-tabpanel active" data-persona-tab="baseline">
+        <div class="panel-head"><h3>人格基线</h3><span class="hint">OCEAN · PAD</span></div>
+        <div class="persona-bars" id="personaBars"></div>
+        <p class="persona-note" id="personaNote">首次读取 AstrBot 人设后编译</p>
+        <div class="intent-grid" id="personaBaseline"></div>
+      </div>
+      <div class="panel persona-tabpanel" id="selfStatePanel" data-persona-tab="self">
+        <div class="panel-head"><h3>自我模型与叙事</h3><span class="hint" id="selfVersion">v0</span></div>
+        <div class="self-duo">
+          <div><small>CORE SELF / 核心自我</small><p id="coreSelf">未形成</p></div>
+          <div><small>NARRATIVE SELF / 叙事自我</small><p id="narrativeSelf">未形成</p></div>
+        </div>
+        <div class="timeline">
+          <div class="tl-col"><small>PAST / 过去</small><ul id="tlPast"></ul></div>
+          <div class="tl-col"><small>PRESENT / 现在</small><p id="tlPresent">—</p></div>
+          <div class="tl-col"><small>FUTURE / 未来</small><ul id="tlFuture"></ul></div>
+        </div>
+        <div class="hist-block">
+          <small>SELF MODEL HISTORY / 最近 3 次版本</small>
+          <div id="selfHistory"></div>
+        </div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="goals">
+        <div class="panel-head"><h3>目标与冲突</h3><span class="hint">GOALS / CONFLICT</span></div>
+        <div class="signal-grid" id="goalList"></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="editor">
+        <div class="panel-head"><h3>自我模型编辑</h3><span class="hint">WHO / NARRATIVE / BOUNDARIES</span></div>
+        <p class="api-note">只修改 BioCore 的自我模型，不写回 AstrBot 人设。</p>
+        <div class="api-grid" id="selfEditGrid">
+          <label><span>WHO / 我是谁</span><input id="selfWho" placeholder="一句话自我定位" autocomplete="off"></label>
+          <label><span>NARRATIVE / 最近</span><input id="selfNarrative" placeholder="最近发生的事如何改变我看自己" autocomplete="off"></label>
+          <label><span>BOUNDARIES / 边界</span><input id="selfBoundaries" placeholder="用换行分隔" autocomplete="off"></label>
+          <label><span>CONSISTENCY / 一致性</span><input id="selfConsistency" placeholder="用换行分隔" autocomplete="off"></label>
+        </div>
+        <div class="api-actions"><button type="button" class="btn" id="selfSaveBtn">保存自我模型</button><span id="selfSaveState"></span></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="autobio">
+        <div class="panel-head"><h3>自传体时间线</h3><span class="hint">AUTOBIOGRAPHICAL SELF</span></div>
+        <div id="autoBioList"></div>
+        <p class="api-note" id="regNote">调节策略统计：uses / success / cost 是累计存储值；选择策略时按 10 天半衰做近因加权（只读，不改存储）。</p>
+        <div class="signal-grid" id="regStats"></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="tree">
+        <div class="panel-head"><h3>长期洞察树</h3><span class="hint" id="treeCount">LONG-TERM INSIGHT TREE</span></div>
+        <p class="api-note" id="treeNote">节点超过 90 天会从视图隐藏（只读软遗忘，存储不删除）。</p>
+        <div class="tree" id="reflectionTree"></div>
+      </div>
+      <div class="panel persona-tabpanel" data-persona-tab="spectrum">
+        <div class="panel-head"><h3>光谱概率 / SEC</h3><span class="hint">COWEN PROTOTYPES · SEC</span></div>
+        <div class="spec-list" id="spectrumProbs"></div>
+        <div class="sec-grid" id="secGrid"></div>
+        <p class="api-note" id="spectrumCalNote">光谱校准：仅本会话历史（跨会话不共享）；样本不足时使用纯原型锚点。</p>
+      </div>
+      <div class="notice">人设文本留在 AstrBot。这里只展示数值倾向，不写记忆、不改身份。</div>
+    </section>
+
+    <section class="view" id="view-sessions">
+      <div class="section-title"><div><div class="eyebrow">SESSIONS</div><h2>活动会话</h2></div><span class="hint" id="sessionCount">0 SESSIONS</span></div>
+      <div class="persona-tabs fold-grid" id="sessionTabs">
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="records">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16M4 10h16M4 15h16M4 20h10"/></svg></span><small>会话记录</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="summary">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5Z"/><path d="M15 3v5h5M8 12h8M8 16h6"/></svg></span><small>会话记忆</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="memory">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg></span><small>记忆元数据</small></span>
+        </button>
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="relationship">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M14 20c0-2.8 1.8-5 4-5s3 1.4 3 3"/></svg></span><small>用户关系</small></span>
+        </button>
+      </div>
+      <div class="panel session-tabpanel" id="sessionPanelRecords" data-session-tab="records">
+        <div class="panel-head"><h3>会话记录</h3><span class="hint">SESSION LIST</span></div>
+        <div class="sessions" id="sessionList"></div>
+      </div>
+      <div class="panel session-tabpanel" id="sessionPanelMemory" data-session-tab="memory">
+        <div class="panel-head"><h3>记忆元数据</h3><span class="hint">来源 / 置信度 / 层级 / 冲突 / 墓碑</span></div>
+        <div class="event-toolbar">
+          <label><span>会话</span><select id="memSessionFilter" class="event-session"></select></label>
+          <span class="hint" id="memIndexNote">正在读取记忆索引…</span>
+        </div>
+        <div class="mem-tier-legend">
+          <span class="mem-legend-tag">来源：用户直述 / 图片语音 / 转述 / 检索 / 推断 / 未知</span>
+          <span class="mem-legend-tag">层级：HOT / WARM / COLD</span>
+          <span class="mem-legend-tag">删除 = 软删除并保留墓碑</span>
+          <span class="mem-legend-tag">重要度 / 关联为存储值，检索按 30 天半衰有效值</span>
+        </div>
+        <div class="signal-grid" id="memRecallGrid">
+          <div><small>recall / 召回条数</small><b id="memRecallCount">--</b></div>
+          <div><small>confidence / 平均置信</small><b id="memRecallConf">--</b></div>
+          <div><small>answer / 答案置信</small><b id="memRecallAnswer">--</b></div>
+          <div><small>gate / 弃权门</small><b id="memRecallGate">--</b></div>
+          <div><small>calibration / 校准偏移</small><b id="memCalibration">--</b></div>
+          <div><small>working_set / 工作集</small><b id="memWorkingSet">--</b></div>
+          <div><small>trace / 记忆痕迹</small><b id="memTrace">--</b></div>
+          <div><small>conflicts / 冲突条数</small><b id="memRecallConflicts">--</b></div>
+        </div>
+        <p class="api-note" id="memHintNote">策略提示：--</p>
+        <p class="api-note" id="memRecallNote">召回元数据是只读投影：校准偏移只作用于本轮召回的置信度（≤±0.05，不写存储）；工作集 TTL 2 小时在召回时过滤，这里显示后端已给的原始列表。</p>
+        <div class="hist-block" id="chainBlock">
+          <small>CHAIN LINKS / 事件链（只读 · 默认关）</small>
+          <div id="chainList"></div>
+          <p class="api-note" id="chainNote">事件链默认关闭（memory_chain_enabled）；开启后在 AstrBot 插件配置里改。这里只读展示已归档事件的 chain_links，链接权重在读取时按 30 天半衰。</p>
+        </div>
+        <p class="api-note" id="memEmpty">还没有可展示的记忆条目。</p>
+        <div id="memEntryList"></div>
+        <div class="mem-tombstones">
+          <small>TOMBSTONES / 已删除记忆（软删除，可审计；点“恢复”可撤销）</small>
+          <div id="memTombstoneList"></div>
+        </div>
+      </div>
+
+      <div class="panel session-tabpanel" id="sessionPanelSummary" data-session-tab="summary">
+        <div class="panel-head"><h3>会话记忆</h3><span class="hint">会话 → 记忆 → 总结 → 重要事件 → 全部消息</span></div>
+        <div class="event-toolbar">
+          <label><span>会话</span><select id="summarySession" class="event-session"></select></label>
+          <span class="hint" id="summaryHint">还没有已总结的会话</span>
+        </div>
+        <p class="api-note" id="summaryEmpty">还没有已总结的会话。事件总结生成后，这里才会出现对应会话。</p>
+        <div id="sessionSummaryBlock"></div>
+      </div>
+
+      <div class="panel session-tabpanel" id="sessionPanelRelationship" data-session-tab="relationship">
+        <div class="panel-head"><h3>用户关系</h3><span class="hint">亲近 / 冲突 / 修复 / 可预测</span></div>
+        <div class="event-toolbar">
+          <label><span>用户</span><select id="relUserFilter" class="event-session"></select></label>
+          <span class="hint" id="relStateHint">关系状态与最近轨迹</span>
+        </div>
+        <p class="api-note" id="relNote">只读关系投影：calibration 只记录（EWMA/Brier），并只用于召回置信度；关系 → 稳态（C6）有一轮延迟。</p>
+        <p class="api-note" id="relEmpty">还没有关系记录。</p>
+        <div id="relBody"></div>
+      </div>
+    </section>
+
+
+    
+    <section class="view" id="view-now">
+      <div class="section-title"><div><div class="eyebrow">NOW</div><h2>她现在</h2></div><span class="hint" id="nowHint">读取中…</span></div>
+      <div class="ui3-root" id="nowRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+
+    <section class="view" id="view-relationship">
+      <div class="section-title"><div><div class="eyebrow">RELATIONSHIP</div><h2>关系</h2></div><span class="hint" id="relHint">读取中…</span></div>
+      <div class="ui3-root" id="relRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+
+    <section class="view" id="view-records">
+      <div class="section-title"><div><div class="eyebrow">RECORDS</div><h2>记录</h2></div><span class="hint" id="recHint">读取中…</span></div>
+      <div class="ui3-root" id="recRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+
+    <section class="view" id="view-debug">
+      <div class="section-title"><div><div class="eyebrow">DEBUG</div><h2>调试</h2></div><span class="hint" id="debugHint">读取中…</span></div>
+      <div class="ui3-root" id="debugRoot"><div class="ui3-empty">加载中…</div></div>
+    </section>
+
+    <section class="view active" id="view-pipeline">
+      <div class="section-title"><div><div class="eyebrow">PIPELINE</div><h2>流水线 · 步骤与开关</h2></div><span class="hint">PIPE-3 · 影子运行</span></div>
+      <div class="pipe-head"><span class="pipe-conn"><span class="dot" id="pipeDot"></span><span id="pipeConn">读取中…</span></span><span class="pipe-mode" id="pipeMode">mode —</span></div>
+      <div class="pipe-bus" id="pipeStatusBus"></div>
+      <p class="pipe-hint" id="pipeHint"></p>
+      <div class="pipe-list" id="pipeList"></div>
+      <div class="pipe-detail" id="pipeDetail" hidden></div>
+      <div class="pipe-actions">
+        <div class="pipe-add"><div><b>添加阶段</b><small>本期占位：新阶段需在 biocore_model/pipeline.py 注册后才出现，页面只读。</small></div><button type="button" class="btn" id="pipeAddBtn" disabled>＋ 添加模块</button></div>
+        <div class="pipe-dry">
+          <div class="pipe-dry-head"><b>试运行</b><small>走 shadow 流水线：不调 LLM、不写核心、不发送消息。</small></div>
+          <div class="pipe-dry-row"><input type="text" id="pipeDryText" placeholder="输入一句会发来的话，例如：今天有点累，晚点聊" /><button type="button" class="btn" id="pipeDryBtn">试运行</button></div>
+          <div class="pipe-dry-state" id="pipeDryState">尚未试运行。</div>
+          <div class="pipe-trace" id="pipeDryTrace"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view mode-simple" id="view-settings">
+      <div class="settings-tabs fold-grid" id="settingsTabs">
+<button type="button" class="settings-tab fold-panel folded" data-settings-target="settingsBio"><span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg></span><small>生物</small></span></button>
+<button type="button" class="settings-tab fold-panel folded" data-settings-target="settingsMemory"><span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></span><small>记忆</small></span></button>
+<button type="button" class="settings-tab fold-panel folded" data-settings-target="settingsModel"><span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 3v3M15 3v3M9 18v3M15 18v3M3 9h3M3 15h3M18 9h3M18 15h3"/></svg></span><small>模型</small></span></button>
+        <button type="button" class="settings-tab fold-panel folded" data-settings-target="settingsVisual"><span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></svg></span><small>球体</small></span></button>
+<button type="button" class="settings-tab fold-panel folded" data-settings-target="settingsSystem"><span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg></span><small>系统</small></span></button>
+
+        </div>
+      <div class="section-title" data-settings-title="settingsApi"><div><div class="eyebrow">API ACCESS</div><h2>API 接入 · 覆盖项</h2></div><span class="hint">ASTRBOT 优先</span></div>
+      
+      
+<div class="section-title mt" data-settings-title="settingsCoreStatus"><div><div class="eyebrow">CORE</div><h2>核心状态</h2></div><span class="hint">只读投影</span></div>
+        
+        <div class="section-title mt" data-settings-title="settingsSafety"><div><div class="eyebrow">SAFETY</div><h2>安全</h2></div><span class="hint">记录优先</span></div>
+        
+        <div class="section-title mt" data-settings-title="settingsLlm"><div><div class="eyebrow">LLM</div><h2>LLM 候选</h2></div><span class="hint">候选与用量</span></div>
+        
+        <div class="section-title mt" data-settings-title="settingsExpression"><div><div class="eyebrow">EXPRESSION</div><h2>表达</h2></div><span class="hint">共情/语用/心智/幽默</span></div>
+        
+        <div class="section-title mt" data-settings-title="settingsMemory"><div><div class="eyebrow">MEMORY</div><h2>记忆设置</h2></div><span class="hint">安全限制默认开 · 私人使用可关</span></div>
+      
+      <div class="section-title mt" data-settings-title="settingsVisual"><div><div class="eyebrow">VISUALIZATION</div><h2>球体图层</h2></div><span class="hint">仅影响本地显示</span></div>
+      
+      <div class="section-title mt" data-settings-title="settingsVersion"><div><div class="eyebrow">VERSION</div><h2>版本更新</h2></div><span class="hint">GitHub repository</span></div>
+      
+      <div class="section-title mt" data-settings-title="settingsBackup"><div><div class="eyebrow">BACKUP</div><h2>核心备份</h2></div><span class="hint">含记忆/人设/API KEY</span></div>
+      
+    
+<div class="settings-fold-grid" id="settingsGroups">
+
+<div class="panel settings settings-panel" id="settingsBio">
+
+    
+    
+    
+  
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_expression_rules"><div><b id="featLabel_feat_expression_rules">[本地] 情绪表达调节</b><small>情绪注入走解释层（affect → 文本）；不调用 LLM、不花钱</small></div><label class="switch"><input type="checkbox" id="feat_expression_rules" checked><span></span></label></div>
+
+        
+
+        
+        
+
+        
+<div class="setting-row" data-advanced="1"><div><b>[本地] 共情提示（旧键，映射到情绪表达调节）</b><small>好消息/坏消息的回应策略枚举；默认关闭，不写完整安慰句。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_empathy_hint_enabled"><span></span></label><select id="fn_empathy_hint_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[已并入规则] 语用/澄清提示</b><small>记忆不确定或指代不清时的 clarify/confirm/hedge 提示；默认关闭。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_pragmatics_hint_enabled"><span></span></label><select id="fn_pragmatics_hint_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[已并入规则] 用户信念推断</b><small>bounded 信念/愿望/意图推断，证据 refs 必填；默认关闭，不写核心状态。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_tom_probe_enabled"><span></span></label><select id="fn_tom_probe_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[已并入规则] 幽默时机提示</b><small>仅关系稳定时给 light/none 提示；默认关闭，不生成玩笑句。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_humor_hint_enabled"><span></span></label><select id="fn_humor_hint_provider" class="event-session"></select></div></div>
+      
+        
+        
+        
+
+        
+        
+        
+
+        
+        </div>
+<div class="panel settings settings-panel" id="settingsMemory">
+        <div class="setting-row" id="memGroupHead"><div><b>记忆 · 嵌入与去重</b><small>4 个开关：2 个可保存到后端，2 个后端暂无键（标注暂不支持，不给假开关）</small></div></div>
+        <div class="setting-row"><div><b>启用嵌入</b><small>用 AstrBot / 自定义 embedding 做记忆召回与余弦排重；关闭后只剩词法命中。</small></div><label class="switch"><input type="checkbox" id="swMemEmbedding"><span></span></label></div>
+        <div class="setting-row"><div><b>嵌入失败回退</b><small>embedding 超时或报错时降级为词法检索。暂不支持：后端只有 embedding_timeout_ms（超时→无向量），没有可写开关键。</small></div><span class="hint">暂不支持</span></div>
+        <div class="setting-row"><div><b>写入去重</b><small>写入侧余弦排重。暂不支持：后端键 bc_dedupe_enabled 仅存在于 _conf_schema，面板没有可写路由（page/toggle 白名单不含它）。</small></div><span class="hint">暂不支持</span></div>
+        <div class="setting-row"><div><b>召回去重（MMR）</b><small>embedding 余弦之外加词法分，并用 MMR 降低近重复记忆占位；关闭则只用余弦。</small></div><label class="switch"><input type="checkbox" id="swHybridRetrieval" checked><span></span></label></div>
+
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_memory_compress"><div><b id="featLabel_feat_memory_compress">记忆压缩</b><small>启用压缩；阈值/上限见下方高级参数</small></div><label class="switch"><input type="checkbox" id="feat_memory_compress"><span></span></label></div>
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_memory_retrieval"><div><b id="featLabel_feat_memory_retrieval">混合检索</b><small>词法 + MMR；关闭只用 embedding 余弦</small></div><label class="switch"><input type="checkbox" id="feat_memory_retrieval"><span></span></label></div>
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_memory_insight"><div><b id="featLabel_feat_memory_insight">事件与洞察</b><small>事件总结/排序/长期洞察/自动洞察/记忆总结</small></div><label class="switch"><input type="checkbox" id="feat_memory_insight"><span></span></label></div>
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_memory_relation"><div><b id="featLabel_feat_memory_relation">关系与日记</b><small>关系印象/修复策略/日记/关系叙事</small></div><label class="switch"><input type="checkbox" id="feat_memory_relation"><span></span></label></div>
+
+        
+        
+        
+        
+
+        
+        <div class="setting-row" data-advanced="1"><div><b>启用记忆压缩</b><small>超过阈值后压缩旧记忆。</small></div><label class="switch"><input type="checkbox" id="swCompress"><span></span></label></div>
+        <div class="api-grid">
+          <label><span>触发阈值 / 字符</span><input id="compressThreshold" type="number" min="1000" step="500" value="6000"></label>
+          <label><span>压缩后最大 / 字符</span><input id="compressMax" type="number" min="120" step="100" value="800"></label>
+        </div>
+        <div class="api-actions"><button type="button" class="btn mini" id="compressSaveBtn">保存压缩设置</button><span class="api-note" id="compressSaveState"></span></div>
+        
+        
+        
+        
+        
+        
+        
+        
+        
+        <div class="setting-row"><div><b>人格提示词来源</b><small>选择哪个人设提示词编译为数值倾向；留空跟随 AstrBot 当前默认人设。首次使用或更换时编译一次，不重复调用 LLM。</small></div><div class="llm-route"><span class="llm-route-slot" aria-hidden="true"></span><select id="personaSelect" class="event-session"></select></div></div>
+        <p class="api-note">功能路由：每个功能独立开关；需要 LLM 的功能默认跟随主 LLM，可指定其他 provider（找不到时回退主 LLM）。事件排序不选模型：嵌入与重排固定跟随 API 接入的默认配置；图片描述只走视觉 provider。</p>
+        <p class="api-note">说明：事件感悟（单事件）在事件总结里；长期模式洞察（跨事件）是更高层综合，默认手动生成。</p>
+        
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 事件总结</b><small>强事件发生时总结成事件档案（含「事件感悟（单事件）」）；默认启用。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_summary_enabled"><span></span></label><select id="fn_event_summary_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 事件排序（嵌入+规则）</b><small>确定性分段 + embedding 新异度 + 线索排序，不调用 LLM；嵌入与重排固定跟随 API 接入的默认配置，不再单独选模型。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_event_ranking_enabled"><span></span></label></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 长期模式洞察（跨事件）</b><small>跨事件高层综合。LLM 开关只控制是否允许调用模型；主入口是下方「生成长期洞察」按钮，默认手动。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_insight_enabled"><span></span></label><select id="fn_insight_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 自动长期洞察</b><small>默认关闭。打开后才会在记忆压缩/事件归档时按「新增重要事件 ≥3 + 60 分钟冷却 + 24 小时兜底」自动生成；LLM 开关关闭时不会在后台写入任何记录。</small></div><label class="switch"><input type="checkbox" id="swInsightAuto"><span></span></label></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 记忆总结</b><small>记忆巩固时生成摘要+候选；默认启用。关闭时改用 embedding 分组+去重的抽取式摘要，不调用 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_memory_summary_enabled"><span></span></label><select id="fn_memory_summary_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 图片描述</b><small>调用视觉 provider 描述图片；默认关闭，且只走视觉 API，不混用文本 LLM。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_image_caption_enabled"><span></span></label><select id="fn_image_caption_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 关系印象抽取</b><small>从近期事件提议关系印象/特质；默认关闭，证据 refs 必填，只写有界 annotation，不改 trust/goals。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_relationship_impression_enabled"><span></span></label><select id="fn_relationship_impression_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 修复策略提示</b><small>冲突后由模型在固定枚举里选一种修复策略；默认关闭，只给策略不给完整句子。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_repair_hint_enabled"><span></span></label><select id="fn_repair_hint_provider" class="event-session"></select></div></div>
+        
+        
+        
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 日记渲染</b><small>每天最多一次，用确定性 daily digest + 事件证据生成一条日记；默认关闭。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_diary_enabled"><span></span></label><select id="fn_diary_provider" class="event-session"></select></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>[LLM] 关系叙述</b><small>用关系状态+里程碑生成简短叙述；默认关闭，证据 refs 必填。</small></div><div class="llm-route"><label class="switch"><input type="checkbox" id="fn_relationship_narrative_enabled"><span></span></label><select id="fn_relationship_narrative_provider" class="event-session"></select></div></div>
+        
+        <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
+        <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
+        <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
+        <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
+        <div class="insight-card">
+          <div class="insight-card-head">
+            <div><b>最近长期模式洞察</b><small>跨事件高层综合；默认手动生成，最近结果如下。</small></div>
+            <div class="insight-card-actions"><button type="button" class="btn primary" id="insightNowBtn">生成长期洞察</button><span class="insight-hint" id="insightHint"></span></div>
+          </div>
+          <div class="insight-history" id="insightHistoryList"></div>
+          <span class="api-note" id="insightState"></span>
+        </div>
+      
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_safety"><div><b id="featLabel_feat_safety">敏感掩码与投毒过滤</b><small>敏感信息掩码、跨会话隔离、投毒过滤</small></div><label class="switch"><input type="checkbox" id="feat_safety"><span></span></label></div>
+
+        
+
+        
+<div class="setting-row" data-advanced="1"><div><b>安全限制（默认开）</b><small>开启后提供敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤；默认开。</small></div><label class="switch"><input type="checkbox" id="swSafetyEnabled" checked><span></span></label><p class="setting-warn" id="safetyWarn" hidden>该开关控制敏感信息掩码与投毒过滤；危机分级/日志由核心 GA-03 模块提供（默认只记录不拦截）。</p></div>
+        <div class="setting-row" id="crisisNoteRow"><div><b>危机分级</b><small>只记录不拦截；critical/high 会携带安全契约（资源、must_ack、不放弃），并写入 crisis 日志。</small></div></div>
+      
+      </div>
+<div class="panel settings settings-panel" id="settingsModel">
+        <div class="setting-row"><div><b>回复软限制</b><small>写进提示词：平时短、上限可控，模型可按情况略增</small><small id="replySoftState">—</small></div><label class="switch"><input type="checkbox" id="replySoftEnabled" checked><span></span></label></div>
+        <div class="setting-row"><div><b>平时约多少字</b><small>基线 1–30，默认 10</small></div><input type="number" id="replySoftTargetChars" min="1" max="30" step="1" value="10"></div>
+        <div class="setting-row"><div><b>最多多少字</b><small>上限 1–30，默认 30；target ≤ max</small></div><input type="number" id="replySoftMaxChars" min="1" max="30" step="1" value="30"><button class="btn" id="replySoftSaveBtn" type="button">保存</button></div>
+    <div class="setting-row" id="personaCompileHeader"><div><b>人格编译</b><small>默认读取 AstrBot 当前人设并转为数值倾向；首次使用或更换人设时点一次。不写记忆、不改身份。会消耗一次 LLM 调用。</small></div></div>
+    <div class="setting-row" id="currentPersonaRow"><div><b>当前人格</b><small id="currentPersonaSource">AstrBot 当前人设</small><small id="currentPersonaNameModel">当前人设：—</small><small id="currentPersonaVersion">未编译（点右侧按钮）</small><small id="currentPersonaTraits">—</small><small id="currentPersonaSummary">—</small></div>
+    <div class="setting-row" id="personaTargetRow"><div><b>编译用人设</b><small>选择编译用的人设；留空跟随 AstrBot 默认人设</small><small><select id="personaTargetSelect" class="event-session"></select> <span id="personaTargetState">—</span></small></div></div></div><div class="panel settings" id="personaCompilePanel">
+        <div class="setting-row" id="personaCompileRow">
+          <div><b>人格编译</b><small>编译会把人格文本转成数值倾向；不写记忆、不改身份</small></div>
+          <div class="inline-actions">
+            <button class="btn" id="personaCompileBtn" type="button">立即编译人格</button>
+            <select id="fn_persona_compile_provider" class="event-session"></select>
+          </div>
+        </div>
+        <div class="setting-row" id="personaCompileConfirmRow" hidden><div><b id="personaCompileConfirmText">将调用 LLM 编译当前人设，消耗一次调用，确认？</b></div>
+          <div class="inline-actions">
+            <button class="btn" id="personaCompileConfirmYes" type="button">确认</button>
+            <button class="btn" id="personaCompileConfirmNo" type="button">取消</button>
+          </div>
+        </div>
+        <p class="setting-warn" id="personaCompileToast" hidden></p>
+      </div>
+
+      
+      
+        <div class="setting-row" data-feature-row="1" id="featRow_feat_llm_image"><div><b id="featLabel_feat_llm_image">[LLM] 图片描述</b><small>收到图片时调用；不可用则跳过（失败降级）</small></div><label class="switch"><input type="checkbox" id="feat_llm_image"><span></span></label></div>
+
+        
+        
+        <div class="setting-row" data-advanced="1" id="featInsightRow"><div><b>[LLM] 模式洞察（手动）</b><small>长期模式洞察跨事件综合：手动生成；自动子项见下方「自动长期洞察」；不可用则跳过，失败降级</small></div><button class="btn" id="feat_llm_insight_btn" type="button">生成长期洞察</button></div>
+        <div class="setting-row" id="llmRouteRow"><div><b>LLM 路由</b><small>默认全局：跟随主 LLM / 自定义（高级可对个别功能覆盖）</small></div><select id="llm_route_default" class="event-session"><option value="follow_llm">跟随主 LLM</option><option value="custom">自定义</option></select></div>
+        <div class="setting-row" id="llmBudgetRow"><div><b>今日 LLM 调用</b><small id="llmBudgetText">0 / 200（统一预算；耗尽自动降级）</small></div></div>
+
+        
+        <div class="setting-row" id="llmGatesNoteRow"><div><b>核心侧 LLM 闸</b><small>[LLM] extract / [LLM] embed / [LLM] summarize / [LLM] optimize / [LLM] judge：跟随主 LLM；触发式调用；有日预算，不可用则跳过，不影响回复（失败降级）</small></div></div>
+
+        
+<div class="setting-row" data-advanced="1"><div><b>[LLM] LLM 记忆候选</b><small>记忆巩固时让 LLM 顺带提议 ADD/UPDATE 候选，由生物层决定；永不 DELETE、不增加调用次数。</small></div><label class="switch"><input type="checkbox" id="swLlmCandidates" checked><span></span></label></div>
+        
+        
+      
+      
+        <div class="setting-row" id="replyLimitRow"><div><b>回复长度（max_tokens）</b><small id="replyLimitText">当前 max_tokens = — · provider —</small><small>该值由 AstrBot 模型配置提供；在这里改会同时改 AstrBot</small></div><div class="inline-actions"><input id="replyLimitInput" type="number" min="64" max="4096" step="32" style="width:96px"><button class="btn" id="replyLimitSaveBtn" type="button">保存</button><span class="api-note" id="replyLimitState">—</span></div></div>
+        <div class="setting-row" id="replySplitRow"><div><b>回复分段</b><small>由 BioCore 控制，不改 AstrBot 配置；开启后长回复按句拆成多条消息</small></div><label class="switch"><input type="checkbox" id="replySplitEnabled"><span></span></label></div>
+        <div class="setting-row"><div><b>分段方式</b><small>按标点 / 按换行 / 自定义词</small></div><select id="replySplitMode"><option value="punct">按标点（。？！~…）</option><option value="newline">按换行</option><option value="words">自定义词</option></select></div>
+        <div class="setting-row"><div><b>分段字数上限</b><small>超过此长度的回复保持整条（20–4000）</small></div><input id="replySplitMaxChars" type="number" min="20" max="4000" step="10" value="400"></div>
+        <div class="setting-row"><div><b>保存分段</b><small id="replySplitEffective">AstrBot 当前：—</small><small id="replySplitState">未修改</small></div><button class="btn" id="replySplitSaveBtn" type="button">保存分段设置</button></div>
+</div>
+<div class="panel settings settings-panel" id="settingsVisual">
+<div class="setting-row" data-feature-row="1" id="featRow_feat_visual_nodes"><div><b id="featLabel_feat_visual_nodes">节点显示</b><small>情绪节点 / 记忆节点</small></div><label class="switch"><input type="checkbox" id="feat_visual_nodes" checked><span></span></label></div>
+<div class="setting-row" data-feature-row="1" id="featRow_feat_visual_links"><div><b id="featLabel_feat_visual_links">连线显示</b><small>粒子连线 / 情绪影响线</small></div><label class="switch"><input type="checkbox" id="feat_visual_links" checked><span></span></label></div>
+<div class="setting-row" data-feature-row="1" id="featRow_feat_visual_rings"><div><b id="featLabel_feat_visual_rings">光环强度</b><small>强度环 / 外层环 / 控制感环 / 社交环</small></div><label class="switch"><input type="checkbox" id="feat_visual_rings" checked><span></span></label></div>
+
+<div class="setting-row"><div><b>记忆球次情绪环样式</b><small>每颗记忆球旁的次情绪环样式（跟球走，不是全局强度指示）：3D 椭圆轨道（默认）=像大球一样的倾斜椭圆轨道（透视/慢转）；360° 实线圆=完整实线圆（静止，不旋转/不高光）。只影响本地显示，刷新后保留。</small></div><select id="selMemoryRingStyle"><option value="orbit">3D 椭圆轨道（默认）</option><option value="solid">360° 实线圆（静止）</option></select></div>
+        <div class="setting-row"><div><b>记忆球颜色模式</b><small>混合色（默认）=球体按 top3 情绪层 p 加权 OKLCH 混合（主情绪权重≥60%，不灰不白），环包含主情绪+非主层；主情绪单色=球体只用主情绪颜色，环只画非主情绪层。只影响本地显示。</small></div><select id="selMemoryBallColorMode"><option value="mixed">混合色（默认）</option><option value="primary">主情绪单色</option></select></div>
+        <div class="setting-row" data-advanced="1"><div><b>记忆球引力</b><small>开启后记忆球按重要度互相轻微吸引（仅视觉偏移，8-12px 上限，不拉进中心球、不重叠），默认开启。只影响本地显示。</small></div><label class="switch"><input type="checkbox" id="swMemoryBallGravity" checked><span></span></label></div>
+        <div class="setting-row" data-advanced="1"><div><b>评价粒子</b><small>三圈环形粒子，随 arousal/stress 扩张或收敛，颜色跟随情绪色。</small></div><label class="switch"><input type="checkbox" id="swShowNoise" checked><span></span></label></div>
+        <div class="setting-row" data-advanced="1"><div><b>连线（粒子 + 情绪影响）</b><small>连接同环相邻粒子（attention 高或悬停时淡入）；同时控制情绪节点之间的淡线。</small></div><label class="switch"><input type="checkbox" id="swShowLinks" checked><span></span></label></div>
+        
+        
+        <div class="setting-row" data-advanced="1"><div><b>记忆球 / 节点（含情绪节点）</b><small>默认只显示“事件总结球”：已归档的重要事件，通常只有一个；记忆经过巩固/总结后才会追加记忆球（最多 10 个）；普通每轮闲聊不成球。</small></div><div class="setting-legend"><small>显示图例</small><label class="switch switch-mini" title="球体下方图例显示/隐藏"><input type="checkbox" id="swOrbLegend" checked><span></span></label><label class="switch"><input type="checkbox" id="swShowMemoryNodes" checked><span></span></label></div></div>
+        <div class="setting-row" data-advanced="1"><div><b>只显示重要记忆球</b><small>默认开启：只有重要度≥0.60 或“自指记忆”才成球（普通闲聊/低重要度记忆不成球）；关闭后最多显示 10 条记忆球。</small></div><label class="switch"><input type="checkbox" id="swMemoryBallsImportant" checked><span></span></label></div>
+        <div class="setting-row"><div><b>面板显示</b><small>只控制 Dashboard 上哪些只读面板可见，不改后端配置；proactive_autonomy / proactive_send / bio_learning / memory_chain_enabled 请到 AstrBot 插件配置里改。</small></div><div class="setting-legend"><small>自主行为</small><label class="switch switch-mini" title="显示「自主行为就绪度」面板"><input type="checkbox" id="swShowAutonomyPanel" checked><span></span></label><small>学习状态</small><label class="switch switch-mini" title="显示「学习状态」面板"><input type="checkbox" id="swShowLearningPanel" checked><span></span></label><small>事件链</small><label class="switch switch-mini" title="显示「事件链」列表"><input type="checkbox" id="swShowChainList" checked><span></span></label></div></div>
+        
+        <div class="setting-row"><div><b>恢复默认显示</b><small>清除本地可视化开关缓存并刷新页面（不影响后端数据）。</small></div><button type="button" class="btn mini" id="resetVisualBtn">恢复默认显示</button></div>
+        <div class="setting-row"><div><b>高级参数（环 / 强度）</b><small>展开后调整外层环、控制感环、社交连接环与信号强度</small></div><label class="switch"><input type="checkbox" id="swVisualAdvanced"><span></span></label></div>
+        <div id="visualAdvancedBody" hidden>
+<div class="setting-row" data-advanced="1" id="emotionRingsRow"><div><b>情绪强度环（旧版外围椭圆，默认关）</b><small>每个情绪色环的粗细/亮度 = 该维度的当前强度（效价/唤醒/压力…）；此项为旧版外围椭圆（A/B 用），默认关闭。</small></div><label class="switch"><input type="checkbox" id="swShowEmotionRings"><span></span></label></div>
+        
+        
+        <div class="setting-row" data-advanced="1"><div><b>外层环（含第二环）</b><small>围绕球体自主运转的环（速度来自 echo / echo_trace），并同时控制第二条反向环。</small></div><label class="switch"><input type="checkbox" id="swShowEcho" checked><span></span></label></div>
+        
+        <div class="setting-row" data-advanced="1"><div><b>控制感环</b><small>外环半径来自 dominance；低控制内收，高控制外放。</small></div><label class="switch"><input type="checkbox" id="swShowDominance" checked><span></span></label></div>
+        <div class="setting-row" data-advanced="1"><div><b>社交连接环</b><small>最外层，半径来自 social；连接强时外扩。</small></div><label class="switch"><input type="checkbox" id="swShowSocial" checked><span></span></label></div>
+        <div class="setting-row"><div><b>强度</b><small>调整球体周围信号的整体幅度。</small></div><input type="range" id="orbIntensity" min="0" max="100" value="65"></div>
+                </div>
+        <p class="save-state" id="saveState">球体显示开关即时保存到本地浏览器（不写后端配置）</p>
+      
+      
+      </div>
+<div class="panel settings settings-panel" id="settingsSystem">
+
+        <div class="setting-row" id="coreIndexRow" hidden><div><b>索引诊断</b><small id="coreIndexText">索引：—</small></div></div>
+      
+      
+        <div class="setting-row"><div><b>检查更新</b><small>对比 GitHub 仓库最新 metadata.yaml 版本；只检查提示，安装仍走 AstrBot 插件管理。</small></div><button type="button" class="btn" id="updateCheckBtn">检查更新</button></div>
+        <div class="setting-row"><div><b>Gitee 镜像</b><small>owner/repo；填了之后检查更新会优先尝试 Gitee raw。留空只试 GitHub。</small></div><input id="giteeRepo" placeholder="Johnhmzm/astrbot_plugin_biocore" autocomplete="off"></div>
+        <div class="api-actions"><button type="button" class="btn mini" id="giteeSaveBtn">保存镜像</button><span class="api-note" id="giteeState">未配置</span></div>
+        <p class="api-note" id="updateState">当前版本：加载中…</p>
+        <p class="api-note" id="updateNote">AstrBot 插件管理 → BioCore → 更新（需绑定 GitHub/Gitee 仓库）；或打开仓库手动下载。</p>
+        <p class="api-note" id="migNote" hidden></p>
+        <a class="btn mini" id="updateOpenRepo" href="https://github.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener">打开 GitHub 仓库</a>
+        <a class="btn mini" id="updateOpenGitee" href="https://gitee.com/Johnhmzm/astrbot_plugin_biocore" target="_blank" rel="noopener" style="display:none">打开 Gitee 仓库</a>
+      
+        
+        <div class="setting-row"><div><b>下载核心备份</b><small>插件代码 + data/ 打包成 zip，可用于迁移或恢复。</small></div><button type="button" class="btn" id="backupBtn">下载备份</button></div>
+        <div class="setting-row"><div><b>管理令牌</b><small>远程 dashboard 备份/导出/删除/恢复需与插件配置 data_admin_token 一致；只存本机 localStorage。</small></div><input id="adminTokenInput" type="text" placeholder="可选" /></div>
+      <div class="setting-row"><div><b>导出 / 硬删除</b><small>导出 JSON 不含 API Key；硬删除先写 tombstone（保留原文，仅用于恢复）。</small></div><button type="button" class="btn mini" id="dataExportBtn">导出 JSON</button> <button type="button" class="btn danger" id="dataDeleteBtn">硬删除</button></div>
+      <p class="api-note" id="dataAdminState"></p>
+      <p class="api-note" id="backupState">⚠ 安全备份：不含 API Key（api_config/密钥文件被排除，JSON 密钥字段脱敏）；点击后需确认，生成一次性下载链接。</p>
+        <div class="setting-row"><div><b>加载核心备份</b><small>选择备份 zip；连续点击两次确认，会覆盖当前 data/。</small></div></div>
+        <input type="file" id="restoreFile" accept=".zip,application/zip" style="margin:8px 0">
+        <button type="button" class="btn danger" id="restoreBtn">加载备份（需点两次）</button>
+        <p class="api-note" id="restoreState">尚未选择备份。</p>
+      
+      </div>
+</div>
+</section>
+    <footer class="statusbar"><span>BioCore is a tendency layer, not a script.</span><span id="footTime"></span></footer>
+  </main>
+</div>
+
+
+<script>
+window.__biocoreLog=window.__biocoreLog||[];
+function _diagEl(){ var el=document.getElementById('biocoreDiag'); if(el) return el;
+  el=document.createElement('div'); el.id='biocoreDiag';
+  el.style.cssText='position:fixed;left:8px;bottom:8px;right:8px;z-index:9999;background:#5a1a1a;color:#fff;font:12px/1.4 monospace;padding:6px 8px;border-radius:4px;white-space:pre-wrap;max-height:20vh;overflow:auto;display:none';
+  var b=document.createElement('button'); b.textContent='×'; b.style.cssText='position:absolute;top:2px;right:6px;background:transparent;border:0;color:#fff;font-size:14px;cursor:pointer'; b.onclick=function(){ el.style.display='none'; };
+  el.appendChild(b); (document.body||document.documentElement).appendChild(el); return el; }
+window.__diagLog=function(m){ try{ window.__biocoreLog.push(String(m)); if(window.__biocoreLog.length>200) window.__biocoreLog.shift();
+  if(String(location.search||'').indexOf('diag=1')>=0){ var el=_diagEl(); el.textContent=window.__biocoreLog.slice(-20).join('\n'); el.style.display='block'; } }catch(e){} };
+window.__diagError=function(m){ try{ var el=_diagEl();
+  var lines=String(el.textContent||'').split('\n').concat(String(m)); if(lines.length>20) lines=lines.slice(-20);
+  el.textContent=lines.join('\n')+'\n'; el.style.display='block';
+  if(window.__diagTimer) clearTimeout(window.__diagTimer);
+  window.__diagHide=function(){ el.style.display='none'; };
+  window.__diagTimer=setTimeout(function(){ el.style.display='none'; },10000); }catch(e){} };
+window.__diag=window.__diagError;
+window.__diagHide=function(){ var el=document.getElementById('biocoreDiag'); if(el) el.style.display='none'; };
+try{window.__diagLog('SRC: script='+(document.currentScript&&document.currentScript.src||'inline')+' | page='+location.href);}catch(e){}
+window.addEventListener('error',function(e){window.__diagError('ERR: '+(e.message||'')+' | '+(e.filename||'?')+':'+(e.lineno||0)+':'+(e.colno||0));},true);
+window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__diagError('REJ: '+(r&&(r.stack||r.message)||r));});
+setTimeout(function(){var s=document.getElementById('topStatus');if(s&&s.textContent==='连接中…'){window.__diagError('WATCHDOG: load 未执行或未完成（5s）');}},5000);
+</script>
+<script src="./orb_math.js?v=1"></script>
+<script src="./app.js?v=1"></script>
+<script src="./ui_kit.js?v=1"></script>
+<script src="./registry.js?v=1"></script>
+<script src="./pipeline.js?v=1"></script>
+<script src="./now.js?v=1"></script>
+<script src="./relationship.js?v=1"></script>
+<script src="./records.js?v=1"></script>
+<script src="./debug.js?v=1"></script>
+<script src="./settings_ui.js?v=1"></script>
+<script src="./nav_boot.js?v=1"></script>
+<script src="./orb.js?v=1"></script>
+
+</body>
+</html>

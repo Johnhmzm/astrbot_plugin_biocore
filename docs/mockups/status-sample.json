@@ -1,0 +1,166 @@
+{
+  "ok": true,
+  "enabled": true,
+  "proactive_reply": false,
+  "profile": {
+    "name": "default",
+    "v": 0.42,
+    "a": 0.31,
+    "stress": 0.21,
+    "social": 0.36
+  },
+  "circadian_alertness": 0.62,
+  "allostatic_load": 0.18,
+  "homeostasis": {
+    "L_int": 0.14,
+    "L_ext": 0.09
+  },
+  "cores": [
+    {
+      "key": "qq:group:1001",
+      "snapshot": {
+        "v": 0.42,
+        "a": 0.31,
+        "stress": 0.21,
+        "social": 0.36,
+        "energy": 0.61,
+        "trust": 0.62,
+        "closeness": 0.55,
+        "self_esteem": 0.47
+      },
+      "intent": {
+        "emotion": "lonely",
+        "intensity": 0.44,
+        "action": "approach"
+      },
+      "working_set": {
+        "hits": 3
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "user_id": "u_10086",
+      "last_seen": 1793433015,
+      "interactions": 128,
+      "relationship": {
+        "state": {
+          "trust": 0.62,
+          "closeness": 0.55,
+          "conflict": 0.08,
+          "repair": 0.12,
+          "predictability": 0.71
+        },
+        "trajectory": [
+          {
+            "ts": 1792660815,
+            "trust": 0.5
+          },
+          {
+            "ts": 1793434815,
+            "trust": 0.62
+          }
+        ]
+      }
+    }
+  ],
+  "autonomy": {
+    "enabled": true,
+    "send": {
+      "allowed": false,
+      "reason": "not_ready",
+      "quiet_hours": false,
+      "daily_cap_left": 4
+    },
+    "state": {
+      "V": 0.412,
+      "theta": 0.55,
+      "drift": 0.031,
+      "leak": 0.15,
+      "sigma": 0.06,
+      "ticks_since_fire": 7,
+      "to_threshold": 0.138,
+      "eta_hours": 3.7,
+      "parts": {
+        "social_gap": 0.22,
+        "lonely": 0.19,
+        "open_loops": 0.08,
+        "rumination": 0.05
+      },
+      "silence": {
+        "hours": 9.4,
+        "phase": "loss",
+        "drive_mult": 0.8
+      },
+      "motive": {
+        "hours": 9.4,
+        "silence_mult": 0.8,
+        "frust_mult": 1.08,
+        "self_blame": 0.14,
+        "confidence": 0.58
+      },
+      "sleep": {
+        "sleeping": false,
+        "energy": 0.61,
+        "circadian": 0.48,
+        "sleep_debt": 0.23
+      },
+      "mood": {
+        "label": "lonely",
+        "valence": -0.22
+      },
+      "labels": {
+        "lonely": 0.41,
+        "sadness": 0.22,
+        "nostalgia": 0.14,
+        "neutral": 0.23
+      },
+      "self_esteem": {
+        "value": 0.47
+      },
+      "relationship": {
+        "stage": "friend",
+        "hours_total": 128.5,
+        "days": 9
+      },
+      "trust": {
+        "predictability": 0.71,
+        "dependability": 0.64,
+        "faith": 0.58
+      },
+      "loop": {
+        "sent": 14,
+        "responded": 6,
+        "ignored": 5,
+        "response_rate": 0.43,
+        "avg_latency_s": 1640,
+        "last_attempt": {
+          "ts": 1793434815,
+          "code": "lonely"
+        },
+        "per_code": {
+          "lonely": {
+            "sent": 8,
+            "rate": 0.5
+          }
+        }
+      },
+      "limit": {
+        "hourly_cap": 2,
+        "daily_cap": 5,
+        "hour_sent": 1,
+        "hour_blocked": 1,
+        "total_blocked": 3,
+        "window_reset_in": 2100,
+        "frustration": 2,
+        "drive_mult": 1.08
+      },
+      "last_reason": {
+        "ts": 1793434515,
+        "code": "lonely",
+        "text": "想起你上次说周末想去海边，就想问一句带伞了没"
+      },
+      "block_reason": "not_ready"
+    }
+  }
+}

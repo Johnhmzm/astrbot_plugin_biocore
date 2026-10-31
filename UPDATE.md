@@ -1,8 +1,13 @@
 # BioCore 插件更新说明
 
-当前版本：以 `metadata.yaml` 为准（当前 **1.3.4**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
+当前版本：以 `metadata.yaml` 为准（当前 **1.4.0**）。完整更新日志见 [CHANGELOG.md](CHANGELOG.md)。
 
-> 发版口径：`1.3.4` 为发版目标；市场记录已同步为 `1.3.4`，公开仓库与市场在发布时同步。
+> 发版口径：`1.4.0` 为发版目标；市场记录已同步为 `1.4.0`，公开仓库与市场在发布时同步。
+
+## 1.4.0 升级提示
+
+- 直接覆盖升级即可：启动自动迁移 1.3.4 数据（原子写、自动备份到 `backups/pre-migration-<时间戳>/`、失败重试、面板可见）；无需手动备份，回滚见 [docs/MIGRATION.md](docs/MIGRATION.md)。
+- 主流程改为 pipeline active，模块拆为 11 个 mixin + blocks 组装；旧配置键自动映射/兼容。
 
 ## 1.3.4 升级提示
 
