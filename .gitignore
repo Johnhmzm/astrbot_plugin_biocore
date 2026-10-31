@@ -23,3 +23,6 @@ docs/mockups/
 .ruff_cache/
 biocore_model_ruff_backup.zip
 *.zip
+
+dist/
+ruff_*.txt
