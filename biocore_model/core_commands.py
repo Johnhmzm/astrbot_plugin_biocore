@@ -104,7 +104,7 @@ async def run_rollback_command(plugin, event, via="command") -> str:
     if not is_admin(event, getattr(plugin, "config", {})):
         return DENY + "，" + ROLLBACK_USAGE
     try:
-        payload = await core_mode.rollback(plugin, via=via)
+        await core_mode.rollback(plugin, via=via)
     except core_mode.CoreModeError as error:
         return "回退失败：" + str(error)
     except Exception as error:

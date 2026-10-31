@@ -614,19 +614,6 @@ def frust_mult(frustration):
     return round(min(1.30, 1.0 + 0.04 * count), 4)
 
 
-def compose_mult(silence_value, frustration):
-    total = clamp(float(silence_value or 1.0), 0.0, 2.0) * clamp(frust_mult(frustration), 0.0, 1.3)
-    return round(clamp(total, MULT_FLOOR, MULT_CAP), 4)
-
-
-def motive_view(hours, frustration=0, clingy=True, attachment_style="secure"):
-    sil = silence_mult(hours, clingy, attachment_style)
-    mul = frust_mult(frustration)
-    total = compose_mult(sil, frustration)
-    return {"silence_mult": sil, "frust_mult": mul, "total_mult": total,
-            "hours": round(float(hours or 0.0), 3), "attachment_style": attachment_style}
-
-
 def guilt_value(conflict_unresolved=0.0, guilt_emotion=0.0):
     return clamp(0.7 * clamp(conflict_unresolved) + 0.3 * clamp(guilt_emotion))
 

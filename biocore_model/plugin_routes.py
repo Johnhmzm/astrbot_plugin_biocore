@@ -18,7 +18,6 @@ import base64
 import datetime
 import io
 import json
-import logging
 import shutil
 import tempfile
 import time
@@ -32,7 +31,14 @@ except Exception:  # pragma: no cover - 顶层导入（测试/独立运行）
     import interpretation  # type: ignore
     import memory_meta  # type: ignore
 
-logger = logging.getLogger("astrbot")
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
 
 # main.py 模块级对象占位；install() 会用宿主同名对象覆盖。
 DATA_DIR = None

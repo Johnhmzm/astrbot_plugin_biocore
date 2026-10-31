@@ -15,11 +15,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import re
 import time
 
-logger = logging.getLogger(__name__)
+try:  # AstrBot requires the host logger
+    from astrbot.api import logger
+except Exception:  # pragma: no cover - offline tests
+    class _NullLogger:  # offline fallback: never imports stdlib logging
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
 
 PROBE_TIMEOUT = 3.0
 PROBE_MIN_CONFIDENCE = 0.4

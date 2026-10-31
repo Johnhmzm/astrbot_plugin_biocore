@@ -2,7 +2,6 @@
 """Real old-layout migration test: 1.3.4 data -> 1.4.0, then idempotency."""
 import ast
 import json
-import logging
 import os
 import tempfile
 import time
@@ -67,13 +66,33 @@ def _load_methods(names, namespace=None):
             fns[node.name] = ns[node.name]
     return fns
 
+class _Recorder:
+    """Minimal logger stub; keeps tests free of the stdlib logging import."""
+
+    def __init__(self):
+        self.lines = []
+
+    def _log(self, msg, *args, **kwargs):
+        try:
+            self.lines.append(str(msg) % args if args else str(msg))
+        except Exception:
+            self.lines.append(str(msg))
+
+    debug = info = warning = error = exception = critical = _log
+
+
 class MigrationTest(unittest.TestCase):
     def test_old_data_migrates_and_backfills(self):
         with tempfile.TemporaryDirectory() as tmp:
             data = _old_layout(tmp)
             plugin = FakePlugin(data)
-            with self.assertLogs(migrate.logger, level="INFO") as logs:
+            rec = _Recorder()
+            saved_logger = migrate.logger
+            migrate.logger = rec
+            try:
                 report = migrate.migrate(plugin)
+            finally:
+                migrate.logger = saved_logger
             self.assertEqual(report["applied"],
                              ["settings", "accumulator", "memory"])
             auth = (Path(tmp) / "plugin_data" / "astrbot_plugin_biocore"
@@ -98,7 +117,7 @@ class MigrationTest(unittest.TestCase):
                 self.assertGreater(entry["storage_s"], 0.0)
             # Old 10-day file -> power-law retrieval below a fresh file.
             self.assertLess(mem["entries"][0]["retrieval_s"], 0.5)
-            joined = "\n".join(logs.output)
+            joined = "\n".join(rec.lines)
             for token in ("migrate done:", "settings=", "accumulator=",
                           "memory=", "warnings="):
                 self.assertIn(token, joined)

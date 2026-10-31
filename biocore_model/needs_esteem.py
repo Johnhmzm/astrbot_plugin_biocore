@@ -19,7 +19,7 @@ def clamp(value, low=0.0, high=1.0):
 
 def defaults():
     """Deprecated wrapper: delegates to the biological layer (BIO-5)."""
-    data = _bio.defaults(0.0)
+    _bio.defaults(0.0)
     return {key: BASE_NEED for key in NEED_KEYS}
 
 
