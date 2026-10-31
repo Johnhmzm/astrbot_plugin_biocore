@@ -1128,7 +1128,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.0")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.1")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
@@ -1654,7 +1654,7 @@ class BioCorePlugin(Star):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_profile()
         self._load_settings()
-        # 1.3.4 -> 1.4.0 data migration: after settings load, before the first
+        # 1.3.4 -> 1.4.1 data migration: after settings load, before the first
         # life loop. Idempotent (schema_version); never crashes startup.
         try:
             try:

@@ -3152,7 +3152,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.0";
+  const BIO_VERSION = "v1.4.1";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";

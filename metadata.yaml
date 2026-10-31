@@ -3,7 +3,7 @@ display_name: BioCore · 拟态生物情绪核心
 desc: |
   面向 AstrBot 的本地拟态生物情绪核心：在行为与功能层参考生物情绪系统——PAD 核心情感、认知评价、情绪频谱与衰减恢复、稳态/内感受与压力恢复、趋近回避停顿、记忆巩固/遗忘/召回、关系信任/亲近/冲突/修复、依恋与缺席、自我叙事；
   用可计算状态模拟这些过程，再由解释层转成简短的表达意图注入请求，默认不主动生成回复、不替换人设、不做临床诊断。提供本地 Dashboard、可选 LLM 总结和隐私/安全开关，数据保存在 AstrBot 插件数据目录，更新不丢档。
-version: 1.4.0
+version: 1.4.1
 author: Johnhmzm
 repo: https://github.com/Johnhmzm/astrbot_plugin_biocore
 short_desc: 拟态生物情绪层：PAD/评价/频谱/稳态/记忆/关系轨迹，向 LLM 注入表达意图；默认不主动生成回复。
