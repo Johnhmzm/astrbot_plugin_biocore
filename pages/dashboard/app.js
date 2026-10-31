@@ -2574,7 +2574,6 @@ if($("swVisualAdvanced")){
   bindBehaviorToggle("swSafetyEnabled","safety_enabled");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
-  bindBehaviorToggle("swLlmOnlyReplySummary","llm_only_reply_summary");
   const personaSel=$("personaSelect");
   if(personaSel) personaSel.addEventListener("change",async e=>{
     const val=String(e.target.value||"");
@@ -2674,8 +2673,6 @@ if($("swVisualAdvanced")){
     if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
     const swLlmCand = $("swLlmCandidates");
     if (swLlmCand) swLlmCand.checked = data.llm_memory_candidates !== false;
-    const swLlmScope = $("swLlmOnlyReplySummary");
-    if (swLlmScope) swLlmScope.checked = data.llm_only_reply_summary !== false;
     if (th) th.value = Number(comp.threshold || 6000);
     if (mx) mx.value = Number(comp.max_chars || 800);
     const ms = $("memoryStats");
