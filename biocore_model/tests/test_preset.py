@@ -113,8 +113,12 @@ class StructureTest(unittest.TestCase):
         source = (PKG / "preset.py").read_text(encoding="utf-8")
         self.assertNotIn("import main", source)
         self.assertNotIn("main.py", source)
-        self.assertNotIn("main", [m.split(".")[0] for m in sys.modules
-                                 if m.startswith("main")])
+        # Check the module's own namespace instead of the global sys.modules:
+        # discovery imports root-level test modules that import main, which made
+        # the old process-wide assertion order-dependent.
+        module = sys.modules.get("biocore_model.preset")
+        self.assertIsNotNone(module)
+        self.assertNotIn("main", vars(module))
 
     def test_depth_index_after_nth_newest(self):
         self.assertEqual(preset.depth_index(10, 2), 9)

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Inline state tag: instruction text + tolerant parsing."""
+import json
 import unittest
 
 from biocore_model import state_tag as st
@@ -53,6 +54,24 @@ class ParseTest(unittest.TestCase):
     def test_fact_truncated(self):
         out = st.parse('{"dims":{"hit":0.2},"fact":"' + "字" * 40 + '","c":0.6}')
         self.assertEqual(len(out["fact"]), 20)
+
+
+class EdgeCaseTest(unittest.TestCase):
+    def test_entities_only_tag_is_parsed(self):
+        raw = json.dumps({"dims": {}, "entities": [{"name": "小夏",
+                                                    "type": "人物"}],
+                          "relations": [{"src": "小夏", "rel": "likes",
+                                         "dst": "奶茶"}]},
+                         ensure_ascii=False)
+        out = st.parse("好。\n" + raw)
+        self.assertTrue(out)
+        self.assertEqual(out["entities"][0]["name"], "小夏")
+        self.assertEqual(out["relations"][0]["rel"], "likes")
+
+    def test_truncated_tag_is_stripped(self):
+        self.assertEqual(st.strip('好的 {"dims": {"goal": 0.3'), "好的")
+        self.assertEqual(st.strip('嗯 {"dims"'), "嗯")
+        self.assertEqual(st.strip("就是普通回复"), "就是普通回复")
 
 
 class StripTest(unittest.TestCase):

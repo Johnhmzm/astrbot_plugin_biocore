@@ -772,6 +772,10 @@ class RoutesMixin:
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
             "memory": self._memory_stats(),
+            "memory_storage_backend": str(getattr(
+                self, "memory_storage_backend", "auto") or "auto"),
+            "memory_backend": str(getattr(self, "_memory_backend", "json")
+                                  or "json"),
             # Read-only dashboard contract (bounded): memory entries per
             # session with provenance/confidence/write-op metadata, tombstone
             # audit rows, and per-user relationship state/trajectory/maps.

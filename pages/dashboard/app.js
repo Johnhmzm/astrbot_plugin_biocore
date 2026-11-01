@@ -2712,6 +2712,7 @@ if($("swVisualAdvanced")){
       const m = data.memory || {};
       ms.textContent = "本地记忆：" + Number(m.entries || 0) + " 条 / " + Number(m.sessions || 0) + " 会话";
     }
+    try { renderMemoryBackend(); } catch (e) {}
     const top = $("apiSaveStateTop");
     if (top && !top.dataset.touched) {
       if (!bridge) {
@@ -2721,6 +2722,39 @@ if($("swVisualAdvanced")){
           ? "已读取 AstrBot 默认，确认后保存"
           : "未检测到 AstrBot provider，可填自定义 API";
       }
+    }
+  }
+  // task-146: 记忆存储后端（JSON / SQLite / 自动）下拉；切换走 page/memory_backend。
+  const MEM_BACKEND_LABELS = { json: "JSON 文件", sqlite: "SQLite 数据库", auto: "自动" };
+  function renderMemoryBackend(){
+    const sel=$("memoryStorageBackend"), status=$("memoryBackendStatus");
+    const setting=String((data&&data.memory_storage_backend)||"auto");
+    const backend=String((data&&data.memory_backend)||"json");
+    const stats=(data&&data.memory&&typeof data.memory==="object")?data.memory:{};
+    if(sel && document.activeElement!==sel) sel.value=setting;
+    if(status){
+      status.textContent="当前："+(MEM_BACKEND_LABELS[setting]||setting)
+        +"（生效："+(MEM_BACKEND_LABELS[backend]||backend)+"） · "
+        +Number(stats.entries||0)+" 条 / "+Number(stats.sessions||0)+" 会话";
+    }
+    if(sel && !sel.dataset.bound){
+      sel.dataset.bound="1";
+      sel.addEventListener("change", async function(){
+        const target=String(sel.value||"auto");
+        if(status) status.textContent="切换中…（先备份，再迁移）";
+        try{
+          const raw=await _adminApiPost("page/memory_backend",{backend:target});
+          const payload=(raw&&raw.data)?raw.data:raw;
+          if(!payload||payload.status==="error") throw new Error((payload&&payload.message)||"切换失败");
+          const counts=(payload&&payload.counts)||{};
+          if(status) status.textContent="已切换："+(MEM_BACKEND_LABELS[target]||target)
+            +" · "+Number(counts.entries||0)+" 条 / "+Number(counts.sessions||0)+" 会话（已备份）";
+          try{ await load(); }catch(e){}
+        }catch(err){
+          if(status) status.textContent="切换失败，保留原后端："+String((err&&err.message)||err);
+          try{ sel.value=(data&&data.memory_storage_backend)||"auto"; }catch(e){}
+        }
+      });
     }
   }
   async function loadModels(kind, prefix) {
@@ -3184,7 +3218,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.13";
+  const BIO_VERSION = "v1.4.14";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";

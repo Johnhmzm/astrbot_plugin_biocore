@@ -1,4 +1,4 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 *.log
 .pytest_cache/
@@ -26,3 +26,7 @@ biocore_model_ruff_backup.zip
 
 dist/
 ruff_*.txt
+
+# local scratch scripts (never ship)
+_tpl_smoke.py
+_ut.txt

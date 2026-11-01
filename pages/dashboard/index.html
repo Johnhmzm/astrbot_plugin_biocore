@@ -974,8 +974,8 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261101-2140">
-<script>window.__BIOCORE_BUILD__="build 2026-11-01 21:40 +08";</script>
+<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261101-2341">
+<script>window.__BIOCORE_BUILD__="build 2026-11-01 23:41 +08";</script>
 </head>
 <body>
 <div class="shell">
@@ -1555,6 +1555,15 @@ input[type=range]{width:180px;accent-color:var(--accent)}
         
         <p class="api-note">聊天上下文压缩由 AstrBot 管理；这里只压缩 BioCore 本地长期记忆。删除的记忆可在 活动会话 → 记忆元数据 的墓碑行点“恢复”。</p>
         <p class="api-note" id="memoryStats">本地记忆：-- 条 / -- 会话</p>
+        <div class="setting-row" id="memoryBackendRow">
+          <div><b>记忆存储后端</b><small>JSON 文件（旧版兼容）/ SQLite 数据库（推荐：单文件、事务、与图库同一模式）/ 自动（有库用库，无库用 JSON）。切换会先备份再迁移，失败自动保留原后端。</small></div>
+          <div class="llm-route"><select id="memoryStorageBackend" class="event-session">
+            <option value="auto">自动</option>
+            <option value="json">JSON 文件</option>
+            <option value="sqlite">SQLite 数据库</option>
+          </select></div>
+        </div>
+        <p class="api-note" id="memoryBackendStatus">当前后端：--</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
         <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
         <div class="insight-card">
@@ -4767,6 +4776,7 @@ if($("swVisualAdvanced")){
       const m = data.memory || {};
       ms.textContent = "本地记忆：" + Number(m.entries || 0) + " 条 / " + Number(m.sessions || 0) + " 会话";
     }
+    try { renderMemoryBackend(); } catch (e) {}
     const top = $("apiSaveStateTop");
     if (top && !top.dataset.touched) {
       if (!bridge) {
@@ -4776,6 +4786,39 @@ if($("swVisualAdvanced")){
           ? "已读取 AstrBot 默认，确认后保存"
           : "未检测到 AstrBot provider，可填自定义 API";
       }
+    }
+  }
+  // task-146: 记忆存储后端（JSON / SQLite / 自动）下拉；切换走 page/memory_backend。
+  const MEM_BACKEND_LABELS = { json: "JSON 文件", sqlite: "SQLite 数据库", auto: "自动" };
+  function renderMemoryBackend(){
+    const sel=$("memoryStorageBackend"), status=$("memoryBackendStatus");
+    const setting=String((data&&data.memory_storage_backend)||"auto");
+    const backend=String((data&&data.memory_backend)||"json");
+    const stats=(data&&data.memory&&typeof data.memory==="object")?data.memory:{};
+    if(sel && document.activeElement!==sel) sel.value=setting;
+    if(status){
+      status.textContent="当前："+(MEM_BACKEND_LABELS[setting]||setting)
+        +"（生效："+(MEM_BACKEND_LABELS[backend]||backend)+"） · "
+        +Number(stats.entries||0)+" 条 / "+Number(stats.sessions||0)+" 会话";
+    }
+    if(sel && !sel.dataset.bound){
+      sel.dataset.bound="1";
+      sel.addEventListener("change", async function(){
+        const target=String(sel.value||"auto");
+        if(status) status.textContent="切换中…（先备份，再迁移）";
+        try{
+          const raw=await _adminApiPost("page/memory_backend",{backend:target});
+          const payload=(raw&&raw.data)?raw.data:raw;
+          if(!payload||payload.status==="error") throw new Error((payload&&payload.message)||"切换失败");
+          const counts=(payload&&payload.counts)||{};
+          if(status) status.textContent="已切换："+(MEM_BACKEND_LABELS[target]||target)
+            +" · "+Number(counts.entries||0)+" 条 / "+Number(counts.sessions||0)+" 会话（已备份）";
+          try{ await load(); }catch(e){}
+        }catch(err){
+          if(status) status.textContent="切换失败，保留原后端："+String((err&&err.message)||err);
+          try{ sel.value=(data&&data.memory_storage_backend)||"auto"; }catch(e){}
+        }
+      });
     }
   }
   async function loadModels(kind, prefix) {
@@ -5239,7 +5282,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.13";
+  const BIO_VERSION = "v1.4.14";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";

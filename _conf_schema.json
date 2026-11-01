@@ -895,6 +895,29 @@
     "type": "string",
     "default": ""
   },
+  "memory_storage_backend": {
+    "description": "记忆存储后端（JSON / SQLite / 自动）",
+    "hint": "auto（默认）：有健康 SQLite 库就用库，否则用 JSON；json：只用 JSON 文件；sqlite：用 SQLite 并每次写入同步 JSON 镜像（可随时降级回旧版本）。面板切换会自动备份+迁移，失败保留原后端。",
+    "type": "string",
+    "default": "auto",
+    "options": [
+      "json",
+      "sqlite",
+      "auto"
+    ]
+  },
+  "needs_events_enabled": {
+    "description": "需求事件钩子（默认开，有界）",
+    "hint": "P1-3：被拒绝/被忽视/被夸/被连接/达成目标等事件会增减归属/自尊/控制/意义四种需求（单事件每项≤0.05），不再只靠时间衰减；需求缺口会偏置下一轮表达（想靠近时主动问一句）。关闭后回到纯时间衰减。",
+    "type": "bool",
+    "default": true
+  },
+  "predictive_enabled": {
+    "description": "预测误差遥测（默认开，只读）",
+    "hint": "P1-1：每轮预测下一轮状态，与实测比较得到惊讶/预测误差；惊讶只做两件有界的事：下一轮多召回 1 条记忆、放大策略学习率（alpha 0.1–0.4）。不写 prompt、不新增 LLM 调用；关闭后不计算。",
+    "type": "bool",
+    "default": true
+  },
   "dims_delta_limit_enabled": {
     "description": "单条消息状态变化总量上限（默认开）",
     "hint": "P0-2：state_tag/probe 的 dims 写入影响被限制在一条消息内；关闭后回到 1.4.12 行为（每通道各自限幅，总量不设限）。",
