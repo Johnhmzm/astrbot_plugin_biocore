@@ -57,7 +57,7 @@ class ParamsMergeTest(unittest.TestCase):
         out = plugin._apply_autonomy_params({"theta": 0.55}, {"theta": 0.5239})
         self.assertAlmostEqual(out["theta"], 0.5239, places=4)
 
-    def test_cooldown_and_cap_overwrite_only_when_present(self):
+    def test_cooldown_and_cap_always_forced(self):
         plugin = FakePlugin(tempfile.gettempdir())
         out = plugin._apply_autonomy_params(
             {"theta": 0.55, "cooldown_seconds": 1800, "daily_cap": 5, "V": 0.1},
@@ -66,8 +66,8 @@ class ParamsMergeTest(unittest.TestCase):
         self.assertEqual(out["daily_cap"], 3)
         self.assertEqual(out["V"], 0.1)
         lean = plugin._apply_autonomy_params({"theta": 0.55}, {"theta": 0.52})
-        self.assertNotIn("cooldown_seconds", lean)
-        self.assertNotIn("daily_cap", lean)
+        self.assertEqual(lean["cooldown_seconds"], 1800)
+        self.assertEqual(lean["daily_cap"], 5)
 
     def test_params_unavailable_keeps_old_theta(self):
         plugin = FakePlugin(tempfile.gettempdir())

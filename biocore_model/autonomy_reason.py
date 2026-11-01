@@ -18,6 +18,18 @@ WEIGHTS = {"social_gap": "social_gap", "lonely": "lonely", "anxiety": "anxiety_f
            "sadness": "sadness", "joy": "joy", "anger": "anger_conflict",
            "boredom": "boredom", "open_loop": "open_loops", "repair": "repair_urge",
            "memory_due": "memory_due"}
+CODE_LABELS = {
+    "social_gap": "很久没联系",
+    "lonely": "孤独",
+    "anxiety": "不安",
+    "sadness": "低落",
+    "joy": "心情好",
+    "anger": "憋着火",
+    "boredom": "无聊",
+    "open_loop": "上次没说完",
+    "memory_due": "想起你",
+    "repair": "想缓和",
+}
 ORDER = ("social_gap", "memory_due", "open_loop", "repair", "lonely", "anxiety",
          "sadness", "anger", "joy", "boredom")
 
@@ -49,12 +61,10 @@ def extract(parts, memory_title="", memory_due=0.0):
 
 def build_prompt(reason):
     reason = reason if isinstance(reason, dict) else {}
-    return ("你现在想主动找对方说话。\n"
-            "动机：%s（%s，强度 %.2f）\n"
-            "要求：按当前行为规则说话（短句、约 10 字、最多 30 字、可用换行）；"
-            "不要解释动机、不要提“触发”；严格按【输出格式】输出 <bc> 情绪标签。"
-            % (reason.get("text") or "想说话了", reason.get("code") or "lonely",
-               float(reason.get("weight", 0.0) or 0.0)))
+    code = str(reason.get("code") or "lonely")
+    label = CODE_LABELS.get(code, "想说话了")
+    return ("你现在主动找对方说话。\n"
+            "因为你：%s\n" % label)
 
 
 def fallback_text(reason, template=""):
