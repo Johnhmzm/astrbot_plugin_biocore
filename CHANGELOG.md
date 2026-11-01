@@ -1,3 +1,17 @@
+# 1.4.14 - 2026-11-01
+
+⚠️ 可能有 bug；自主主动回复默认关闭；老数据自动兼容（`memory_storage_backend` 默认 `auto`）。
+
+- **SQLite 记忆存储（task-146）**：记忆条目落 `memory/memory.sqlite3`（WAL、显式事务；entries / session_docs / meta 三表，`raw` 列无损往返未知字段），记忆量大时不再整文件重写。
+- **后端切换**：新增 `memory_storage_backend`（默认 `auto`，可选 `json` / `sqlite`）与面板切换 API；切换前自动备份 + 迁移，失败保留原后端；每次写入仍同步 JSON 镜像，可随时降级回旧版本；面板 status/debug 暴露当前后端。
+- **迁移与健壮性**：首次导入 SQLite 前备份整个 `memory/`；数据库损坏自动备份为 `*.corrupt.bak` 并从 JSON 重建；损坏的 JSON 跳过、不阻塞启动；迁移 schema 升到 v4（新增 `memory_db` 统计与 `backups/pre-migration-*` 的整目录备份和 DB restore）。
+- **P1-1 预测误差**：每轮预测下一轮状态并与实测比较得到惊讶；只做两件有界的事——下一轮多召回 ≤1 条记忆、放大策略学习率（alpha 0.1–0.4）。`predictive_enabled` 默认开、只读、不写 prompt、无新增 LLM 调用。
+- **P1-2 内感受 → 表达风格**：tension / warmth / heaviness / clarity 确定性映射为长度系数、语气指令与主动度（0–1）；生物层本身不产出 prompt 文本。
+- **P1-3 需求事件钩子**：被拒绝/被忽视/被夸/被连接/达成目标等事件有界影响归属/自尊/控制/意义（单事件每项 ≤0.05），需求缺口会偏置下一轮表达；`needs_events_enabled` 默认开，关闭回到纯时间衰减。
+- **P2 验证**：新增学习闭环探针（重复奖励步长收敛、Nassar 学习率随误差缩小）与 8 类极端场景守卫（长沉默 / 连续被骂 / 连续被夸 / 关系破裂 / 失忆 / 并发 / 深夜 / 崩溃恢复）。
+- **审计修复**：模型输出被截断时残留的 `{"dims"...` 片段会从可见回复剥离；`entities` / `relations` 单独出现时也接受；SQLite 备份/恢复的 WAL checkpoint 连接显式关闭（Windows 上不再锁住 `memory.sqlite3`）。
+- 全量测试 1768 通过（新增 task-146 + P1/P2 单测；此前 1653）。
+
 # 1.4.13 - 2026-11-01
 
 ⚠️ 可能有 bug；自主主动回复默认关闭。

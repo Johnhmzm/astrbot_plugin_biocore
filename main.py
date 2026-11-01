@@ -625,6 +625,191 @@ def _clip(x, lo=-1.0, hi=1.0):
         return lo
 
 
+def _memory_store_module():
+    """Import the memory_store module (package or top-level); None on failure."""
+    try:
+        from .biocore_model import memory_store as _ms
+    except Exception:
+        try:
+            from biocore_model import memory_store as _ms
+        except Exception:
+            return None
+    return _ms
+
+
+def _memory_backend_attr(plugin):
+    raw = getattr(plugin, "memory_storage_backend", "auto") or "auto"
+    mod = _memory_store_module()
+    try:
+        return mod.normalize_backend(raw) if mod is not None else "auto"
+    except Exception:
+        return "auto"
+
+
+def _json_entries_count(memory_dir):
+    total = 0
+    try:
+        for path in Path(memory_dir).glob("*.json"):
+            if path.name.endswith(".export.json") or path.name == "memory_export.json":
+                continue
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8-sig"))
+            except Exception:
+                continue
+            if isinstance(doc, dict) and isinstance(doc.get("entries"), list):
+                total += len([e for e in doc["entries"] if isinstance(e, dict)])
+    except Exception:
+        return 0
+    return total
+
+
+def _init_memory_backend(plugin, memory_dir, backup_root=None):
+    """task-146: resolve the configured backend, import/mirror on startup.
+
+    Never raises: on any failure the plugin keeps running in JSON mode.
+    """
+    memory_dir = Path(memory_dir)
+    setting = _memory_backend_attr(plugin)
+    report = {"setting": setting, "backend": "json", "entries": 0,
+              "fallback": False, "error": ""}
+    try:
+        mod = _memory_store_module()
+        if mod is None:
+            raise RuntimeError("memory_store unavailable")
+        resolved = mod.ensure_backend(setting, memory_dir,
+                                      backup_root=backup_root)
+        backend = str(resolved.get("backend") or "json")
+        report.update({
+            "setting": resolved.get("setting", setting),
+            "backend": backend,
+            "entries": int(resolved.get("entries", 0) or 0),
+            "sessions": int(resolved.get("sessions", 0) or 0),
+            "fallback": bool(resolved.get("fallback")),
+            "error": str(resolved.get("error") or ""),
+            "store_report": resolved.get("store_report") or {},
+        })
+        try:
+            _compacted = int((resolved.get("store_report") or {}).get(
+                "compacted", 0) or 0)
+            if _compacted:
+                logger.info("[biocore] memory raw compacted=%d (legacy vectors)",
+                            _compacted)
+        except Exception:
+            pass
+        setattr(plugin, "_memory_backend", backend)
+        setattr(plugin, "_memory_store_cache", None)
+        if backend == "sqlite":
+            try:
+                setattr(plugin, "_memory_store_cache",
+                        mod.open_store(memory_dir))
+            except Exception as _store_exc:
+                report["fallback"] = True
+                report["error"] = str(_store_exc)
+                backend = "json"
+                report["backend"] = backend
+                setattr(plugin, "_memory_backend", backend)
+                # the resolved count came from the DB; when we fall back to
+                # JSON the reported entry count must come from the JSON docs.
+                try:
+                    report["entries"] = _json_entries_count(memory_dir)
+                except Exception:
+                    pass
+        if backend == "json":
+            report["entries"] = _json_entries_count(memory_dir)
+        logger.info("[biocore] memory backend=%s entries=%d", backend,
+                    int(report.get("entries", 0) or 0))
+        return report
+    except Exception as exc:
+        backend = "json"
+        try:
+            entries = _json_entries_count(memory_dir)
+        except Exception:
+            entries = 0
+        report.update({"backend": backend, "entries": entries,
+                       "fallback": True,
+                       "error": "%s: %s" % (type(exc).__name__, exc)})
+        setattr(plugin, "_memory_backend", backend)
+        setattr(plugin, "_memory_store_cache", None)
+        try:
+            logger.info("[biocore] memory backend=%s entries=%d", backend,
+                        int(entries or 0))
+        except Exception:
+            pass
+        logger.warning("[biocore] memory backend init failed, json mode: %s",
+                       exc)
+        return report
+
+
+def _memory_store_handle(plugin, memory_dir):
+    """Cached SQLite store when the resolved backend is sqlite, else None."""
+    if str(getattr(plugin, "_memory_backend", "json") or "json") != "sqlite":
+        return None
+    cached = getattr(plugin, "_memory_store_cache", None)
+    if cached is not None:
+        return cached
+    mod = _memory_store_module()
+    if mod is None:
+        return None
+    try:
+        store = mod.open_store(Path(memory_dir))
+    except Exception as exc:
+        logger.warning("[biocore] memory store unavailable, json mode: %s", exc)
+        setattr(plugin, "_memory_backend", "json")
+        return None
+    setattr(plugin, "_memory_store_cache", store)
+    return store
+
+
+def _memory_backend_switch(plugin, target, memory_dir, backup_root=None):
+    """Switch backend with migration; on failure keep the previous backend."""
+    memory_dir = Path(memory_dir)
+    mod = _memory_store_module()
+    old_backend = str(getattr(plugin, "_memory_backend", "json") or "json")
+    report = {"ok": False, "from": old_backend, "backend": old_backend,
+              "target": str(target or ""), "error": "memory_store unavailable"}
+    if mod is None:
+        return report
+    try:
+        switch = mod.switch_backend(target, memory_dir,
+                                    backup_root=backup_root)
+        report.update(switch)
+        if not switch.get("ok"):
+            report["backend"] = old_backend
+            report["fallback"] = True
+            return report
+        resolved = mod.resolve_backend(switch.get("target") or target,
+                                       memory_dir)
+        old_store = getattr(plugin, "_memory_store_cache", None)
+        try:
+            if old_store is not None:
+                old_store.close()
+        except Exception:
+            pass
+        setattr(plugin, "_memory_store_cache", None)
+        setattr(plugin, "_memory_backend", resolved)
+        if resolved == "sqlite":
+            try:
+                setattr(plugin, "_memory_store_cache",
+                        mod.open_store(memory_dir))
+            except Exception as _store_exc:
+                report["ok"] = False
+                report["error"] = str(_store_exc)
+                report["backend"] = old_backend
+                report["fallback"] = True
+                setattr(plugin, "_memory_backend", old_backend)
+                return report
+        counts = report.get("counts_after") or {}
+        report["backend"] = resolved
+        logger.info("[biocore] memory backend=%s entries=%d", resolved,
+                    int(counts.get("entries", 0) or 0))
+        return report
+    except Exception as exc:
+        report.update({"ok": False, "backend": old_backend,
+                       "fallback": True,
+                       "error": "%s: %s" % (type(exc).__name__, exc)})
+        return report
+
+
 def _budget_dims_deltas(plugin, deltas, source="probe"):
     """P0-2: cap one message's total |dims delta| (default 0.2, config).
 
@@ -653,6 +838,128 @@ def _budget_dims_deltas(plugin, deltas, source="probe"):
     except Exception as _budget_exc:
         logger.debug("[biocore] dims budget skipped: %s", _budget_exc)
         return deltas
+
+
+def _apply_needs_events(plugin, core, dims):
+    """P1-3: probe dims -> structured need events -> bounded need deltas.
+
+    Needs stop being pure time-decay variables: a rejecting/dismissing turn
+    lowers belonging/self-esteem, a connecting/achieving turn raises them, and
+    the resulting deficits bias the next expression (core.needs_behavior).
+    """
+    try:
+        if not bool(getattr(plugin, "needs_events_enabled", True)):
+            return {}
+        try:
+            from .biocore_model import needs_events as _needs_mod
+        except Exception:
+            from biocore_model import needs_events as _needs_mod
+        events = _needs_mod.events_from_dims(dims)
+        if not events:
+            return {}
+        needs_after, report = _needs_mod.apply(
+            getattr(core, "needs", None), events)
+        try:
+            core.needs = needs_after
+            core.needs_last_events = report["events"]
+            core.needs_behavior = _needs_mod.behavior_bias(needs_after)
+        except Exception:
+            pass
+        logger.info("[biocore] needs events=%s deltas=%s needs=%s",
+                    report["events"], report["deltas"],
+                    {k: needs_after[k] for k in _needs_mod.NEED_KEYS})
+        return report
+    except Exception as _needs_exc:
+        logger.debug("[biocore] needs events skipped: %s", _needs_exc)
+        return {}
+
+
+def _intero_style(core, target, cap):
+    """P1-2: interoception -> expression style knobs (length/tone/initiative)."""
+    try:
+        try:
+            from .biocore_model import intero_style as _intero
+        except Exception:
+            from biocore_model import intero_style as _intero
+        out = _intero.style(getattr(core, "intero", None),
+                            target=target, cap=cap)
+        try:
+            core.expression_style = {
+                key: out.get(key) for key in
+                ("target", "cap", "tone", "initiative", "factor")}
+        except Exception:
+            pass
+        return out
+    except Exception as _intero_exc:
+        logger.debug("[biocore] intero style skipped: %s", _intero_exc)
+        return {"target": target, "cap": cap, "tone": "",
+                "initiative": 0.5, "applied": False}
+
+
+def _prediction_state(core):
+    """Numeric snapshot fed to the prediction cycle (no prompt text)."""
+    label = ""
+    labels = getattr(core, "labels", None)
+    if isinstance(labels, dict):
+        label = str(labels.get("emotion") or "")
+    needs = getattr(core, "needs", None)
+    state = {
+        "v": getattr(core, "v", 0.0), "a": getattr(core, "a", 0.0),
+        "d": getattr(core, "d", 0.0), "social": getattr(core, "social", 0.0),
+        "stress": getattr(core, "stress", 0.0),
+        "energy": getattr(core, "energy", 0.0),
+        "trust": getattr(core, "trust", 0.0),
+        "emotion": label or "neutral",
+        "needs": dict(needs) if isinstance(needs, dict) else {},
+    }
+    return state
+
+
+def _predictive_cycle(plugin, core):
+    """P1-1: compare last turn's forecast with the measured state, then re-forecast.
+
+    Effects stay bounded and observable: the surprise scalar raises
+    core.attention_boost (consumed as +1 recall row next turn) and
+    core.learning_rate_scale (consumed by the policy-learning alpha), while the
+    full report is logged (prediction vs actual) and kept on the plugin.
+    """
+    try:
+        if not bool(getattr(plugin, "predictive_enabled", True)):
+            return {}
+        try:
+            from .biocore_model import predictor as _predictor
+        except Exception:
+            from biocore_model import predictor as _predictor
+        state = _prediction_state(core)
+        predicted = getattr(plugin, "_next_prediction", None)
+        report = {}
+        if isinstance(predicted, dict):
+            report = _predictor.compare(predicted, state)
+            row = _predictor.summary(report)
+            try:
+                core.prediction_error = report
+                core.prediction_surprise = row["surprise"]
+                core.attention_boost = row["attention_boost"]
+                core.learning_rate_scale = row["learning_rate_scale"]
+            except Exception:
+                pass
+            plugin._prediction_error = report
+            plugin._prediction_lr_scale = row["learning_rate_scale"]
+            logger.info(
+                "[biocore] predict surprise=%.3f err=%.4f emo=%s->%s "
+                "needs_err=%.4f attn=%.2f lr=%.2f",
+                row["surprise"], row["error"], row["predicted_emotion"],
+                row["actual_emotion"], row["needs_error"],
+                row["attention_boost"], row["learning_rate_scale"])
+        plugin._predict_history = _predictor.append_history(
+            getattr(plugin, "_predict_history", []),
+            _predictor.vector(state))
+        plugin._next_prediction = _predictor.predict(
+            state, plugin._predict_history)
+        return report
+    except Exception as _predict_exc:
+        logger.debug("[biocore] predict cycle skipped: %s", _predict_exc)
+        return {}
 
 
 def _memory_entry_id_of(entry) -> str:
@@ -1158,7 +1465,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.13")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.14")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
@@ -1184,6 +1491,19 @@ class BioCorePlugin(Star):
             self.dims_delta_limit = 0.2
         self.dims_delta_limit_enabled = bool(
             self.config.get("dims_delta_limit_enabled", True))
+        # P1-1: read-only predictive-coding telemetry (never writes prompt text).
+        self.predictive_enabled = bool(self.config.get("predictive_enabled", True))
+        # P1-3: events move needs (bounded) and bias behaviour.
+        self.needs_events_enabled = bool(
+            self.config.get("needs_events_enabled", True))
+        # task-146: memory storage backend (json | sqlite | auto, default auto).
+        self.memory_storage_backend = str(
+            self.config.get("memory_storage_backend", "auto") or "auto").strip().lower()
+        if self.memory_storage_backend not in ("json", "sqlite", "auto"):
+            self.memory_storage_backend = "auto"
+        self._memory_backend = "json"
+        self._memory_store_cache = None
+        self._memory_backend_report = {}
         self.inject_intent = bool(self.config.get("inject_intent", True))
         try:
             self.summary_max_chars = max(0, int(self.config.get("summary_max_chars", 0) or 0))
@@ -1754,6 +2074,15 @@ class BioCorePlugin(Star):
             self._migration_report = {"applied": [], "warnings": [str(_migrate_exc)],
                                       "stats": {}}
             logger.warning("[biocore] migration failed: %s", _migrate_exc)
+        # task-146: resolve the memory storage backend (auto/json/sqlite).
+        # Never crash startup: on any failure the plugin keeps JSON mode.
+        try:
+            self._memory_backend_report = _init_memory_backend(
+                self, MEMORY_DIR, MEMORY_DIR.parent / "backups")
+        except Exception as _mem_backend_exc:
+            self._memory_backend = "json"
+            logger.warning("[biocore] memory backend init failed: %s",
+                           _mem_backend_exc)
         # The host event loop may not be running yet: init only records that
         # the loop is wanted; page_status / the first message starts it.
         self._life_task = None
@@ -4149,9 +4478,13 @@ class BioCorePlugin(Star):
                 from biocore_model import prompt_rules as _pr
             _target = int(getattr(self, "reply_soft_target_chars", 10) or 10)
             _maxc = int(getattr(self, "reply_soft_max_chars", 30) or 30)
+            _istyle = _intero_style(core, _target, _maxc)
             _speak_style = ""
             if bool(getattr(self, "reply_soft_limit_enabled", True)):
-                _speak_style = str(_pr.render_length_rule(_target, _maxc))
+                _speak_style = str(_pr.render_length_rule(
+                    int(_istyle["target"]), int(_istyle["cap"])))
+                if _istyle.get("tone"):
+                    _speak_style = _speak_style + "；" + str(_istyle["tone"])
         except Exception:
             _speak_style = str(getattr(self, "speak_style", "") or "")
         try:
@@ -8060,6 +8393,9 @@ class BioCorePlugin(Star):
                          self.page_reply_soft, ["POST"], "BioCore reply soft limits")
                 register("/astrbot_plugin_biocore/page/memory",
                          self.page_memory, ["GET"], "BioCore memory index")
+                register("/astrbot_plugin_biocore/page/memory_backend",
+                         self.page_memory_backend, ["POST"],
+                         "BioCore memory storage backend switch")
                 register("/astrbot_plugin_biocore/page/core_mode",
                          self.page_core_mode, ["POST"], "BioCore core mode switch")
                 register("/astrbot_plugin_biocore/page/download",
@@ -8068,6 +8404,19 @@ class BioCorePlugin(Star):
             logger.warning("[biocore] page api register failed: %s", exc)
 
     def _memory_stats(self):
+        try:
+            store = _memory_store_handle(self, MEMORY_DIR)
+        except Exception:
+            store = None
+        if store is not None:
+            try:
+                stats = store.stats()
+                return {"sessions": int(stats.get("sessions", 0) or 0),
+                        "entries": int(stats.get("entries", 0) or 0),
+                        "backend": "sqlite"}
+            except Exception as _stats_exc:
+                logger.warning("[biocore] memory sqlite stats failed: %s",
+                               _stats_exc)
         sessions = 0
         entries = 0
         try:
@@ -8080,7 +8429,7 @@ class BioCorePlugin(Star):
                     pass
         except Exception:
             pass
-        return {"sessions": sessions, "entries": entries}
+        return {"sessions": sessions, "entries": entries, "backend": "json"}
 
     async def _kb_available(self):
         try:
@@ -8433,6 +8782,19 @@ class BioCorePlugin(Star):
     def _memory_doc_for_session(self, session_key: str) -> tuple[Path, dict]:
         safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(session_key or "default"))[:80]
         path = MEMORY_DIR / (safe + ".json")
+        try:
+            store = _memory_store_handle(self, MEMORY_DIR)
+        except Exception:
+            store = None
+        if store is not None:
+            try:
+                doc = store.load_doc(safe)
+                if isinstance(doc, dict) and isinstance(doc.get("entries"), list):
+                    return path, doc
+                return path, {"entries": []}
+            except Exception as _store_read_exc:
+                logger.warning("[biocore] memory sqlite read failed, json: %s",
+                               _store_read_exc)
         if path.exists():
             try:
                 d = json.loads(path.read_text(encoding="utf-8"))
@@ -8452,6 +8814,32 @@ class BioCorePlugin(Star):
                 logger.info("[biocore] memory_dual hidden=%s", _fade["forgotten_ids"])
         except Exception:
             pass
+        try:
+            store = _memory_store_handle(self, MEMORY_DIR)
+        except Exception:
+            store = None
+        if store is not None:
+            try:
+                session = str(getattr(path, "stem", "") or "default")
+                result = store.save_doc(session, doc)
+                if not result.get("json_mirror"):
+                    logger.warning(
+                        "[biocore] memory json mirror failed: %s", session)
+                return
+            except Exception as _store_write_exc:
+                logger.warning(
+                    "[biocore] memory sqlite save failed, json fallback: %s",
+                    _store_write_exc)
+                # The JSON file below is now the newest copy; degrade the read
+                # backend too so a stale DB row can never shadow it (the user
+                # can switch back to sqlite from the panel, which re-imports).
+                try:
+                    setattr(self, "_memory_backend", "json")
+                    setattr(self, "_memory_store_cache", None)
+                except Exception:
+                    pass
+                logger.warning(
+                    "[biocore] memory backend degraded to json (sqlite write)")
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
 
@@ -8924,6 +9312,10 @@ class BioCorePlugin(Star):
             "profile": self.profile or dict(DEFAULT_PROFILE),
             "api_config": self._public_api_config(),
             "memory": self._memory_stats(),
+            "memory_storage_backend": str(getattr(
+                self, "memory_storage_backend", "auto") or "auto"),
+            "memory_backend": str(getattr(self, "_memory_backend", "json")
+                                  or "json"),
             # Read-only dashboard contract (bounded): memory entries per
             # session with provenance/confidence/write-op metadata, tombstone
             # audit rows, and per-user relationship state/trajectory/maps.
@@ -9392,7 +9784,61 @@ class BioCorePlugin(Star):
         await request.get_json(silent=True)
         return {"status": "ok", "data": {"ok": True,
                                          "memory_index": _memory_index_rows(MEMORY_DIR),
-                                         "stats": self._memory_stats()}}
+                                         "stats": self._memory_stats(),
+                                         "backend": str(getattr(self, "_memory_backend", "json") or "json"),
+                                         "setting": str(getattr(self, "memory_storage_backend", "auto") or "auto")}}
+
+    async def page_memory_backend(self):
+        """task-146: 切换记忆存储后端（json / sqlite / auto）。
+
+        切换前自动备份整个 memory/ 目录；json→sqlite 导入、sqlite→json 导出均
+        幂等；失败时保留原后端（JSON 仍可用），不抛异常。
+        """
+        from quart import request
+        body = await request.get_json(silent=True) or {}
+        if not self._page_is_local_admin(body):
+            return {"status": "error", "message": "仅本地管理端可切换记忆后端",
+                    "data": {}}
+        target = str(body.get("backend") or "").strip().lower()
+        if target not in ("json", "sqlite", "auto"):
+            return {"status": "error",
+                    "message": "backend 必须是 json|sqlite|auto", "data": {}}
+        try:
+            report = _memory_backend_switch(self, target, MEMORY_DIR,
+                                            MEMORY_DIR.parent / "backups")
+        except Exception as _switch_exc:
+            report = {"ok": False, "backend": str(getattr(
+                self, "_memory_backend", "json") or "json"),
+                "error": str(_switch_exc)}
+        if not report.get("ok"):
+            logger.warning("[biocore] memory backend switch failed; kept %s: %s",
+                           report.get("backend"), report.get("error"))
+            return {"status": "error",
+                    "message": "切换失败，已保留 %s：%s" % (
+                        report.get("backend", "json"),
+                        str(report.get("error") or "")[:120]),
+                    "data": {"backend": report.get("backend"),
+                             "backup": report.get("backup")}}
+        self.memory_storage_backend = target
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+        try:
+            await self._persist_plugin_config(
+                {"memory_storage_backend": target})
+        except Exception as _persist_exc:
+            logger.warning("[biocore] memory backend persist failed: %s",
+                           _persist_exc)
+        counts = report.get("counts_after") or {}
+        logger.info("[biocore] memory backend=%s entries=%d",
+                    report.get("backend"),
+                    int(counts.get("entries", 0) or 0))
+        return {"status": "ok", "data": {
+            "setting": target, "backend": report.get("backend"),
+            "counts": {"sessions": int(counts.get("sessions", 0) or 0),
+                       "entries": int(counts.get("entries", 0) or 0)},
+            "backup": report.get("backup"), "state": report.get("state")}}
 
     async def page_core_mode(self):
         from quart import request
@@ -9823,9 +10269,25 @@ class BioCorePlugin(Star):
         except Exception:
             return None
 
+    def _memory_load_doc_by_path(self, path):
+        """Doc for one session from the active backend (JSON fallback)."""
+        try:
+            store = _memory_store_handle(self, MEMORY_DIR)
+        except Exception:
+            store = None
+        if store is not None:
+            try:
+                doc = store.load_doc(Path(path).stem)
+                if isinstance(doc, dict):
+                    return doc
+            except Exception as _read_exc:
+                logger.warning("[biocore] memory sqlite read failed, json: %s",
+                               _read_exc)
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+
     def _load_memory(self, event):
         try:
-            d = json.loads(self._memory_path(event).read_text(encoding="utf-8"))
+            d = self._memory_load_doc_by_path(self._memory_path(event))
             if isinstance(d, dict) and isinstance(d.get("entries"), list):
                 d["entries"] = [e for e in d["entries"]
                                 if isinstance(e, dict)
@@ -9945,20 +10407,37 @@ class BioCorePlugin(Star):
         all_entries = []
         sizes = []
         try:
-            paths = sorted(MEMORY_DIR.glob("*.json"))
+            store = _memory_store_handle(self, MEMORY_DIR)
         except Exception:
-            paths = []
-        for path in paths:
+            store = None
+        if store is not None:
             try:
-                doc = json.loads(path.read_text(encoding="utf-8-sig"))
+                for session, _updated_at, doc in store.all_docs():
+                    entries = (doc.get("entries")
+                               if isinstance(doc.get("entries"), list) else [])
+                    docs.append((store._mirror_path(session), doc))
+                    sizes.append(len(entries))
+                    all_entries.extend(entries)
+            except Exception as _maint_exc:
+                logger.warning("[biocore] memory maintenance read failed: %s",
+                               _maint_exc)
+                docs, all_entries, sizes = [], [], []
+        if not docs:
+            try:
+                paths = sorted(MEMORY_DIR.glob("*.json"))
             except Exception:
-                continue
-            if not isinstance(doc, dict):
-                continue
-            entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
-            docs.append((path, doc))
-            sizes.append(len(entries))
-            all_entries.extend(entries)
+                paths = []
+            for path in paths:
+                try:
+                    doc = json.loads(path.read_text(encoding="utf-8-sig"))
+                except Exception:
+                    continue
+                if not isinstance(doc, dict):
+                    continue
+                entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+                docs.append((path, doc))
+                sizes.append(len(entries))
+                all_entries.extend(entries)
         if not docs:
             return {"skipped": True, "reason": "no_files"}
         result = _bio_tick.memory_maintenance(
@@ -11688,10 +12167,18 @@ class BioCorePlugin(Star):
             _pending = getattr(self, "_policy_pending", None)
             if isinstance(_pending, dict) and _pending.get("action"):
                 _gap = max(0.0, time.time() - float(_pending.get("ts") or 0.0))
+                try:
+                    # P1-1: prediction surprise scales the policy-learning rate
+                    # (bounded alpha so the loop stays stable).
+                    _lr = max(0.1, min(0.4, 0.2 * float(
+                        getattr(self, "_prediction_lr_scale", 1.0) or 1.0)))
+                except Exception:
+                    _lr = 0.2
                 _table = _pl_recv.update(self._load_policy_q(),
                                          _pending.get("ctx") or "",
                                          _pending["action"],
-                                         _pl_recv.reward(True, _gap, 0.0))
+                                         _pl_recv.reward(True, _gap, 0.0),
+                                         alpha=_lr)
                 self._save_policy_q(_table)
                 self._policy_pending = None
         except Exception:
@@ -12554,11 +13041,19 @@ class BioCorePlugin(Star):
                 except Exception:
                     from biocore_model import layered_memory as _layer_mod
                 _doc = self._load_memory(event) or {}
+                _retrieval_limit = int(getattr(
+                    self, "layered_memory_retrieval_limit", 2) or 0)
+                try:
+                    # P1-1: a surprisingly large prediction error widens recall
+                    # by at most one row (bounded attention effect).
+                    if float(getattr(core, "attention_boost", 0.0) or 0.0) >= 0.5:
+                        _retrieval_limit = min(4, _retrieval_limit + 1)
+                except Exception:
+                    pass
                 _layer_text = _layer_mod.render(
                     _doc.get("entries") or [],
                     recalled_ids=getattr(self, "_last_memory_entries", []) or [],
-                    retrieval_limit=int(getattr(
-                        self, "layered_memory_retrieval_limit", 2) or 0),
+                    retrieval_limit=_retrieval_limit,
                     now=time.time())
                 if _layer_text:
                     variables["layered_memory"] = _layer_text
@@ -12628,9 +13123,24 @@ class BioCorePlugin(Star):
                 except Exception:
                     from biocore_model import prompt_rules as _pr_mod
                 if bool(getattr(self, "reply_soft_limit_enabled", True)):
-                    variables["speak_style"] = str(_pr_mod.render_length_rule(
+                    # P1-2: felt tension/warmth/heaviness/clarity shape the
+                    # length limit and the tone directive (bounded, no prompt
+                    # text emitted by the biological layer itself).
+                    _istyle = _intero_style(
+                        core,
                         int(getattr(self, "reply_soft_target_chars", 10) or 10),
-                        int(getattr(self, "reply_soft_max_chars", 30) or 30)))
+                        int(getattr(self, "reply_soft_max_chars", 30) or 30))
+                    _style_text = str(_pr_mod.render_length_rule(
+                        int(_istyle["target"]), int(_istyle["cap"])))
+                    if _istyle.get("tone"):
+                        _style_text = _style_text + "；" + str(_istyle["tone"])
+                    # P1-3: a belonging deficit biases the next expression
+                    # towards contact (one bounded directive, no new call).
+                    _nbs = getattr(core, "needs_behavior", None)
+                    if isinstance(_nbs, dict) and float(
+                            _nbs.get("seek_contact", 0.0) or 0.0) >= 0.6:
+                        _style_text = _style_text + "；想靠近对方一点，可以主动问一句"
+                    variables["speak_style"] = _style_text
             except Exception:
                 pass
             try:
@@ -12927,6 +13437,10 @@ class BioCorePlugin(Star):
                                 getattr(event, "message_id", "") or ""))
                     except Exception:
                         pass
+                    try:
+                        _apply_needs_events(self, core, _inline.get("dims"))
+                    except Exception:
+                        pass
                     _inline_used = True
                     logger.info("[biocore] inline state tag dims=%s c=%.2f", _inline.get("dims"), float(_inline.get("confidence", 0.0) or 0.0))
         except Exception as _inline_exc:
@@ -12992,6 +13506,10 @@ class BioCorePlugin(Star):
                                     _probe_out_exc)
                         _dims = (_probe or {}).get("dims") or {}
                         _conf = float((_probe or {}).get("confidence", 0.0) or 0.0)
+                        try:
+                            _apply_needs_events(self, _core, _dims)
+                        except Exception:
+                            pass
                         _deltas = (_appraisal_mod.appraise(_dims, confidence=_conf)
                                    if _probe else {})
                         if _deltas:
@@ -13259,6 +13777,11 @@ class BioCorePlugin(Star):
         except Exception as _turn_mem_exc:
             logger.debug("[biocore] turn memory record skipped: %s",
                          _turn_mem_exc)
+        # P1-1: prediction-error cycle (compare last forecast with this turn).
+        try:
+            _predictive_cycle(self, core)
+        except Exception as _predict_exc:
+            logger.debug("[biocore] predict cycle skipped: %s", _predict_exc)
 
 
 # ---------------------------------------------------------------- block assembly

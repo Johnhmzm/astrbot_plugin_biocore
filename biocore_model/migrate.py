@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - offline tests
         debug = info = warning = error = exception = critical = _noop
     logger = _NullLogger()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 OLD_SCHEMA_VERSION = 1
 MEMORY_STORAGE_S = 0.45
 MEMORY_AROUSAL = 0.4
@@ -143,7 +143,27 @@ def _create_backup(plugin):
             continue
     memory = _memory_dir(plugin)
     if memory is not None:
-        for src in memory.glob("*.json"):
+        # task-146 rule 3: back up the whole memory/ directory (JSON docs and
+        # the SQLite db incl. WAL) before any migration write.
+        try:
+            _db = memory / "memory.sqlite3"
+            if _db.is_file():
+                try:
+                    import sqlite3 as _sqlite3
+                    _conn = _sqlite3.connect(str(_db), timeout=5.0)
+                    try:
+                        _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        _conn.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        for src in sorted(memory.iterdir()):
+            if not src.is_file():
+                continue
+            if src.name.endswith(".corrupt.bak"):
+                continue
             try:
                 _atomic_copy(src, root / "memory" / src.name)
                 copied["memory"] += 1
@@ -220,6 +240,47 @@ def restore(backup_dir, plugin=None):
                 report["restored"][name] += 1
             except Exception as exc:
                 report["warnings"].append("%s restore failed: %s" % (name, exc))
+    # task-146 rule 6: restore the SQLite store from the JSON backup (and the
+    # backed-up DB when present). JSON stays the fallback if this fails.
+    try:
+        try:
+            from . import memory_store as _ms_restore
+        except Exception:  # pragma: no cover
+            import memory_store as _ms_restore  # type: ignore
+        memory_target = _data_dir(plugin) / "memory"
+        memory_target.mkdir(parents=True, exist_ok=True)
+        backup_memory = root / "memory"
+        db_backup = backup_memory / _ms_restore.SQLITE_FILE
+        if db_backup.is_file():
+            target_db = memory_target / _ms_restore.SQLITE_FILE
+            try:
+                import sqlite3 as _sqlite3_restore
+                if target_db.is_file():
+                    _conn = _sqlite3_restore.connect(str(target_db), timeout=5.0)
+                    try:
+                        _conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    finally:
+                        _conn.close()
+            except Exception:
+                pass
+            _atomic_copy(db_backup, target_db)
+            for suffix in ("-wal", "-shm"):
+                try:
+                    Path(str(target_db) + suffix).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            report["restored"]["memory_db"] = 1
+        elif backup_memory.is_dir():
+            result = _ms_restore.restore(backup_memory, memory_target)
+            if result.get("ok"):
+                report["restored"]["memory_db"] = int(
+                    result.get("entries", 0) or 0)
+            else:
+                report["warnings"].append(
+                    "memory db restore failed: " + str(result.get("error") or ""))
+    except Exception as exc:
+        report["warnings"].append("memory db restore failed: %s" % exc)
+
     graph_target = _graph_dir(plugin)
     graph_target.mkdir(parents=True, exist_ok=True)
     try:
@@ -550,6 +611,51 @@ def _ensure_graph(plugin, stats, warnings):
         stats["graph"] = "failed"
         return None
 
+def _ensure_memory_sqlite(plugin, stats, warnings):
+    """v4: memory/*.json entries -> memory.sqlite3 (auto backup, idempotent).
+
+    Rules (user requirement: 老用户升级不能丢数据):
+    - backup the whole memory/ dir under backups/pre-migration-<stamp>/ first;
+    - import only when the DB is empty (both sides present -> config wins, no
+      implicit merge);
+    - on any failure the JSON files stay untouched and the plugin keeps JSON
+      mode (this function never raises).
+    """
+    try:
+        try:
+            from . import memory_store as _ms
+        except Exception:  # pragma: no cover
+            import memory_store as _ms  # type: ignore
+        memory_dir = _memory_dir(plugin)
+        if memory_dir is None:
+            memory_dir = ui_settings.authority_dir(plugin) / "memory"
+        memory_dir.mkdir(parents=True, exist_ok=True)
+        backup_root = ui_settings.authority_dir(plugin) / "backups"
+        backup = _ms._backup_memory_dir(memory_dir, backup_root,
+                                        label="pre-migration")
+        report = _ms.ensure_store(memory_dir, backup_root=None,
+                                  label="pre-migration")
+        stats["memory_backup"] = backup
+        stats["memory_db"] = report.get("state", "failed")
+        stats["memory_db_entries"] = int(report.get("entries", 0) or 0)
+        stats["memory_db_sessions"] = int(report.get("sessions", 0) or 0)
+        if not report.get("ok"):
+            warnings.append("memory sqlite ensure failed: %s"
+                            % str(report.get("error") or "")[:120])
+        logger.info(
+            "[biocore] memory sqlite ready: backend=%s sessions=%d entries=%d "
+            "source=%s backup=%s",
+            "sqlite", int(stats["memory_db_sessions"]),
+            int(stats["memory_db_entries"]), report.get("state", "?"),
+            bool(backup.get("dir")))
+        return report
+    except Exception as exc:
+        warnings.append("memory sqlite failed: %s: %s"
+                        % (type(exc).__name__, exc))
+        stats["memory_db"] = "failed"
+        return {}
+
+
 def migrate(plugin) -> dict:
     """Run the 1.3.4 -> 1.4.0 migration once; safe to call again."""
     report = {"applied": [], "warnings": [], "stats": {},
@@ -593,6 +699,7 @@ def migrate(plugin) -> dict:
     if stats.get("memory") == "backfilled":
         report["applied"].append("memory")
     _ensure_graph(plugin, stats, warnings)
+    _ensure_memory_sqlite(plugin, stats, warnings)
     data["schema_version"] = SCHEMA_VERSION
     try:
         _write(authority, data)

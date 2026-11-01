@@ -165,14 +165,15 @@ def parse(text) -> dict:
         confidence = _clamp(data.get("c"), 0.0, 1.0)
         if confidence is None:
             confidence = 0.6 if dims else 0.0
-        if not dims and not situation and not fact:
+        entities = _bounded_entities(data.get("entities"))
+        relations = _bounded_relations(data.get("relations"))
+        if (not dims and not situation and not fact and not entities
+                and not relations):
             continue
         out = {"dims": dims, "situation": situation, "why": why,
                "confidence": confidence, "source": "inline_tag"}
         if fact:
             out["fact"] = fact
-        entities = _bounded_entities(data.get("entities"))
-        relations = _bounded_relations(data.get("relations"))
         if entities:
             out["entities"] = entities
         if relations:
@@ -221,4 +222,10 @@ def strip(text) -> str:
             break
         out = (out[:start] + out[start + len(block):])
     out = _FENCE.sub("", out)
+    # The model sometimes gets cut off mid-tag ("{...\"dims\": {\"goal\"").
+    # Balanced blocks are removed above; drop any remaining fragment from the
+    # marker so the raw JSON never reaches the visible reply.
+    _marker = out.find('{"dims"')
+    if _marker >= 0:
+        out = out[:_marker]
     return re.sub(r"\n{3,}", "\n\n", out).strip()
