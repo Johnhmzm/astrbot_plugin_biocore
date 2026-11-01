@@ -1128,7 +1128,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.11")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.12")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
@@ -1654,7 +1654,7 @@ class BioCorePlugin(Star):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_profile()
         self._load_settings()
-        # 1.3.4 -> 1.4.11 data migration: after settings load, before the first
+        # 1.3.4 -> 1.4.12 data migration: after settings load, before the first
         # life loop. Idempotent (schema_version); never crashes startup.
         try:
             try:
@@ -3529,6 +3529,36 @@ class BioCorePlugin(Star):
                     "social_tau_hours": 18.0, "silence_tau_hours": 2.0,
                     "daily_cap": 5}
 
+    def _autonomy_gate_limits(self, acc_state, now, cooldown_seconds=None,
+                              daily_cap=None):
+        """Cooldown/daily cap against the accumulator; returns (allowed, reason)."""
+        acc = acc_state if isinstance(acc_state, dict) else {}
+        try:
+            current = float(now)
+        except Exception:
+            current = time.time()
+        try:
+            cooldown = int(cooldown_seconds or acc.get("cooldown_seconds", 1800) or 1800)
+        except Exception:
+            cooldown = 1800
+        try:
+            last = float(acc.get("last_sent_ts", 0.0) or 0.0)
+        except Exception:
+            last = 0.0
+        if last > 0 and (current - last) < cooldown:
+            return False, "cooldown"
+        try:
+            cap = int(daily_cap or acc.get("daily_cap", 5) or 5)
+        except Exception:
+            cap = 5
+        day = time.strftime("%Y-%m-%d", time.localtime(current))
+        try:
+            sent = int(acc.get("sent_count", 0) or 0)
+        except Exception:
+            sent = 0
+        if str(acc.get("sent_day") or "") == day and sent >= cap:
+            return False, "daily_cap"
+        return True, ""
     def _autonomy_insult_blocked(self, now):
         """True for 30 min after an insult: autonomy must not initiate."""
         try:
@@ -3545,14 +3575,12 @@ class BioCorePlugin(Star):
             out["theta"] = float(params.get("theta", out.get("theta", 0.55)) or 0.55)
         except Exception:
             out.setdefault("theta", 0.55)
-        for key, pkey in (("cooldown_seconds", "cooldown_s"),
-                          ("daily_cap", "daily_cap")):
-            if key not in out:
-                continue
+        for key, pkey, default in (("cooldown_seconds", "cooldown_s", 1800),
+                                   ("daily_cap", "daily_cap", 5)):
             try:
-                out[key] = int(params.get(pkey, out[key]))
+                out[key] = int(params.get(pkey, out.get(key, default)) or default)
             except Exception:
-                pass
+                out[key] = int(default)
         return out
 
     def _write_autonomy_theta_once(self):
@@ -3814,6 +3842,12 @@ class BioCorePlugin(Star):
             try:
                 if self._autonomy_insult_blocked(now_ts):
                     return False, "insult_cooldown"
+                _ok, _why = self._autonomy_gate_limits(
+                    acc_state, now_ts,
+                    cooldown_seconds=params.get("cooldown_s", AUTONOMY_COOLDOWN_SECONDS),
+                    daily_cap=params.get("daily_cap", getattr(self, "autonomy_daily_cap", 5)))
+                if not _ok:
+                    return False, _why
                 state = core.autonomy_state(
                     self._relationship_of({}), now=float(now_ts), persist=False)
                 return _am.send_gate(
@@ -3968,7 +4002,13 @@ class BioCorePlugin(Star):
             opts={"persona": str(getattr(self, "persona_text", "") or ""),
                   "speak_style": _speak_style,
                   "output_protocol": _etpl.PROMPT_OUTPUT_PROTOCOL})
-        prompt = "\n\n".join(x for x in (built.get("system"), built.get("user")) if x)
+        _instruction = ""
+        try:
+            _instruction = str(_reason.build_prompt(reason) or "")
+        except Exception:
+            _instruction = ""
+        prompt = "\n\n".join(x for x in (built.get("system"), _instruction,
+                                          built.get("user")) if x)
         try:
             _recent_prompt = self._recent_proactive_prompt()
         except Exception:
@@ -9866,7 +9906,7 @@ class BioCorePlugin(Star):
         return max(0.0, score)
 
     def _attention_gate_admit(self, score: float, entry_id: str = "") -> bool:
-        """L17 hard/probabilistic gate (Anderson et al. 2004, 10.1037/0033-295X.111.4.11036)."""
+        """L17 hard/probabilistic gate (Anderson et al. 2004, 10.1037/0033-295X.111.4.12036)."""
         try:
             _a = math.log(max(1e-9, float(score)))
             _tau = math.log(RETRIEVAL_THRESHOLD) + float(getattr(self, "attention_gate_shift", 0.0) or 0.0)

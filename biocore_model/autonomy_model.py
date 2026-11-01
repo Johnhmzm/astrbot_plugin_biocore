@@ -211,12 +211,15 @@ def parts_from_state(core, relationship=None, now=None, acc=None,
         if emotion == emo:
             parts[key] = max(parts[key], intensity)
     try:
-        if now is not None and float(acc.get("last_user_msg_ts", 0.0) or 0.0) > 0:
-            gap_hours = max(0.0, (float(now) - float(acc["last_user_msg_ts"])) / 3600.0)
+        last_user = float(acc.get("last_user_msg_ts", 0.0) or 0.0)
+        last_self = float(acc.get("last_self_contact_ts", 0.0) or 0.0)
+        last_contact = max(last_user, last_self)
+        if now is not None and last_contact > 0:
+            gap_hours = max(0.0, (float(now) - last_contact) / 3600.0)
         else:
             gap_hours = 0.0
     except Exception:
-        gap_hours = 0.0
+        last_self, gap_hours = 0.0, 0.0
     social_tau = max(0.5, _num(params.get("social_tau_hours", 18.0), 18.0))
     social_base = clamp(0.5 if social_baseline is None else social_baseline)
     parts["social_gap"] = round(social_gap(
@@ -227,8 +230,16 @@ def parts_from_state(core, relationship=None, now=None, acc=None,
     # instead of staying under the leak floor for ~12h.
     silence_tau = max(0.1, _num(params.get("silence_tau_hours", 2.0), 2.0))
     silence_lonely = 1.0 - math.exp(-gap_hours / silence_tau)
-    parts["lonely"] = round(max(parts["lonely"], 0.6 * (1.0 - closeness),
-                               silence_lonely), 4)
+    lonely = max(parts["lonely"], 0.6 * (1.0 - closeness), silence_lonely)
+    # A just-sent proactive message is self-contact: damp loneliness toward
+    # baseline for up to 30 minutes (0.6 at send -> 1.0 after 30 min).
+    try:
+        since_self = max(0.0, float(now) - float(acc.get("last_self_contact_ts", 0.0) or 0.0))
+        if 0.0 <= since_self < 1800.0:
+            lonely *= 0.6 + 0.4 * (since_self / 1800.0)
+    except Exception:
+        pass
+    parts["lonely"] = round(clamp(lonely), 4)
     stress = clamp(snap.get("stress", 0.0))
     allostatic = clamp(snap.get("allostatic_load", 0.0))
     parts["stress_load"] = round(clamp(0.6 * stress + 0.4 * allostatic), 4)

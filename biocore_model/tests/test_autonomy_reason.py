@@ -19,7 +19,8 @@ class ReasonTest(unittest.TestCase):
         self.assertEqual(r['code'], 'memory_due'); self.assertIn('明天体检', r['text'])
     def test_prompt_contains_motive(self):
         prompt = ar.build_prompt({'code': 'lonely', 'text': '有点闷', 'weight': 0.3})
-        self.assertIn('动机：', prompt); self.assertIn('有点闷', prompt); self.assertIn('<bc>', prompt)
+        self.assertIn('你现在主动找对方说话', prompt)
+        self.assertIn('因为你：孤独', prompt)
     def test_fallback_contains_reason(self):
         text = ar.fallback_text({'text': '很久没联系了'}, '在。')
         self.assertIn('很久没联系了', text); self.assertIn('在。', text)

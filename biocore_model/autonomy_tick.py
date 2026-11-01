@@ -205,6 +205,17 @@ def tick_once(deps, now):
             acc['V'] = 0.0
             acc['pending_fire'] = False
             acc['last_sent_ts'] = float(now)
+            acc['last_self_contact_ts'] = float(now)
+            try:
+                import time as _time
+                _day = _time.strftime("%Y-%m-%d", _time.localtime(float(now)))
+                if str(acc.get("sent_day") or "") == _day:
+                    acc["sent_count"] = int(acc.get("sent_count", 0) or 0) + 1
+                else:
+                    acc["sent_day"] = _day
+                    acc["sent_count"] = 1
+            except Exception:
+                pass
         else:
             result['blocked'].append(umo)
             result['reason'] = 'send_error'

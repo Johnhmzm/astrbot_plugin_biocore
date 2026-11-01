@@ -125,8 +125,9 @@ class PromptInjectionTest(unittest.TestCase):
 
 
 class UntouchedCooldownTest(unittest.TestCase):
-    def test_apply_params_still_conditional(self):
-        self.assertIn("if key not in out:", SOURCE)
+    def test_apply_params_force_writes_cooldown(self):
+        self.assertIn('("cooldown_seconds", "cooldown_s", 1800)', SOURCE)
+        self.assertNotIn("if key not in out:", SOURCE)
 
     def test_wiring_static(self):
         self.assertIn("_recent_proactive_prompt()", SOURCE)
