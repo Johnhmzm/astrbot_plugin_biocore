@@ -75,13 +75,15 @@ def _record(acc, deps, now, result):
 
 
 def tick_once(deps, now):
-    """One L4 tick; returns {sent, skipped, blocked, reason}.
+    """One L4 tick; returns {sent, skipped, blocked, blocked_reasons, reason}.
 
     V evolution is session-independent: step/drift/decay run even when there is
-    no private session (only SENDING needs a session). This fixes the frozen
-    V=0.155 case where a missing last_umo skipped the whole tick.
+    no private session (only SENDING needs a session). A fire that is blocked
+    by no_session / cooldown / daily_cap / send_disabled is kept pending: V is
+    NOT cleared and the next tick retries immediately when sending is possible.
     """
-    result = {'sent': [], 'skipped': [], 'blocked': [], 'reason': ''}
+    result = {'sent': [], 'skipped': [], 'blocked': [],
+              'blocked_reasons': [], 'reason': ''}
     try:
         acc = dict(deps.load_acc() or {})
     except Exception:
@@ -90,6 +92,11 @@ def tick_once(deps, now):
         sessions = list(deps.list_sessions() or [])
     except Exception:
         sessions = []
+    try:
+        prev_V = max(0.0, float(acc.get('V', 0.0) or 0.0))
+    except Exception:
+        prev_V = 0.0
+    pending_fire = bool(acc.get('pending_fire', False))
     # Pick a core for state/parts even without a session (first session core,
     # then any live core injected by the caller).
     state_core = None
@@ -123,21 +130,41 @@ def tick_once(deps, now):
         params = {}
     theta = float(params.get('theta') or acc.get('theta', 0.55) or 0.55)
     acc['theta'] = theta
+    # A pending fire skips re-accumulation: keep V at the threshold and try send.
+    if pending_fire:
+        step = {'V': max(prev_V, theta), 'fire': True}
+    else:
+        try:
+            step = deps.step(prev_V, motive['drift'], theta)
+        except Exception:
+            step = {'V': prev_V, 'fire': False}
+    fire = bool(step.get('fire'))
     try:
-        step = deps.step(float(acc.get('V', 0.0) or 0.0), motive['drift'], theta)
+        step_V = max(0.0, float(step.get('V', 0.0) or 0.0))
     except Exception:
-        step = {'V': float(acc.get('V', 0.0) or 0.0), 'fire': False}
-    acc['V'] = float(step.get('V', 0.0) or 0.0)
-    acc['ticks_since_fire'] = 0 if step.get('fire') else int(acc.get('ticks_since_fire', 0) or 0) + 1
+        step_V = 0.0
+    if fire or pending_fire:
+        # Do not clear V here; only a successful send may reset it.
+        acc['V'] = min(theta, max(prev_V, step_V, theta))
+        acc['pending_fire'] = True
+    else:
+        acc['V'] = step_V
+        acc['pending_fire'] = False
+    acc['ticks_since_fire'] = 0 if fire else int(acc.get('ticks_since_fire', 0) or 0) + 1
     if not sessions:
         result['reason'] = 'no_session'
+        if fire or pending_fire:
+            result['blocked_reasons'].append('no_session')
         return _record(acc, deps, now, result)
     if decision['action'] != 'send':
         for session in sessions:
             umo = str((session or {}).get('umo') or '')
             result['skipped'].append(umo)
         result['reason'] = decision['reason'] or 'not_ready'
+        if fire or pending_fire:
+            result['blocked_reasons'].append(result['reason'])
         return _record(acc, deps, now, result)
+    sent_any = False
     for session in sessions:
         umo = str((session or {}).get('umo') or '')
         try:
@@ -146,8 +173,10 @@ def tick_once(deps, now):
             core = None
         if core is None:
             result['skipped'].append(umo)
+            if fire or pending_fire:
+                result['blocked_reasons'].append('no_core:' + umo)
             continue
-        if not step.get('fire'):
+        if not (fire or pending_fire):
             result['skipped'].append(umo)
             result['reason'] = 'not_ready'
             continue
@@ -158,11 +187,13 @@ def tick_once(deps, now):
         if not allowed:
             result['blocked'].append(umo)
             result['reason'] = str(why)
+            result['blocked_reasons'].append(str(why) + ':' + umo)
             continue
         text = _build_text(core, acc, deps)
         if not text:
             result['blocked'].append(umo)
             result['reason'] = 'no_text'
+            result['blocked_reasons'].append('no_text:' + umo)
             continue
         try:
             ok = deps.send_text(umo, text)
@@ -170,9 +201,16 @@ def tick_once(deps, now):
             ok = False
         if ok:
             result['sent'].append(umo)
+            sent_any = True
             acc['V'] = 0.0
+            acc['pending_fire'] = False
             acc['last_sent_ts'] = float(now)
         else:
             result['blocked'].append(umo)
             result['reason'] = 'send_error'
+            result['blocked_reasons'].append('send_error:' + umo)
+    if not sent_any and (fire or pending_fire):
+        # Stay at the threshold for the next eligible tick.
+        acc['V'] = min(theta, max(prev_V, theta))
+        acc['pending_fire'] = True
     return _record(acc, deps, now, result)

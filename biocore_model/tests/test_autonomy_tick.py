@@ -103,6 +103,42 @@ class TickTest(unittest.TestCase):
         self.assertIn("no session; V still advances", source)
         self.assertIn('payload.setdefault("last_umo"', source)
 
+    def test_blocked_no_session_keeps_v_and_pending(self):
+        deps = Deps(sessions=[])
+        deps.acc = {"V": 0.0, "theta": 0.55}
+        deps.step = lambda V, drift, theta: {"V": 0.0, "fire": True}
+        for _ in range(3):
+            out = at.tick_once(deps, NOW)
+            self.assertEqual(out["sent"], [])
+            self.assertEqual(out["reason"], "no_session")
+            self.assertGreaterEqual(deps.acc["V"], 0.55)
+            self.assertTrue(deps.acc.get("pending_fire"))
+
+    def test_pending_fire_sends_immediately_when_session_returns(self):
+        deps = Deps(sessions=[])
+        deps.acc = {"V": 0.0, "theta": 0.55}
+        deps.step = lambda V, drift, theta: {"V": 0.0, "fire": True}
+        for _ in range(3):
+            at.tick_once(deps, NOW)
+        deps.sessions = [{"umo": "u1"}]
+        # No new accumulation needed: pending fire must send on the next tick.
+        deps.step = lambda V, drift, theta: {"V": V, "fire": False}
+        out = at.tick_once(deps, NOW)
+        self.assertEqual(out["sent"], ["u1"])
+        self.assertEqual(out["blocked_reasons"], [])
+        self.assertEqual(deps.acc["V"], 0.0)
+        self.assertFalse(deps.acc.get("pending_fire"))
+
+    def test_blocked_gate_keeps_v_pending(self):
+        deps = Deps(step_result={"V": 0.0, "fire": True},
+                    gate_result=(False, "cooldown"))
+        deps.acc = {"V": 0.9, "theta": 0.55}
+        out = at.tick_once(deps, NOW)
+        self.assertEqual(out["blocked"], ["u1"])
+        self.assertTrue(out["blocked_reasons"])
+        self.assertGreaterEqual(deps.acc["V"], 0.55)
+        self.assertTrue(deps.acc.get("pending_fire"))
+
     def test_no_main_import(self):
         import pathlib
         source = pathlib.Path(__file__).resolve().parent.parent.joinpath('autonomy_tick.py').read_text(encoding='utf-8')
