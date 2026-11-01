@@ -36,6 +36,9 @@ DEFAULTS = {
     # Fallback biological state used when no user core exists yet (restart):
     # the life loop hydrates a synthetic core from here and writes it back.
     "bio_state": {},
+    # Preset structure (SillyTavern-style blocks): default ON; off falls back to
+    # the legacy scattered prompt inserts.
+    "preset": {"enabled": True},
 }
 
 _MODULE_DIR = Path(__file__).resolve().parent
@@ -235,6 +238,11 @@ def apply_to_plugin(plugin, data=None) -> dict:
     try:
         plugin.proactive_autonomy = bool(auto.get("enabled", False))
         plugin.proactive_send = bool(auto.get("send", False))
+    except Exception:
+        pass
+    try:
+        preset = data.get("preset") or {}
+        plugin.preset_enabled = bool(preset.get("enabled", True))
     except Exception:
         pass
     return data

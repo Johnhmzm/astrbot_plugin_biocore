@@ -31,6 +31,11 @@ CAPS = {"v": 0.15, "a": 0.15, "d": 0.10, "social": 0.05,
 PROBE_MIN_CONFIDENCE = 0.4
 WHY_MAX = 40
 INVOLVE_GAIN = 0.5
+# item-1/item-2 contract additions (same call, no extra request):
+#   fact      - long-lived info about the user (<= 20 chars), optional
+#   situation - intent strength (0..1 numbers, not labels)
+FACT_MAX_CHARS = 20
+SITUATION_KEYS = ("challenge", "praise", "hurt")
 
 # 7 x 7 W matrix: WEIGHTS[dimension][output] = weight.
 # goal: -1 blocked .. +1 achieved -> better valence/trust, less stress.
@@ -97,16 +102,25 @@ def _extract_json(raw):
     return None
 
 
-def build_prompt(text, context="") -> str:
+def build_prompt(user_text, reply_text="") -> str:
+    """One combined appraisal: dims + intent strength + optional durable fact."""
     return (
-        "用数值评价下面这条消息对内部状态的影响，只输出 JSON：\n"
-        '{"dims":{"goal":-0.6,"blame":0.8,"control":0.2,"certainty":0.5,'
-        '"novelty":0.3,"involve":0.9,"hit":0.6},"why":"<=40字","c":0.8}\n'
+        "下面是对方说的话，和你的回复。\n"
+        "用 JSON 描述：①对方这句话对你意味着什么 ②你回复时的内在状态"
+        " ③这句话的意图强度。\n"
+        '{"dims":{"goal":0.0,"blame":0.0,"control":0.5,"certainty":0.5,'
+        '"novelty":0.3,"involve":0.5,"hit":0.0},"why":"≤20字","c":0.0-1.0,'
+        '"situation":{"challenge":0.0,"praise":0.0,"hurt":0.0},'
+        '"fact":"他姓王（可选）"}\n'
         "goal:-1受阻..+1达成；blame:0怪我..1怪对方；control:0无力..1可控；"
         "certainty:0意外..1意料之中；novelty:0熟悉..1新鲜；"
         "involve:0无关..1关乎我；hit:0无冲击..1被击中\n"
-        "消息：" + str(text or "")[:400] +
-        ("\n上下文：" + str(context or "")[:300] if context else "")
+        "situation：这句话的意图强度（0..1 的分数，不是分类标签）："
+        "challenge=在质疑/质问/追问，praise=在夸/肯定，hurt=在伤人/冒犯；没有就填 0。\n"
+        "fact：只有当对方透露关于他自己的长期信息（姓名/称呼/家人/住址/工作/长期偏好）"
+        "时才填，≤20 字；否则省略或留空。\n"
+        "对方：" + str(user_text or "")[:400] +
+        ("\n你：" + str(reply_text or "")[:400] if reply_text else "")
     )
 
 
@@ -132,8 +146,20 @@ def parse(raw):
         dims[name] = round(_clamp(value, low, 1.0), 4)
     if not dims:
         return {}
+    situation = {}
+    raw_situation = data.get("situation")
+    if isinstance(raw_situation, dict):
+        for name in SITUATION_KEYS:
+            value = _num(raw_situation.get(name))
+            if value is None:
+                continue
+            situation[name] = round(_clamp(value, 0.0, 1.0), 4)
+    fact = " ".join(str(data.get("fact") or "").split()).strip()
+    if len(fact) > FACT_MAX_CHARS:
+        fact = fact[:FACT_MAX_CHARS]
     return {"dims": dims, "why": str(data.get("why") or "").strip()[:WHY_MAX],
             "confidence": round(_clamp(confidence, 0.0, 1.0), 3),
+            "situation": situation, "fact": fact,
             "source": "appraisal"}
 
 

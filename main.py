@@ -101,12 +101,12 @@ except Exception:  # pragma: no cover
 
 try:
     from .biocore_model.bio_const import (
-        LEX, EMOTION_SPECTRUM, SENSITIZATION_STRONG_NEG_DV, SENSITIZATION_STEP,
+        EMOTION_SPECTRUM, SENSITIZATION_STRONG_NEG_DV, SENSITIZATION_STEP,
         SENSITIZATION_MAX, SENSITIZATION_HALF_LIFE_HOURS, SENSITIZATION_HISTORY_MAX,
         SENSITIZATION_HISTORY_MAX_AGE)
 except Exception:  # pragma: no cover
     from biocore_model.bio_const import (
-        LEX, EMOTION_SPECTRUM, SENSITIZATION_STRONG_NEG_DV, SENSITIZATION_STEP,
+        EMOTION_SPECTRUM, SENSITIZATION_STRONG_NEG_DV, SENSITIZATION_STEP,
         SENSITIZATION_MAX, SENSITIZATION_HALF_LIFE_HOURS, SENSITIZATION_HISTORY_MAX,
         SENSITIZATION_HISTORY_MAX_AGE)
 
@@ -625,6 +625,36 @@ def _clip(x, lo=-1.0, hi=1.0):
         return lo
 
 
+def _budget_dims_deltas(plugin, deltas, source="probe"):
+    """P0-2: cap one message's total |dims delta| (default 0.2, config).
+
+    Module-level on purpose: the user-appraisal / reply-probe methods are
+    exercised by AST-loaded tests, so the wiring must not depend on a plugin
+    method being present (a missing helper degrades to "no budget", never to
+    "no write").
+    """
+    try:
+        try:
+            from .biocore_model import delta_budget as _delta_budget
+        except Exception:
+            from biocore_model import delta_budget as _delta_budget
+        bounded, report = _delta_budget.budget(
+            deltas,
+            limit=getattr(plugin, "dims_delta_limit", 0.2),
+            enabled=bool(getattr(plugin, "dims_delta_limit_enabled", True)))
+        if report.get("scaled"):
+            logger.info(
+                "[biocore] dims budget src=%s raw=%.3f scaled=%.3f "
+                "factor=%.3f fields=%d",
+                str(source), float(report.get("raw_total", 0.0)),
+                float(report.get("scaled_total", 0.0)),
+                float(report.get("factor", 1.0)), len(bounded))
+        return bounded
+    except Exception as _budget_exc:
+        logger.debug("[biocore] dims budget skipped: %s", _budget_exc)
+        return deltas
+
+
 def _memory_entry_id_of(entry) -> str:
     """Stable per-entry id shared by the memory API and the dashboard index."""
     if not isinstance(entry, dict):
@@ -1128,7 +1158,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.12")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.13")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
@@ -1146,6 +1176,14 @@ class BioCorePlugin(Star):
                 1, int(self.config.get("emotion_probe_max_inflight", 1) or 1))
         except Exception:
             self.emotion_probe_max_inflight = 1
+        # P0-2: one message's total |dims delta| cap (proportional scaling).
+        try:
+            self.dims_delta_limit = max(0.01, min(1.0, float(
+                self.config.get("dims_delta_limit", 0.2) or 0.2)))
+        except Exception:
+            self.dims_delta_limit = 0.2
+        self.dims_delta_limit_enabled = bool(
+            self.config.get("dims_delta_limit_enabled", True))
         self.inject_intent = bool(self.config.get("inject_intent", True))
         try:
             self.summary_max_chars = max(0, int(self.config.get("summary_max_chars", 0) or 0))
@@ -1462,6 +1500,14 @@ class BioCorePlugin(Star):
         # D5: stable default shape even before the first recall fills it.
         self._last_memory_trace = dict(DEFAULT_MEMORY_TRACE)
         self.memory_dedup_embedding = bool(self.config.get("memory_dedup_embedding", True))
+        # task-123: layered memory — resident facts + capped retrieval (default 2).
+        self.layered_memory_enabled = bool(
+            self.config.get("layered_memory_enabled", True))
+        try:
+            self.layered_memory_retrieval_limit = max(0, min(5, int(
+                self.config.get("layered_memory_retrieval_limit", 2) or 0)))
+        except Exception:
+            self.layered_memory_retrieval_limit = 2
         # M1 memory module: default OFF; enabled = shadow engine (no behaviour change).
         self.memory_module_enabled = bool(self.config.get("memory_module_enabled", False))
         self._memory_module_engines = {}
@@ -1491,7 +1537,33 @@ class BioCorePlugin(Star):
         self._last_cause_trace = []
         self._last_strategy_hint = ""
         self._last_memory_entries = []
+        # task-124: last reply's memory receipt (read-only; /biocore memory).
+        self._last_turn_memory = {}
+        self._turn_memory_history = []
+        # item-1/item-2: latest probe situation numbers + written fact keys.
+        self._last_situation = {}
+        self._probe_fact_keys = {}
+        # task-126: bounded ring of one-turn rollback snapshots (newest last).
+        self._rollback_ring = []
         self._llm_v2_last = {}
+        # task-127: provider failover order + per-provider cooldown state.
+        try:
+            _pf_order = self.config.get("provider_fallback_order") or []
+        except Exception:
+            _pf_order = []
+        self.provider_fallback_order = (
+            [str(x).strip() for x in _pf_order if str(x).strip()]
+            if isinstance(_pf_order, (list, tuple)) else [])
+        try:
+            self.provider_fallback_cooldown_s = max(0.0, float(
+                self.config.get("provider_fallback_cooldown_s", 60) or 60))
+        except Exception:
+            self.provider_fallback_cooldown_s = 60.0
+        self._provider_fallback_state = {}
+        self._current_llm_provider = ""
+        # task-135: entity/relation graph ingest from the inline state tag.
+        self.graph_memory_enabled = bool(
+            self.config.get("graph_memory_enabled", True))
         # task-36: bounded read-only telemetry (never feeds prompts or gates).
         self._llm_telemetry = {"counters": {}, "recent": []}
         self._token_usage = {"available": False, "sessions": {}}
@@ -1555,8 +1627,9 @@ class BioCorePlugin(Star):
         self._last_insult_ts = 0.0
         self._recent_proactive = []
         self._recent_proactive_loaded = False
+        # item-5: lexical fallback is OFF by default; the probe owns semantics.
         self.lexical_fallback_enabled = bool(
-            self.config.get("lexical_fallback_enabled", True))
+            self.config.get("lexical_fallback_enabled", False))
         self._consolidating = False
         self._last_consolidation = 0.0
         self._last_event_archive = 0.0
@@ -1662,6 +1735,16 @@ class BioCorePlugin(Star):
             except Exception:
                 from biocore_model import migrate as _migrate_mod
             self._migration_report = _migrate_mod.migrate(self)
+            try:
+                # Even when the schema is already current, make sure the graph
+                # store exists (migrate skips the whole body in that case).
+                _stats = self._migration_report.setdefault("stats", {})
+                _warn = self._migration_report.setdefault("warnings", [])
+                _ensure = getattr(_migrate_mod, "_ensure_graph", None)
+                if callable(_ensure):
+                    _ensure(self, _stats, _warn)
+            except Exception as _graph_exc:
+                logger.warning("[biocore] graph store ensure failed: %s", _graph_exc)
             try:
                 self._migration_retry_done = bool(
                     _migrate_mod.schema_version(self) >= 2)
@@ -2602,19 +2685,75 @@ class BioCorePlugin(Star):
             pass
         return resp
 
+    @staticmethod
+    def _provider_identity(provider):
+        """Stable id for cooldown bookkeeping (never guesses a missing API)."""
+        if provider is None:
+            return ""
+        for attr in ("provider_id", "id", "name"):
+            try:
+                value = getattr(provider, attr, None)
+                if callable(value):
+                    value = value()
+                text = str(value or "").strip()
+                if text:
+                    return text
+            except Exception:
+                continue
+        return "primary"
+
+    def _resolve_provider_by_id(self, provider_id):
+        """Resolve a configured fallback provider id to a chat provider."""
+        pid = str(provider_id or "").strip()
+        if not pid or pid in ("primary", "main", "default", "follow_llm"):
+            return None
+        try:
+            provider = self.context.get_provider_by_id(pid)
+        except Exception:
+            return None
+        if provider is None:
+            return None
+        try:
+            if self._provider_kind(provider) != "chat":
+                return None
+        except Exception:
+            pass
+        return provider
+
     async def _llm_v2_call(self, kind, prompt, parser, event=None, system_prompt=None,
                            timeout_ms=None):
         if not self._llm_allowed(kind):
             return None
         try:
-            provider = await self._provider_for(kind, event)
+            primary = await self._provider_for(kind, event)
         except Exception as exc:
             logger.warning("[biocore] llm v2 provider failed (%s): %s", kind, exc)
             self._record_llm_telemetry(kind, "provider_error", str(exc))
             return None
-        if provider is None:
+        if primary is None:
             self._record_llm_telemetry(kind, "no_provider")
             return None
+        try:
+            from .biocore_model import provider_fallback as _pf
+        except Exception:
+            from biocore_model import provider_fallback as _pf
+        _primary_id = self._provider_identity(primary)
+        _state = getattr(self, "_provider_fallback_state", {})
+        if not isinstance(_state, dict):
+            _state = {}
+        _now = time.time()
+        try:
+            _cooldown = float(getattr(
+                self, "provider_fallback_cooldown_s", 60.0) or 0.0)
+        except Exception:
+            _cooldown = 60.0
+        _order = _pf.candidates(
+            _primary_id, getattr(self, "provider_fallback_order", []) or [],
+            _state, now=_now, cooldown=_cooldown)
+        if not _order:
+            # Everything is cooling down: retry the primary once instead of
+            # silently disabling the feature after a single outage.
+            _order = [_primary_id or "primary"]
         if str(kind) in LLM_BACKGROUND_KINDS:
             try:
                 if not self._bg_budget_reserve(kind):
@@ -2625,31 +2764,58 @@ class BioCorePlugin(Star):
         try:
             _tmo = max(0.5, float(timeout_ms or getattr(
                 self, "outbound_timeout_ms", 3000)) / 1000.0)
-            _call = (provider.text_chat(prompt=prompt, system_prompt=system_prompt)
-                     if system_prompt else provider.text_chat(prompt=prompt))
-            if _SERVICES is not None:
-                resp = await _SERVICES.llm(_call, _tmo)
-            else:
-                resp = await asyncio.wait_for(_call, timeout=_tmo)
-            raw = str(getattr(resp, "completion_text", "") or "").strip()
-            if str(kind) in LLM_BACKGROUND_KINDS:
+        except Exception:
+            _tmo = 3.0
+        _reason = ""
+        for _idx, _pid in enumerate(_order):
+            provider = (primary if _pid == _primary_id
+                        else self._resolve_provider_by_id(_pid))
+            if provider is None:
+                _state = _pf.mark_failure(_state, _pid, _now)
+                self._provider_fallback_state = _state
+                _reason = "provider_missing"
+                continue
+            if _idx > 0:
+                logger.info(
+                    "[biocore] provider fallback from=%s to=%s reason=%s",
+                    _order[_idx - 1], _pid, _reason or "retry")
+            try:
+                _call = (provider.text_chat(prompt=prompt, system_prompt=system_prompt)
+                         if system_prompt else provider.text_chat(prompt=prompt))
+                if _SERVICES is not None:
+                    resp = await _SERVICES.llm(_call, _tmo)
+                else:
+                    resp = await asyncio.wait_for(_call, timeout=_tmo)
+                raw = str(getattr(resp, "completion_text", "") or "").strip()
+                if not raw:
+                    self._record_llm_telemetry(kind, "empty")
+                    return None
+                _state = _pf.mark_success(_state, _pid, _now)
+                self._provider_fallback_state = _state
                 try:
-                    _in = max(1, int(len(prompt) / 2.2))
-                    _out = max(1, int(len(raw) / 2.2))
-                    self._bg_budget_add_cost(self._cost_for(_in, _out))
+                    self._current_llm_provider = _pf.current(_state)
                 except Exception:
                     pass
-            if not raw:
-                self._record_llm_telemetry(kind, "empty")
-                return None
-            return parser(raw)
-        except asyncio.TimeoutError:
-            self._record_llm_telemetry(kind, "timeout")
-            return None
-        except Exception as exc:
-            logger.warning("[biocore] llm v2 call/paser failed (%s): %s", kind, exc)
-            self._record_llm_telemetry(kind, "call_error", str(exc))
-            return None
+                if str(kind) in LLM_BACKGROUND_KINDS:
+                    try:
+                        _in = max(1, int(len(prompt) / 2.2))
+                        _out = max(1, int(len(raw) / 2.2))
+                        self._bg_budget_add_cost(self._cost_for(_in, _out))
+                    except Exception:
+                        pass
+                return parser(raw)
+            except asyncio.TimeoutError:
+                self._record_llm_telemetry(kind, "timeout")
+                _reason = "timeout"
+            except Exception as exc:
+                logger.warning(
+                    "[biocore] llm v2 call/paser failed (%s,%s): %s",
+                    kind, _pid, exc)
+                self._record_llm_telemetry(kind, "call_error", str(exc))
+                _reason = str(exc)[:60]
+            _state = _pf.mark_failure(_state, _pid, _now)
+            self._provider_fallback_state = _state
+        return None
 
     def _llm_v2_cooldown_ok(self, kind):
         try:
@@ -3913,6 +4079,11 @@ class BioCorePlugin(Star):
                             event=None)
                     except Exception as _rec_exc:
                         logger.warning("[biocore] proactive record failed: %s", _rec_exc)
+                    try:
+                        await self._persist_proactive_history(umo, final)
+                    except Exception as _hist_exc:
+                        logger.warning("[biocore] proactive history failed: %s",
+                                       _hist_exc)
                 except Exception as exc:
                     logger.warning("[biocore] autonomy module send failed: %s", exc)
             try:
@@ -4000,8 +4171,7 @@ class BioCorePlugin(Star):
                        "numeric_legend": _legend},
             intent=acc_state.get("intent"), tone=acc_state.get("tone"),
             opts={"persona": str(getattr(self, "persona_text", "") or ""),
-                  "speak_style": _speak_style,
-                  "output_protocol": _etpl.PROMPT_OUTPUT_PROTOCOL})
+                  "speak_style": _speak_style})
         _instruction = ""
         try:
             _instruction = str(_reason.build_prompt(reason) or "")
@@ -4118,8 +4288,30 @@ class BioCorePlugin(Star):
                     bool(getattr(core, "bio_learning", False)),
                     str(getattr(core, "retention_model", "power_law")), state)).use_t2i(False))
             return
+        if sub == "memory" or sub.startswith("memory "):
+            try:
+                try:
+                    from .biocore_model import turn_memory as _turn_mem_cmd
+                except Exception:
+                    from biocore_model import turn_memory as _turn_mem_cmd
+                _receipt = _turn_mem_cmd.render_receipt(
+                    getattr(self, "_last_turn_memory", None))
+            except Exception:
+                _receipt = ""
+            event.set_result(MessageEventResult().message(
+                _receipt or "本轮记忆：暂无（先发一条消息让检索发生）").use_t2i(False))
+            return
+        if sub == "rollback":
+            try:
+                _rb_text = self._apply_rollback(event)
+            except Exception as _rb_exc:
+                logger.warning("[biocore] rollback command failed: %s", _rb_exc)
+                _rb_text = "回退失败"
+            event.set_result(MessageEventResult().message(
+                "[BioCore] " + str(_rb_text)).use_t2i(False))
+            return
         event.set_result(MessageEventResult().message(
-            "用法：/biocore readiness | /biocore learning | /biocore learning reset").use_t2i(False))
+            "用法：/biocore readiness | /biocore learning | /biocore memory | /biocore rollback").use_t2i(False))
 
     async def _ensure_profile(self, event):
         if not self.profile and self.first_run_persona_compile:
@@ -7796,6 +7988,11 @@ class BioCorePlugin(Star):
                          "BioCore dashboard status")
                 register("/astrbot_plugin_biocore/page/debug", self.page_debug, ["GET"],
                          "BioCore backend debug snapshot")
+                register("/astrbot_plugin_biocore/page/graph", self.page_graph, ["GET"],
+                         "BioCore graph memory snapshot")
+                register("/astrbot_plugin_biocore/page/graph/merge",
+                         self.page_graph_merge, ["POST"],
+                         "BioCore graph entity merge")
                 register("/astrbot_plugin_biocore/page/self_model", self.page_self_model,
                          ["GET", "POST"], "BioCore self model editor")
                 register("/astrbot_plugin_biocore/page/toggle", self.page_toggle, ["POST"],
@@ -8481,6 +8678,69 @@ class BioCorePlugin(Star):
                     "ttl_seconds": int(memory_meta.WORKING_SET_TTL_SECONDS),
                     "fresh_count": 0}
 
+    async def _graph_page_payload(self):
+        """Graph panel snapshot (read-only): entities, edges, stats."""
+        data = {"stats": {}, "entities": [], "edges": []}
+        try:
+            try:
+                from .biocore_model import graph_recall as _graph_recall
+            except Exception:
+                from biocore_model import graph_recall as _graph_recall
+            db = self._graph_db_path()
+            store = _graph_recall._eg.open_store(db)
+            try:
+                data = _graph_recall.panel_data(store)
+            finally:
+                store.close()
+        except Exception as _graph_exc:
+            logger.warning("[biocore] page/graph failed: %s", _graph_exc)
+            data["error"] = str(_graph_exc)[:120]
+        return {"status": "ok", "data": data}
+
+    async def page_graph(self):
+        return await self._graph_page_payload()
+
+    async def page_graph_merge(self):
+        """P0-1: merge one graph entity into another (POST keep_id/drop_id)."""
+        from quart import request
+        store = None
+        try:
+            try:
+                from .biocore_model import entity_resolve as _entity_resolve
+            except Exception:
+                from biocore_model import entity_resolve as _entity_resolve
+            try:
+                from .biocore_model import graph_recall as _graph_recall
+            except Exception:
+                from biocore_model import graph_recall as _graph_recall
+            body = await request.get_json(silent=True) or {}
+            keep_id, drop_id = _entity_resolve.clean_merge_ids(body)
+            if not keep_id or not drop_id:
+                return {"status": "error",
+                        "message": "keep_id and drop_id are required",
+                        "data": {}}
+            store = _graph_recall._eg.open_store(self._graph_db_path())
+            result = store.merge_entities(keep_id, drop_id)
+            if not result.get("ok"):
+                return {"status": "error",
+                        "message": str(result.get("error") or "merge failed"),
+                        "data": result}
+            logger.info(
+                "[biocore] graph merge keep=%s drop=%s aliases=%d edges=%d",
+                keep_id, drop_id, int(result.get("aliases", 0)),
+                int(result.get("edges_rewired", 0)))
+            return {"status": "ok", "data": result}
+        except Exception as _merge_exc:
+            logger.warning("[biocore] graph merge failed: %s", _merge_exc)
+            return {"status": "error",
+                    "message": str(_merge_exc)[:180], "data": {}}
+        finally:
+            if store is not None:
+                try:
+                    store.close()
+                except Exception:
+                    pass
+
     async def page_debug(self):
         """Read-only backend debug snapshot (GET). Never writes/ticks/sends."""
         data = {
@@ -8682,6 +8942,8 @@ class BioCorePlugin(Star):
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
             "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],
+            # task-124: last reply's used-memory receipt (read-only, bounded).
+            "turn_memory": dict(getattr(self, "_last_turn_memory", {}) or {}),
             # task-36 read-only projections are appended ONLY when their opt-in
             # switches are ON (P1-2: default OFF => no new page/status fields).
             "kb_config": {"enabled": bool(getattr(self, "kb_enabled", False)),
@@ -10904,6 +11166,7 @@ class BioCorePlugin(Star):
                     sensitive_protect=bool(getattr(self, "sensitive_memory_protection", False)))
                 _trace.append({
                     "entry_id": _eid,
+                    "text": str(_entry.get("text") or "")[:120],
                     "rank": _rank,
                     "score": round(float(_score), 4),
                     "cosine": _parts["cosine"],
@@ -11178,15 +11441,19 @@ class BioCorePlugin(Star):
             return ""
         return memory_text
 
-    async def _remember(self, event, text: str, role: str = "user", core=None):
+    async def _remember(self, event, text: str, role: str = "user", core=None,
+                        tags=None, memory_source=None):
         if not self.memory_dedup_embedding or not self._usable_memory_text(text):
             return
         text = str(text).strip()
-        if len(text) < 4:
+        _tag_list = [str(tag) for tag in (tags or []) if str(tag).strip()]
+        _resident = "resident" in _tag_list
+        if len(text) < (2 if _resident else 4):
             return
         vec = await self._embed_text(text)
-        if not vec:
+        if not vec and not _resident:
             return
+        vec = vec or []
         # M1 shadow adapter (default OFF): same event into the module engine.
         _mod_engine = self._memory_module_engine(event)
         if _mod_engine is not None:
@@ -11241,14 +11508,19 @@ class BioCorePlugin(Star):
                      "ts": now, "message_refs": []}
         else:
             _prov = self._memory_provenance(event, now)
-        entries.append({"text": text[:1200], "role": role, "vector": vec,
-                        "ts": now, "hits": 1,
-                        "sender_id": _sid if role == "user" else "",
-                        "sender_name": _sname if role == "user" else "",
-                        "attachments": self._attachments_from_messages(event) if role == "user" else [],
-                        "provenance": _prov,
-                        "importance": self._memory_importance(core, role),
-                        "last_used": now, "next_review_ts": now + 86400, "review_count": 0})
+        _entry = {"text": text[:1200], "role": role, "vector": vec,
+                  "ts": now, "hits": 1,
+                  "sender_id": _sid if role == "user" else "",
+                  "sender_name": _sname if role == "user" else "",
+                  "attachments": self._attachments_from_messages(event) if role == "user" else [],
+                  "provenance": _prov,
+                  "importance": self._memory_importance(core, role),
+                  "last_used": now, "next_review_ts": now + 86400, "review_count": 0}
+        if _tag_list:
+            _entry["tags"] = _tag_list
+        if memory_source:
+            _entry["memory_source"] = str(memory_source)
+        entries.append(_entry)
         self._apply_memory_encoding(entries[-1], core, now, text)
         memory_meta.append_write_log(doc, op="ADD", entry_id=str(entries[-1].get("id") or ""),
                                      reason=role, ts=now)
@@ -11404,6 +11676,14 @@ class BioCorePlugin(Star):
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest):
         try:
+            _ctxs = getattr(req, "contexts", None)
+            logger.info("[biocore] ctx contexts=%s prompt_len=%s sys_len=%s",
+                        len(_ctxs) if isinstance(_ctxs, list) else type(_ctxs).__name__,
+                        len(str(getattr(req, "prompt", "") or "")),
+                        len(str(getattr(req, "system_prompt", "") or "")))
+        except Exception:
+            pass
+        try:
             from biocore_model import policy_learning as _pl_recv
             _pending = getattr(self, "_policy_pending", None)
             if isinstance(_pending, dict) and _pending.get("action"):
@@ -11453,13 +11733,17 @@ class BioCorePlugin(Star):
             # task-43: deterministic L1 scalars (read-only state; behaviour
             # effects are separately gated and default OFF). No LLM/token cost.
             try:
+                _probe_dims = getattr(core, "probe_dims", None)
                 core.update_conflict_ema(
-                    text, novelty=float(core.appraisal.get("novelty", 0.0) or 0.0))
+                    text, novelty=float(core.appraisal.get("novelty", 0.0) or 0.0),
+                    dims=_probe_dims)
                 core.update_rumination_ema(
                     text, emotion=str((core.labels or {}).get("emotion") or "neutral"),
                     intensity=float(core._intensity()),
-                    novelty=float(core.appraisal.get("novelty", 0.0) or 0.0))
-                core.apply_identity_threat(text)
+                    novelty=float(core.appraisal.get("novelty", 0.0) or 0.0),
+                    dims=_probe_dims)
+                core.apply_identity_threat(
+                    text, dims=getattr(core, "probe_dims", None))
             except Exception:
                 pass
         _user_data = self._touch_user(event, core)
@@ -11508,12 +11792,12 @@ class BioCorePlugin(Star):
             logger.info('[biocore] social satiety V %.3f -> %.3f', _v_old, _acc_sat['V'])
         except Exception:
             pass
-        # User appraisal is fire-and-forget: insult cooling is immediate, all
-        # numeric deltas come from the background dims call (fallback if it fails).
+        # User side only needs immediate insult cooling; all numeric deltas
+        # come from the single combined probe after the reply (2 LLM calls total).
         try:
-            self._schedule_user_appraisal(event, core, text)
+            self._user_appraisal_immediate(event, text)
         except Exception as _appr_sched_exc:
-            logger.warning("[biocore] user appraisal schedule failed: %s",
+            logger.warning("[biocore] user appraisal immediate failed: %s",
                            _appr_sched_exc)
         _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice,
                                          user_data=_user_data)
@@ -11530,6 +11814,7 @@ class BioCorePlugin(Star):
         try:
             _recent_turns = [str(h.get("text") or "") for h in (core.history or [])[-6:]]
             core.bind_goal_context(memory_text=_mem, self_model=self.self_model,
+                                   dims=getattr(core, "probe_dims", None),
                                    recent=_recent_turns, text=text)
         except Exception:
             pass
@@ -11537,6 +11822,21 @@ class BioCorePlugin(Star):
         # L-T02..L-T12: one bounded strategy/cause/receipt token, plus optional
         # proposal-only LLM refinements (each function default OFF).
         _events_raw = self._event_archive(9)
+        # preset structure (SillyTavern-style): unified block assembly. The old
+        # scattered inserts stay as the fallback when the switch is off.
+        try:
+            if self._preset_enabled():
+                self._inject_preset(req, event, core, _user_data, _events_raw)
+            else:
+                self._legacy_context_blocks(req, event, core, _user_data,
+                                            _events_raw)
+        except Exception as _preset_exc:
+            logger.debug("[biocore] preset assembly skipped: %s", _preset_exc)
+            try:
+                self._legacy_context_blocks(req, event, core, _user_data,
+                                            _events_raw)
+            except Exception:
+                pass
         # Phase-1 text mode: 1-2 strongest event links (no-op for other modes).
         _event_links = []
         if (str(getattr(self, "bc_prompt_mode", "telemetry")).lower() == "text"
@@ -11726,6 +12026,14 @@ class BioCorePlugin(Star):
                     logger.warning("[biocore] pipeline active empty prompt; fallback")
             except Exception as _bc_pipe_exc:
                 logger.warning("[biocore] pipeline active fallback: %s", _bc_pipe_exc)
+        # Ensure the latest proactive sends are visible in every reply, even
+        # when the active pipeline prompt did not include the user-block hint.
+        try:
+            _recent_ctx = self._recent_proactive_context()
+            if _recent_ctx and _recent_ctx not in _compact:
+                _compact = (_compact + "\n" + _recent_ctx).strip()
+        except Exception:
+            pass
         # 1.3.1: deterministic [BC] budget + duplicate-line removal.
         _umo = str(getattr(event, "unified_msg_origin", "default") or "default")
         _budget_chars = (int(getattr(self, "bc_budget_chars", 700) or 700)
@@ -11781,6 +12089,15 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         if _compact:
+            if getattr(self, "inline_state_tag_enabled", True):
+                try:
+                    try:
+                        from .biocore_model import state_tag as _st_tag
+                    except Exception:
+                        from biocore_model import state_tag as _st_tag
+                    _compact = (_compact + "\n\n" + _st_tag.instruction()).strip()
+                except Exception:
+                    pass
             self._bc_history = (list(getattr(self, "_bc_history", []) or [])
                                 + [_compact])[-20:]
             # Market compliance: never mutate req.system_prompt. Inject the
@@ -11863,7 +12180,7 @@ class BioCorePlugin(Star):
                 + "\n这次换一种开头，不要重复以上任何一句的前 6 个字。")
 
     def _recent_proactive_context(self):
-        recent = [str(x).strip() for x in self._load_recent_proactive()[-2:]
+        recent = [str(x).strip() for x in self._load_recent_proactive()[-3:]
                   if str(x).strip()]
         return ("我刚说过：" + "；".join(recent)) if recent else ""
 
@@ -11913,6 +12230,35 @@ class BioCorePlugin(Star):
         except Exception as exc:
             logger.warning("[biocore] proactive event record failed: %s", exc)
         return list(recent)
+
+    async def _persist_proactive_history(self, umo, text):
+        """Append a sent proactive message to the AstrBot conversation history."""
+        text = str(text or "").strip()
+        if not text:
+            return False
+        try:
+            cm = getattr(self.context, "conversation_manager", None)
+            if cm is None:
+                return False
+            cid = await cm.get_curr_conversation_id(umo)
+            if not cid:
+                return False
+            conv = await cm.get_conversation(umo, cid)
+            try:
+                history = json.loads(getattr(conv, "history", "[]") or "[]")
+            except Exception:
+                history = []
+            if not isinstance(history, list):
+                history = []
+            history.append({"role": "assistant", "content": text})
+            await cm.update_conversation(umo, cid, history=history)
+            logger.info("[biocore] proactive history appended umo=%s chars=%d",
+                        umo, len(text))
+            return True
+        except Exception as exc:
+            logger.warning("[biocore] proactive history append failed: %s", exc)
+            return False
+
     def _migration_payload(self):
         """Visible migration state for page/status + page/debug (never raises)."""
         report = getattr(self, "_migration_report", None)
@@ -11961,7 +12307,13 @@ class BioCorePlugin(Star):
         return umo + "|" + mid
 
     def _user_appraisal_immediate(self, event, text):
-        """Non-blocking part: insult cooling only (no state deltas)."""
+        """Non-blocking part: insult cooling only (no state deltas).
+
+        item-5: the lexical classifier is disabled by default; the probe's
+        situation/fact fields are the semantic signal.
+        """
+        if not getattr(self, "lexical_fallback_enabled", False):
+            return self._user_appraisal_key(event)
         try:
             _cls = interpretation.classify_user_msg(text)
             if (str(_cls.get("kind") or "") == "insult"
@@ -12045,6 +12397,13 @@ class BioCorePlugin(Star):
         except Exception as _appr_exc:
             logger.warning("[biocore] user appraisal failed: %s", _appr_exc)
             _out = {}
+        _store_probe = getattr(self, "_store_probe_outputs", None)
+        if callable(_store_probe):
+            try:
+                await _store_probe(event, core, _out, key)
+            except Exception as _probe_out_exc:
+                logger.warning("[biocore] probe outputs skipped: %s",
+                               _probe_out_exc)
         latency_ms = (time.time() - started) * 1000.0
         _dims = (_out or {}).get("dims") or {}
         _conf = float((_out or {}).get("confidence", 0.0) or 0.0)
@@ -12053,6 +12412,11 @@ class BioCorePlugin(Star):
                 _deltas = _appraisal_mod.appraise(_dims, confidence=_conf)
             except Exception:
                 _deltas = {}
+            if _deltas:
+                try:
+                    _deltas = _budget_dims_deltas(self, _deltas, "user")
+                except Exception:
+                    pass
             if _deltas:
                 try:
                     try:
@@ -12078,11 +12442,429 @@ class BioCorePlugin(Star):
                 except Exception as _appr_apply_exc:
                     logger.warning("[biocore] user appraisal apply failed: %s",
                                    _appr_apply_exc)
-        # dims failed/low confidence -> fallback lexical deltas (default on).
-        if getattr(self, "lexical_fallback_enabled", True):
+        # dims failed/low confidence -> optional legacy fallback (item-5: off).
+        if getattr(self, "lexical_fallback_enabled", False):
             if self._lexical_user_feedback(event, core, text, key):
                 seen[key] = time.time()
         return False
+
+    async def _store_probe_outputs(self, event, core, probe, key):
+        """Consume the probe's optional situation/fact fields (no extra calls).
+
+        The probe stays after the reply, so both take effect from the next turn.
+        """
+        try:
+            _dims = dict((probe or {}).get("dims") or {})
+            if _dims and core is not None:
+                core.probe_dims = _dims
+        except Exception:
+            pass
+        try:
+            _values = dict((probe or {}).get("situation") or {})
+            if _values:
+                self._last_situation = {"values": _values, "ts": time.time()}
+                try:
+                    core.situation_scores = dict(_values)
+                except Exception:
+                    pass
+        except Exception as _sit_exc:
+            logger.debug("[biocore] probe situation skipped: %s", _sit_exc)
+        try:
+            _fact = str((probe or {}).get("fact") or "").strip()
+            _conf = float((probe or {}).get("confidence", 0.0) or 0.0)
+            if not _fact or _conf < 0.5:
+                return
+            try:
+                from .biocore_model import layered_memory as _lm_fact
+            except Exception:
+                from biocore_model import layered_memory as _lm_fact
+            _doc = self._load_memory(event) or {}
+            _entries = _doc.get("entries") if isinstance(_doc.get("entries"), list) else []
+            _written = getattr(self, "_probe_fact_keys", None)
+            if not isinstance(_written, dict):
+                _written = {}
+                self._probe_fact_keys = _written
+            _key = str(key or "")
+            if not _lm_fact.should_write_fact(_fact, _conf, _entries,
+                                              _written, _key):
+                return
+            _candidate = _lm_fact.fact_entry(_fact, _conf)
+            if not _candidate:
+                return
+            await self._remember(event, _candidate["text"], "user", core,
+                                 tags=_candidate["tags"],
+                                 memory_source=_candidate["memory_source"])
+            _written[_key] = time.time()
+            if len(_written) > 512:
+                self._probe_fact_keys = dict(list(_written.items())[-256:])
+            logger.info("[biocore] probe fact stored: %s",
+                        _candidate["text"][:20])
+        except Exception as _fact_exc:
+            logger.debug("[biocore] probe fact skipped: %s", _fact_exc)
+
+    def _preset_enabled(self):
+        """ui_settings.preset.enabled (default true), falling back to the attr."""
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_preset
+            except Exception:
+                from biocore_model import ui_settings as _ui_preset
+            data = _ui_preset.load(self)
+            preset_cfg = data.get("preset") if isinstance(data, dict) else None
+            if isinstance(preset_cfg, dict):
+                return bool(preset_cfg.get("enabled", True))
+        except Exception:
+            pass
+        return bool(getattr(self, "preset_enabled", True))
+
+    def _inject_preset(self, req, event, core, _user_data, _events_raw):
+        """Assemble preset blocks and insert them into req.contexts by position."""
+        try:
+            try:
+                from .biocore_model import preset as _preset_mod
+            except Exception:
+                from biocore_model import preset as _preset_mod
+            variables = {}
+            _ctxs = getattr(req, "contexts", None)
+            # 1) situation summary (numeric probe signals).
+            try:
+                try:
+                    from .biocore_model import situation as _sit_mod
+                except Exception:
+                    from biocore_model import situation as _sit_mod
+                _sit_text = _sit_mod.summarize(
+                    history=_ctxs if isinstance(_ctxs, list) else [],
+                    core_state={"v": float(getattr(core, "v", 0.0) or 0.0),
+                                "intensity": float(core._intensity()),
+                                "stress": float(getattr(core, "stress", 0.0) or 0.0),
+                                "labels": getattr(core, "labels", {}) or {}},
+                    relationship=self._relationship_of(_user_data),
+                    events=_events_raw,
+                    situation=(getattr(self, "_last_situation", {}) or {}).get(
+                        "values") or {},
+                    now=time.time())
+                if _sit_text:
+                    variables["situation"] = _sit_text
+            except Exception:
+                pass
+            # 2) layered memory (resident facts + capped retrieval).
+            try:
+                try:
+                    from .biocore_model import layered_memory as _layer_mod
+                except Exception:
+                    from biocore_model import layered_memory as _layer_mod
+                _doc = self._load_memory(event) or {}
+                _layer_text = _layer_mod.render(
+                    _doc.get("entries") or [],
+                    recalled_ids=getattr(self, "_last_memory_entries", []) or [],
+                    retrieval_limit=int(getattr(
+                        self, "layered_memory_retrieval_limit", 2) or 0),
+                    now=time.time())
+                if _layer_text:
+                    variables["layered_memory"] = _layer_text
+            except Exception:
+                pass
+            # 2b) graph memory ("你知道的") for the current message.
+            try:
+                _graph_text_now = ""
+                try:
+                    from .biocore_model import graph_recall as _graph_recall
+                except Exception:
+                    from biocore_model import graph_recall as _graph_recall
+                _graph_msg = str(getattr(event, "message_str", "") or "")
+                if _graph_msg:
+                    _graph_store = _graph_recall._eg.open_store(self._graph_db_path())
+                    try:
+                        _graph_text_now = _graph_recall.render(
+                            _graph_store, _graph_msg, now=time.time())
+                    finally:
+                        _graph_store.close()
+                if _graph_text_now:
+                    variables["graph_memory"] = _graph_text_now
+            except Exception:
+                pass
+            # 3) state / relationship / gap / speak style / numeric legend.
+            _rel = self._relationship_of(_user_data)
+            try:
+                try:
+                    from .biocore_model import expr_state as _estate
+                except Exception:
+                    from biocore_model import expr_state as _estate
+                _snapshot = core.snapshot() if hasattr(core, "snapshot") else {}
+                _state_text = str((_estate.render_state_block(
+                    _snapshot, _rel, now=time.time()) or {}).get("text") or "")
+                if _state_text:
+                    variables["state_block"] = _state_text
+            except Exception:
+                pass
+            try:
+                try:
+                    from .biocore_model import render as _render_mod
+                except Exception:
+                    from biocore_model import render as _render_mod
+                _rel_text = _render_mod._relationship_text(core, _user_data)
+                if _rel_text:
+                    variables["relationship"] = "关系：" + str(_rel_text)
+            except Exception:
+                pass
+            try:
+                _hist = getattr(core, "history", None) or []
+                _last_ts = 0.0
+                for _item in reversed(list(_hist)[-8:]):
+                    if isinstance(_item, dict):
+                        _last_ts = float(_item.get("ts", 0.0) or 0.0)
+                        if _last_ts > 0:
+                            break
+                if _last_ts > 0:
+                    _gap_s = max(0.0, time.time() - _last_ts)
+                    if _gap_s >= 3600.0:
+                        variables["gap"] = "间隔：已 %.0f 小时没说话" % (
+                            _gap_s / 3600.0)
+            except Exception:
+                pass
+            try:
+                try:
+                    from .biocore_model import prompt_rules as _pr_mod
+                except Exception:
+                    from biocore_model import prompt_rules as _pr_mod
+                if bool(getattr(self, "reply_soft_limit_enabled", True)):
+                    variables["speak_style"] = str(_pr_mod.render_length_rule(
+                        int(getattr(self, "reply_soft_target_chars", 10) or 10),
+                        int(getattr(self, "reply_soft_max_chars", 30) or 30)))
+            except Exception:
+                pass
+            try:
+                try:
+                    from .biocore_model import schema as _schema_mod
+                except Exception:
+                    from biocore_model import schema as _schema_mod
+                _leg = _schema_mod.numeric_legend(
+                    core.snapshot() if hasattr(core, "snapshot") else {})
+                if _leg:
+                    variables["numeric_legend"] = "情绪图例：" + str(_leg)
+            except Exception:
+                pass
+            assembled = _preset_mod.assemble(
+                variables, history_len=len(_ctxs) if isinstance(_ctxs, list) else 0)
+            if not isinstance(_ctxs, list):
+                return 0
+            before = [{"role": b["role"], "content": b["content"]}
+                      for b in assembled.get("before_history") or []]
+            if before:
+                _ctxs[:0] = before
+            for _group in assembled.get("depth") or []:
+                _depth = int(_group.get("depth", 0) or 0)
+                _pos = _preset_mod.depth_index(len(_ctxs), _depth)
+                _ctxs[_pos:_pos] = [{"role": b["role"], "content": b["content"]}
+                                    for b in _group.get("blocks") or []]
+            _ctxs.extend({"role": b["role"], "content": b["content"]}
+                         for b in assembled.get("after_history") or [])
+            try:
+                core.preset_blocks = (
+                    [b["id"] for b in assembled.get("before_history") or []]
+                    + [b["id"] for g in assembled.get("depth") or []
+                       for b in g.get("blocks") or []]
+                    + [b["id"] for b in assembled.get("after_history") or []])
+            except Exception:
+                pass
+            return len(_ctxs)
+        except Exception as _preset_exc:
+            logger.debug("[biocore] preset assembly skipped: %s", _preset_exc)
+            return 0
+
+    def _legacy_context_blocks(self, req, event, core, _user_data, _events_raw):
+        """Legacy (pre-preset) scattered context inserts; the fallback path."""
+        # task-123: layered memory — resident facts every turn, capped retrieval.
+        try:
+            if bool(getattr(self, "layered_memory_enabled", True)):
+                try:
+                    from .biocore_model import layered_memory as _layered
+                except Exception:
+                    from biocore_model import layered_memory as _layered
+                _layer_doc = self._load_memory(event) or {}
+                _layer_block = _layered.render(
+                    _layer_doc.get("entries") or [],
+                    recalled_ids=getattr(self, "_last_memory_entries", []) or [],
+                    retrieval_limit=int(getattr(
+                        self, "layered_memory_retrieval_limit", 2) or 0),
+                    now=time.time())
+                if _layer_block:
+                    core.layered_memory = _layer_block
+                    _layer_ctx = getattr(req, "contexts", None)
+                    _layer_dup = any(
+                        isinstance(_c, dict) and str(
+                            _c.get("content") or "").startswith("[分层记忆]")
+                        for _c in (list(_layer_ctx)[:3]
+                                   if isinstance(_layer_ctx, list) else []))
+                    if isinstance(_layer_ctx, list) and not _layer_dup:
+                        _layer_ctx.insert(0, {"role": "system",
+                                              "content": _layer_block})
+        except Exception as _layer_exc:
+            logger.debug("[biocore] layered memory skipped: %s", _layer_exc)
+        # task-122: deterministic situation summary, injected before history.
+        try:
+            try:
+                from .biocore_model import situation as _situation
+            except Exception:
+                from biocore_model import situation as _situation
+            _req_contexts = getattr(req, "contexts", None)
+            _situation_text = _situation.summarize(
+                history=_req_contexts if isinstance(_req_contexts, list) else [],
+                core_state={"v": float(getattr(core, "v", 0.0) or 0.0),
+                            "intensity": float(core._intensity()),
+                            "stress": float(getattr(core, "stress", 0.0) or 0.0),
+                            "labels": getattr(core, "labels", {}) or {}},
+                relationship=self._relationship_of(_user_data),
+                events=_events_raw,
+                situation=(getattr(self, "_last_situation", {}) or {}).get("values") or {},
+                now=time.time())
+            if _situation_text:
+                core.situation_summary = {"text": _situation_text,
+                                          "ts": round(time.time(), 3)}
+                _head = (_req_contexts[0] if isinstance(_req_contexts, list)
+                         and _req_contexts else None)
+                if (isinstance(_req_contexts, list)
+                        and not (isinstance(_head, dict) and str(
+                            _head.get("content") or "").startswith("[局面摘要]"))):
+                    _req_contexts.insert(0, {"role": "system",
+                                             "content": "[局面摘要]\n" + _situation_text})
+        except Exception as _situation_exc:
+            logger.debug("[biocore] situation summary skipped: %s",
+                         _situation_exc)
+
+    def _rollback_doc(self, event, core):
+        """Current restorable fields for one-turn snapshots (task-126)."""
+        try:
+            state = core.snapshot() if callable(getattr(core, "snapshot", None)) else {}
+        except Exception:
+            state = {}
+        user = self._user_record(event) or {}
+        rel = user.get("relationship") if isinstance(user.get("relationship"), dict) else {}
+        try:
+            recent = [x for x in (getattr(core, "history", []) or [])
+                      if isinstance(x, dict)][-8:]
+        except Exception:
+            recent = []
+        return {
+            "state": state if isinstance(state, dict) else {},
+            "needs": dict(getattr(core, "needs", {}) or {}),
+            "relationship": rel,
+            "recent_turns": recent,
+            "memory_marker": {
+                "entries": list(getattr(self, "_last_memory_entries", []) or []),
+                "turn": dict(getattr(self, "_last_turn_memory", {}) or {}),
+            },
+        }
+
+    def _push_rollback_snapshot(self, event, core):
+        """Write one snapshot after each reply (ring keeps the newest 10)."""
+        try:
+            try:
+                from .biocore_model import rollback as _rb
+            except Exception:
+                from biocore_model import rollback as _rb
+            snap = _rb.snapshot(self._rollback_doc(event, core))
+            self._rollback_ring = _rb.push(
+                getattr(self, "_rollback_ring", []) or [], snap)
+        except Exception as _rb_exc:
+            logger.debug("[biocore] rollback snapshot skipped: %s", _rb_exc)
+
+    def _apply_rollback(self, event) -> str:
+        """Restore the newest snapshot; sent messages are never deleted."""
+        try:
+            try:
+                from .biocore_model import rollback as _rb
+            except Exception:
+                from biocore_model import rollback as _rb
+            core = self._core(event)
+            ring, snap = _rb.pop(getattr(self, "_rollback_ring", []) or [])
+            self._rollback_ring = ring
+            if not snap:
+                return "没有可回退的轮次"
+            doc = _rb.restore(self._rollback_doc(event, core), snap)
+            try:
+                core.load_state(doc.get("state") or {})
+            except Exception:
+                pass
+            try:
+                core.needs = dict(doc.get("needs") or {})
+            except Exception:
+                pass
+            try:
+                core.history = [x for x in (doc.get("recent_turns") or [])
+                                if isinstance(x, dict)][-80:]
+            except Exception:
+                pass
+            user = self._user_record(event) or {}
+            rel = doc.get("relationship")
+            if isinstance(rel, dict) and rel:
+                user["relationship"] = rel
+            try:
+                _state = doc.get("state") if isinstance(doc.get("state"), dict) else {}
+                if "trust" in _state:
+                    user["trust"] = round(float(_state["trust"]), 3)
+            except Exception:
+                pass
+            self._save_user_record(event, user)
+            try:
+                STATE_DIR.mkdir(parents=True, exist_ok=True)
+                key = str(getattr(event, "unified_msg_origin", "default") or "default")
+                safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in key)[:80]
+                (STATE_DIR / (safe + ".json")).write_text(
+                    json.dumps(core.snapshot(), ensure_ascii=False, indent=1),
+                    encoding="utf-8")
+            except Exception:
+                pass
+            marker = doc.get("memory_marker") if isinstance(doc.get("memory_marker"), dict) else {}
+            self._last_memory_entries = list(marker.get("entries") or [])
+            self._last_turn_memory = (dict(marker.get("turn") or {})
+                                      if isinstance(marker.get("turn"), dict) else {})
+            return _rb.describe(snap) + "（数值/关系/最近轮次已恢复；已发消息未撤回）"
+        except Exception as _rb_exc:
+            logger.warning("[biocore] rollback failed: %s", _rb_exc)
+            return "回退失败"
+
+    def _graph_db_path(self):
+        """SQLite graph path under the plugin authority data dir."""
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_graph
+            except Exception:
+                from biocore_model import ui_settings as _ui_graph
+            base = Path(_ui_graph.authority_dir(self))
+        except Exception:
+            base = Path(DATA_DIR)
+        return base / "graph" / "graph.sqlite3"
+
+    def _ingest_graph_from_tag(self, event, tag, now=None, source_entry=""):
+        """task-135: reuse the inline tag for entity/relation graph writes."""
+        if not isinstance(tag, dict):
+            return 0
+        if not bool(getattr(self, "graph_memory_enabled", True)):
+            return 0
+        try:
+            try:
+                from .biocore_model import graph_extract as _ge
+            except Exception:
+                from biocore_model import graph_extract as _ge
+            extracted = _ge.extract(tag, now=now)
+            if not extracted.get("entities") and not extracted.get("relations"):
+                return 0
+            store = _ge._eg.open_store(self._graph_db_path())
+            try:
+                applied = _ge.apply(store, extracted, now=now,
+                                    source_entry=source_entry)
+            finally:
+                store.close()
+            logger.info(
+                "[biocore] graph ingest entities=%d relations=%d source=%s",
+                int(applied.get("entities", 0)), int(applied.get("relations", 0)),
+                str(source_entry or "")[:24])
+            return int(applied.get("entities", 0)) + int(
+                applied.get("relations", 0))
+        except Exception as _graph_exc:
+            logger.debug("[biocore] graph ingest skipped: %s", _graph_exc)
+            return 0
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, response: LLMResponse):
@@ -12117,8 +12899,40 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _reply = _clean
+        # inline state tag: if the reply carried the JSON line, use it and skip probe.
+        _inline_used = False
+        try:
+            try:
+                from .biocore_model import state_tag as _st_tag
+            except Exception:
+                from biocore_model import state_tag as _st_tag
+            if getattr(self, "inline_state_tag_enabled", True):
+                _inline = _st_tag.parse(_reply)
+                if _inline:
+                    _strip_text = _st_tag.strip(_reply) or _reply
+                    if _strip_text != _reply:
+                        try:
+                            response.completion_text = _strip_text
+                        except Exception:
+                            pass
+                        _reply = _strip_text
+                    _key = self._user_appraisal_key(event) if callable(getattr(self, "_user_appraisal_key", None)) else ""
+                    _store = getattr(self, "_store_probe_outputs", None)
+                    if callable(_store):
+                        await _store(event, core, _inline, _key)
+                    try:
+                        self._ingest_graph_from_tag(
+                            event, _inline, now=time.time(),
+                            source_entry=str(
+                                getattr(event, "message_id", "") or ""))
+                    except Exception:
+                        pass
+                    _inline_used = True
+                    logger.info("[biocore] inline state tag dims=%s c=%.2f", _inline.get("dims"), float(_inline.get("confidence", 0.0) or 0.0))
+        except Exception as _inline_exc:
+            logger.warning("[biocore] inline state tag failed: %s", _inline_exc)
         # emotion probe: one tiny async second call; never blocks the reply.
-        if getattr(self, "emotion_probe_enabled", True):
+        if getattr(self, "emotion_probe_enabled", True) and not _inline_used:
             try:
                 try:
                     from .biocore_model import appraisal as _appraisal_mod
@@ -12163,12 +12977,29 @@ class BioCorePlugin(Star):
                             _probe_raw["value"] = _raw
                             return _raw
                         _probe = await _appraisal_mod.probe(
-                            _reply_text, _user_text, _probe_llm,
+                            _user_text, _reply_text, _probe_llm,
                             timeout=None, core=_core, now=time.time())
+                        _store_probe_out = getattr(
+                            self, "_store_probe_outputs", None)
+                        if callable(_store_probe_out):
+                            try:
+                                await _store_probe_out(
+                                    event, _core, _probe,
+                                    self._user_appraisal_key(event))
+                            except Exception as _probe_out_exc:
+                                logger.debug(
+                                    "[biocore] probe outputs skipped: %s",
+                                    _probe_out_exc)
                         _dims = (_probe or {}).get("dims") or {}
                         _conf = float((_probe or {}).get("confidence", 0.0) or 0.0)
                         _deltas = (_appraisal_mod.appraise(_dims, confidence=_conf)
                                    if _probe else {})
+                        if _deltas:
+                            try:
+                                _deltas = _budget_dims_deltas(self, _deltas,
+                                                              "reply")
+                            except Exception:
+                                pass
                         _applied = False
                         if _deltas:
                             _probe_meta = _appraisal_mod.feedback_payload(
@@ -12184,6 +13015,14 @@ class BioCorePlugin(Star):
                             logger.info("[biocore] emotion probe raw=%r type=%s",
                                         str(_probe_raw.get("value") or "")[:200],
                                         type(_probe_raw.get("value")).__name__)
+                            # Probe failed: fall back to the word table once.
+                            try:
+                                self._lexical_user_feedback(
+                                    event, _core, _user_text,
+                                    self._user_appraisal_key(event))
+                            except Exception as _lex_exc:
+                                logger.warning("[biocore] lexical fallback failed: %s",
+                                               _lex_exc)
                         logger.info("[biocore] appraisal src=reply dims=%s deltas=%s c=%.2f",
                                     _dims, _deltas, _conf)
                     except Exception as _probe_exc:
@@ -12387,6 +13226,10 @@ class BioCorePlugin(Star):
             (STATE_DIR / (safe + ".json")).write_text(
                 json.dumps(core.snapshot(), ensure_ascii=False, indent=1), encoding="utf-8")
         except Exception:
+            pass        # task-126: one-turn rollback snapshot (bounded ring of 10).
+        try:
+            self._push_rollback_snapshot(event, core)
+        except Exception:
             pass
         # L-T01/L-T08/L-T12: background proposal-only tasks. They self-check
         # the per-function switch + cooldown, so default OFF means zero calls.
@@ -12396,6 +13239,26 @@ class BioCorePlugin(Star):
             asyncio.create_task(self._maybe_relationship_narrative(event, core))
         except Exception:
             pass
+        # task-124: 本轮记忆可见 — record which memories this reply used.
+        try:
+            try:
+                from .biocore_model import turn_memory as _turn_mem
+            except Exception:
+                from biocore_model import turn_memory as _turn_mem
+            _turn_rows = _turn_mem.build(
+                getattr(self, "_last_cause_trace", []) or [], limit=4)
+            self._last_turn_memory = _turn_mem.build_record(
+                _turn_rows, reply=str(_reply or "")[:120], ts=time.time())
+            self._turn_memory_history = _turn_mem.merge_history(
+                getattr(self, "_turn_memory_history", []) or [],
+                self._last_turn_memory, limit=5)
+            try:
+                core.turn_memory = list(self._last_turn_memory.get("rows") or [])
+            except Exception:
+                pass
+        except Exception as _turn_mem_exc:
+            logger.debug("[biocore] turn memory record skipped: %s",
+                         _turn_mem_exc)
 
 
 # ---------------------------------------------------------------- block assembly

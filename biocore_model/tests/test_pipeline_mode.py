@@ -136,7 +136,8 @@ class PromptTest(Base):
         rt.apply_mode("active")
         out = rt.run_prompt(make_ctx())
         self.assertIn("sadness", out["prompt_user"])
-        self.assertIn("【输出格式 · 必须遵守】", out["prompt_system"])
+        self.assertNotIn("【输出格式", out["prompt_system"])
+        self.assertNotIn("<bc>", out["prompt_system"])
         self.assertNotIn("【输出格式", out["prompt_user"])
 
     def test_active_prompt_uses_persona_opts(self):

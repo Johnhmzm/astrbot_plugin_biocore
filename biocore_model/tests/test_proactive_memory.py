@@ -102,11 +102,12 @@ class RecordTest(unittest.TestCase):
 
     def test_context_last_two(self):
         plugin = FakePlugin(tempfile.gettempdir())
-        plugin._recent_proactive = ["甲", "乙", "丙"]
+        plugin._recent_proactive = ["甲", "乙", "丙", "丁"]
         ctx = plugin._recent_proactive_context()
         self.assertIn("我刚说过", ctx)
         self.assertIn("乙", ctx)
         self.assertIn("丙", ctx)
+        self.assertIn("丁", ctx)
         self.assertNotIn("甲", ctx)
 
 

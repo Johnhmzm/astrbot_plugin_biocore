@@ -28,41 +28,39 @@ INSULT_BLOCKED = _load_insult_helper()
 
 
 class ClassifyTest(unittest.TestCase):
-    def test_insult(self):
+    def test_flag_is_off_by_default(self):
+        self.assertIs(interpretation.USER_CLASSIFY_ENABLED, False)
+
+    def test_no_word_table_remains(self):
+        self.assertFalse(hasattr(interpretation, "_USER_WORDS"))
+
+    def test_insult_text_is_neutral(self):
         out = interpretation.classify_user_msg("你真废物，闭嘴")
-        self.assertEqual(out["kind"], "insult")
-        self.assertGreaterEqual(out["confidence"], 0.4)
-
-    def test_reject(self):
-        self.assertEqual(
-            interpretation.classify_user_msg("不用了，别说了")["kind"], "reject")
-
-    def test_sad_requires_first_person(self):
-        self.assertEqual(
-            interpretation.classify_user_msg("我今天特别难受，想哭")["kind"], "sad")
-        # No 我/自己 -> not treated as user sadness.
-        self.assertNotEqual(
-            interpretation.classify_user_msg("最近压力大")["kind"], "sad")
-
-    def test_praise(self):
-        self.assertEqual(
-            interpretation.classify_user_msg("你好厉害，谢谢")["kind"], "praise")
-
-    def test_affectionate(self):
-        self.assertEqual(
-            interpretation.classify_user_msg("想你了，抱抱")["kind"], "affectionate")
-
-    def test_neutral_and_low_confidence(self):
-        out = interpretation.classify_user_msg("嗯")
         self.assertEqual(out["kind"], "neutral")
         self.assertLess(out["confidence"], 0.4)
 
-    def test_empty_is_neutral(self):
-        self.assertEqual(interpretation.classify_user_msg("")["kind"], "neutral")
-
-    def test_priority_insult_over_sad(self):
+    def test_reject_text_is_neutral(self):
         self.assertEqual(
-            interpretation.classify_user_msg("我很难受，你真废物")["kind"], "insult")
+            interpretation.classify_user_msg("不用了，别说了")["kind"],
+            "neutral")
+
+    def test_sad_text_is_neutral(self):
+        self.assertEqual(
+            interpretation.classify_user_msg("我今天特别难受，想哭")["kind"],
+            "neutral")
+
+    def test_praise_text_is_neutral(self):
+        self.assertEqual(
+            interpretation.classify_user_msg("你好厉害，谢谢")["kind"],
+            "neutral")
+
+    def test_affectionate_text_is_neutral(self):
+        self.assertEqual(
+            interpretation.classify_user_msg("想你了，抱抱")["kind"], "neutral")
+
+    def test_empty_is_neutral(self):
+        self.assertEqual(interpretation.classify_user_msg("")["kind"],
+                         "neutral")
 
     def test_bounds(self):
         out = interpretation.classify_user_msg("谢谢你，你真好，太厉害了")
@@ -71,6 +69,10 @@ class ClassifyTest(unittest.TestCase):
         self.assertGreaterEqual(out["confidence"], 0.0)
         self.assertLessEqual(out["confidence"], 1.0)
 
+    def test_all_kinds_share_neutral_shape(self):
+        for text in ("我很难受，你真废物", "嗯", "晚安"):
+            out = interpretation.classify_user_msg(text)
+            self.assertEqual(out["kind"], "neutral", text)
 
 class FeedbackEventTest(unittest.TestCase):
     def test_sad_empathy_raises_stress(self):
@@ -105,14 +107,16 @@ class InsultGateTest(unittest.TestCase):
 
 
 class WiringStaticTest(unittest.TestCase):
-    def test_main_classifies_and_logs(self):
+    def test_main_keeps_helpers_behind_default_off_switch(self):
         self.assertIn("classify_user_msg(text)", SOURCE)
+        self.assertIn('getattr(self, "lexical_fallback_enabled", False)',
+                      SOURCE)
+        self.assertIn('self.config.get("lexical_fallback_enabled", False)',
+                      SOURCE)
         self.assertIn('"sad_empathy"', SOURCE)
         self.assertIn('"affection"', SOURCE)
-        self.assertIn("self._last_insult_ts = time.time()", SOURCE)
         self.assertIn("insult_cooldown", SOURCE)
         self.assertIn("[biocore] user kind=%s conf=%.2f deltas=%s", SOURCE)
-
 
 if __name__ == "__main__":
     unittest.main()

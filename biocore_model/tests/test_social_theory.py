@@ -44,12 +44,27 @@ class UserModelTest(unittest.TestCase):
     def test_busy_inference(self):
         model = st.infer_user_model([{'text': '嗯', 'delay_s': 900}, {'text': '好', 'delay_s': 700}])
         self.assertEqual(model['busy_hint'], 'busy')
-    def test_mood_low(self):
-        model = st.infer_user_model([{'text': '今天好累', 'delay_s': 10}])
+    def test_mood_low_from_dims(self):
+        model = st.infer_user_model([{'text': '嗯', 'delay_s': 10}],
+                                    dims={'hit': 0.7})
         self.assertEqual(model['mood_hint'], 'low')
-    def test_mood_good(self):
-        model = st.infer_user_model([{'text': '今天很开心', 'delay_s': 10}])
+    def test_mood_good_from_dims(self):
+        model = st.infer_user_model([{'text': '嗯', 'delay_s': 10}],
+                                    dims={'goal': 0.6})
         self.assertEqual(model['mood_hint'], 'good')
+    def test_mood_blocked_goal_is_low(self):
+        self.assertEqual(st.mood_hint_from_dims({'goal': -0.5}), 'low')
+    def test_mood_blame_is_low(self):
+        self.assertEqual(st.mood_hint_from_dims({'blame': 0.8}), 'low')
+    def test_mood_unknown_without_signal(self):
+        self.assertEqual(st.mood_hint_from_dims({}), 'unknown')
+        self.assertEqual(
+            st.infer_user_model([{'text': '嗯'}])['mood_hint'], 'unknown')
+    def test_mood_valence_fallback(self):
+        self.assertEqual(st.mood_hint_from_dims({}, valence=-0.4), 'low')
+        self.assertEqual(st.mood_hint_from_dims({}, valence=0.4), 'good')
+    def test_no_mood_word_table(self):
+        self.assertFalse(hasattr(st, 'MOOD_WORDS'))
     def test_engagement_scales(self):
         low = st.infer_user_model([{'text': '嗯'}]); high = st.infer_user_model([{'text': '在吗？'}, {'text': '那个事？'}, {'text': '然后呢？'}])
         self.assertGreater(high['engagement'], low['engagement'])

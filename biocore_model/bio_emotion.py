@@ -10,7 +10,6 @@ except Exception:  # pragma: no cover
 try:
     from .bio_const import (
         EMOTION_SPECTRUM,
-        LEX,
         RECOVERY_CONTEXT_MAX,
         RECOVERY_CONTEXT_MIN,
         SENSITIZATION_HALF_LIFE_HOURS,
@@ -24,7 +23,6 @@ try:
 except Exception:  # pragma: no cover
     from bio_const import (
         EMOTION_SPECTRUM,
-        LEX,
         RECOVERY_CONTEXT_MAX,
         RECOVERY_CONTEXT_MIN,
         SENSITIZATION_HALF_LIFE_HOURS,
@@ -271,7 +269,20 @@ class EmotionMixin:
         self._query_embedding = embedding
         _pre_stress = float(self.stress)
         t = str(text or "")
-        self._update_goals(t)
+        # item-3/item-6: probe dims (previous turn) are the numeric semantic path.
+        _appraisal = (getattr(self, "appraisal", {})
+                      if isinstance(getattr(self, "appraisal", {}), dict) else {})
+        _dims_src = getattr(self, "probe_dims", None)
+        if not isinstance(_dims_src, dict) or not _dims_src:
+            _dims_src = _appraisal
+
+        def _dim(name, default=0.0):
+            try:
+                return max(0.0, min(1.0, float(_dims_src.get(name, default) or default)))
+            except Exception:
+                return default
+
+        self._update_goals(t, dims=_dims_src)
         _event_key = ""
         for _anchor in getattr(self, "event_anchors", []) or []:
             _sim = self._text_similarity(re.sub(r"\s+", "", t)[:120], str(_anchor.get("title", "")))
@@ -282,34 +293,9 @@ class EmotionMixin:
                 break
         v_delta, a_delta, d_delta, social_delta = 0.0, 0.0, 0.0, 0.0
         _hits = []
-        for label, words in LEX.items():
-            if not any(self._word_hit(t, w) for w in words):
-                continue
-            _hits.append(label)
-            if label == "joy":
-                v_delta += 0.12
-                a_delta += 0.05
-                d_delta += 0.04
-                social_delta += 0.03
-            elif label == "sadness":
-                v_delta -= 0.14
-                a_delta -= 0.03
-                d_delta -= 0.05
-            elif label == "loneliness":
-                v_delta -= 0.12
-                a_delta -= 0.03
-                d_delta -= 0.04
-                social_delta -= 0.16
-            elif label == "anger":
-                v_delta -= 0.12
-                a_delta += 0.15
-                d_delta += 0.10
-                social_delta -= 0.05
-            elif label == "fear":
-                v_delta -= 0.16
-                a_delta += 0.14
-                d_delta -= 0.12
-                social_delta -= 0.03
+        # item-3: no lexical table here. Text -> affect is the model probe's
+        # dims (feedback_flow W matrix) on the next turn; observe() keeps only
+        # the structural / embedding signals below.
         # Short-term habituation: repeated equivalent emotional stimuli decay.
         _now = time.time()
         # B-T06: generic novelty history (also covers non-emotional repeated text).
@@ -329,14 +315,11 @@ class EmotionMixin:
                 self._novelty_history = (_hist + [_novelty_text])[-20:]
         except Exception:
             pass
-        # Batch4 B5: information-gap curiosity proxy. Question/unknown cues raise
-        # a bounded EMA that the homeostasis layer reads as extra curiosity.
+        # Batch4 B5: information-gap curiosity proxy from appraisal novelty (item-3).
         try:
-            _question_cue = ("?" in t or "？" in t or any(
-                w in t for w in ("什么", "谁", "为什么", "怎么", "哪", "多少", "吗", "如何")))
-            self.info_gap = _clip(
-                0.85 * float(getattr(self, "info_gap", 0.0))
-                + 0.15 * (1.0 if _question_cue else 0.0), 0.0, 1.0)
+            _nov = max(0.0, min(1.0, float(_dims_src.get("novelty", 0.0) or 0.0)))
+            self.info_gap = _clip(0.85 * float(getattr(self, "info_gap", 0.0))
+                                  + 0.15 * _nov, 0.0, 1.0)
         except Exception:
             self.info_gap = 0.0
         self.stimuli = [x for x in (getattr(self, "stimuli", []) or [])
@@ -406,11 +389,12 @@ class EmotionMixin:
                 # New stimulus: boredom falls, novelty need eases toward baseline.
                 self.boredom = _clip(self.boredom - 0.08, 0.0, 1.0)
                 self.novelty_need = _clip(0.92 * self.novelty_need + 0.08 * 0.5, 0.0, 1.0)
-        # B-T07: boundary pressure/refusal readiness from explicit command cues.
-        _text_b = str(t or "")
-        _commands = sum(1 for w in ("必须", "立刻", "马上", "服从", "不许", "闭嘴", "滚", "废物", "没用", "就该") if w in _text_b)
-        _polite = sum(1 for w in ("请", "可以", "愿意", "谢谢", "麻烦") if w in _text_b)
-        self.boundary_pressure = _clip(0.86 * self.boundary_pressure + 0.14 * min(1.0, _commands) - 0.04 * min(1.0, _polite), 0.0, 1.0)
+        # B-T07: boundary pressure / refusal readiness from probe dims (item-3).
+        _commands = max(_dim("blame"), 0.5 * _dim("hit"))
+        _polite = max(_dim("goal"), 0.5 * _dim("certainty", 0.5))
+        self.boundary_pressure = _clip(
+            0.86 * self.boundary_pressure + 0.14 * min(1.0, _commands)
+            - 0.04 * min(1.0, _polite), 0.0, 1.0)
         self.refusal_readiness = _clip(
             0.78 * self.refusal_readiness + 0.30 * self.boundary_pressure * min(1.0, _commands)
             + 0.08 * self.stress - 0.05 * min(1.0, _polite), 0.0, 1.0)

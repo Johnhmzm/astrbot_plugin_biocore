@@ -15,40 +15,51 @@ class IdentityMixin:
     """Copied verbatim from BioCore; originals stay as _orig_*."""
 
     @staticmethod
-    def detect_identity_threat(text) -> bool:
-        """Swann 1987 proxy: deterministic self/role/narrative conflict cues."""
-        value = str(text or "")
-        cues = ("你不是她", "你不是你", "不配", "工具", "废物", "假的", "装的",
-                "人设", "角色", "根本不懂", "不是真的", "换个人", "你变了")
-        return any(cue in value for cue in cues)
+    def _identity_dims(dims):
+        data = dims if isinstance(dims, dict) else {}
 
+        def _n(key, default=0.0):
+            try:
+                return float(data.get(key, default) or default)
+            except Exception:
+                return default
 
-    def apply_identity_threat(self, text) -> bool:
+        return _n("goal"), _n("blame"), _n("hit"), _n("involve")
+
+    def detect_identity_threat(self, text=None, dims=None) -> bool:
+        """item-6: identity threat from probe dims (blame/hit), not word tables."""
+        del text
+        _goal, blame, hit, involve = self._identity_dims(dims)
+        return bool((blame >= 0.6 and involve >= 0.4) or hit >= 0.7)
+
+    def apply_identity_threat(self, text=None, dims=None) -> bool:
         """task-43 (default OFF): identity threat -> bounded stress bump (<=0.08)."""
         if not getattr(self, "identity_threat_stress_enabled", False):
             return False
-        if not self.detect_identity_threat(text):
+        if not self.detect_identity_threat(dims=dims):
             return False
         self.stress = _clip(float(getattr(self, "stress", 0.0)) + 0.06, 0.0, 1.0)
         return True
 
-
-    def feedback_user(self, text: str) -> None:
-        t = str(text or "")
-        cold_words = ("废物", "垃圾", "讨厌", "滚", "闭嘴", "没用", "蠢", "去死", "别烦", "傻子")
-        warm_words = ("谢谢", "喜欢", "陪", "辛苦", "厉害", "可爱", "抱")
-        cold = sum(1 for w in cold_words if self._word_hit(t, w))
-        warm = sum(1 for w in warm_words if self._word_hit(t, w))
-        if cold:
+    def feedback_user(self, text=None, *, dims=None, cold=None, warm=None) -> None:
+        """item-6: numeric user feedback (dims blame/hit vs goal/involve)."""
+        del text
+        goal, blame, hit, involve = self._identity_dims(dims)
+        if cold is None:
+            cold = max(blame, hit)
+        if warm is None:
+            warm = max(goal, 0.5 * involve)
+        cold = _clip(cold, 0.0, 1.0)
+        warm = _clip(warm, 0.0, 1.0)
+        if cold > 0.0:
             self.trust = _clip(self.trust - 0.055 * cold, 0, 1)
             self.v = _clip(self.v - 0.035 * cold, -1, 1)
             self.stress = _clip(self.stress + 0.035 * cold, 0, 1)
             self.echo_trace = _clip(self.echo_trace - 0.03 * cold, -1, 1)
-        if warm:
+        if warm > 0.0:
             self.trust = _clip(self.trust + 0.012 * warm, 0, 1)
             self.v = _clip(self.v + 0.02 * warm, -1, 1)
             self.stress = _clip(self.stress - 0.01 * warm, 0, 1)
-
 
     def seed_trust_from_user(self, user_trust, weight=0.2, max_delta=0.05) -> float:
         """G3: one-shot bounded trust seed from the user-level record.

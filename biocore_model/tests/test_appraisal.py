@@ -128,7 +128,7 @@ class WiringStaticTest(unittest.TestCase):
         self.assertIn("appraisal src=reply dims=%s deltas=%s c=%.2f", SOURCE)
         self.assertIn("lexical_fallback_enabled", SOURCE)
         self.assertIn("classify_user_msg(text)", SOURCE)
-        self.assertIn("getattr(self, \"lexical_fallback_enabled\", True)", SOURCE)
+        self.assertIn("getattr(self, \"lexical_fallback_enabled\", False)", SOURCE)
         self.assertIn("_appraisal_mod.probe", SOURCE)
         self.assertIn("appraise(_dims, confidence=_conf)", SOURCE)
 

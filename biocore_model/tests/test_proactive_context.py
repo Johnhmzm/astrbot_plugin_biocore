@@ -56,8 +56,8 @@ class ContextTest(unittest.TestCase):
         self.assertLess(user.index('【间隔】'), user.index('【动机】'))
         self.assertLess(user.index('【动机】'), user.index('【要求】'))
         self.assertIn('动机', user)
-        self.assertIn('<bc>', prompt['system'])
-        self.assertIn('【输出格式 · 必须遵守】', prompt['system'])
+        self.assertNotIn('<bc>', prompt['system'])
+        self.assertNotIn('【输出格式', prompt['system'])
     def test_prompt_contains_event_hints(self):
         prompt = pc.build_proactive_prompt("人设", "说话", "x", "y", "z", ["他提过「体检」（明天）"], {"code": "memory_due", "text": "记得体检", "weight": 0.4}, 1.2)
         self.assertIn("你记得", prompt["user"]); self.assertIn("体检", prompt["user"])

@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover - offline tests
         debug = info = warning = error = exception = critical = _noop
     logger = _NullLogger()
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 OLD_SCHEMA_VERSION = 1
 MEMORY_STORAGE_S = 0.45
 MEMORY_AROUSAL = 0.4
@@ -117,8 +117,8 @@ def _create_backup(plugin):
     base = ui_settings.authority_dir(plugin)
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     root = base / "backups" / ("pre-migration-" + stamp)
-    copied = {"settings": 0, "memory": 0, "states": 0}
-    for name in ("settings", "memory", "states"):
+    copied = {"settings": 0, "memory": 0, "states": 0, "graph": 0}
+    for name in ("settings", "memory", "states", "graph"):
         (root / name).mkdir(parents=True, exist_ok=True)
     settings_candidates = []
     try:
@@ -159,6 +159,26 @@ def _create_backup(plugin):
                 copied["states"] += 1
             except Exception:
                 continue
+    graph = _graph_dir(plugin)
+    if graph.is_dir():
+        for src in graph.glob("*.json"):
+            try:
+                _atomic_copy(src, root / "graph" / src.name)
+                copied["graph"] += 1
+            except Exception:
+                continue
+        try:
+            from . import entity_graph as _eg_backup
+        except Exception:  # pragma: no cover
+            import entity_graph as _eg_backup  # type: ignore
+        db = graph / _eg_backup.SQLITE_FILE
+        if db.is_file():
+            try:
+                _eg_backup.checkpoint(db)
+                _atomic_copy(db, root / "graph" / db.name)
+                copied["graph"] += 1
+            except Exception:
+                pass
     if not any(copied.values()):
         try:
             root.rmdir()
@@ -171,7 +191,9 @@ def _create_backup(plugin):
 def restore(backup_dir, plugin=None):
     """Copy a pre-migration backup back (one-command rollback)."""
     root = Path(backup_dir)
-    report = {"ok": False, "restored": {"settings": 0, "memory": 0, "states": 0},
+    report = {"ok": False,
+              "restored": {"settings": 0, "memory": 0, "states": 0,
+                           "graph": 0},
               "warnings": []}
     if not root.is_dir():
         report["warnings"].append("backup dir missing")
@@ -198,6 +220,42 @@ def restore(backup_dir, plugin=None):
                 report["restored"][name] += 1
             except Exception as exc:
                 report["warnings"].append("%s restore failed: %s" % (name, exc))
+    graph_target = _graph_dir(plugin)
+    graph_target.mkdir(parents=True, exist_ok=True)
+    try:
+        from . import entity_graph as _eg_restore
+    except Exception:  # pragma: no cover
+        import entity_graph as _eg_restore  # type: ignore
+    current_db = graph_target / _eg_restore.SQLITE_FILE
+    for src in (root / "graph").glob("*.json"):
+        try:
+            _atomic_copy(src, graph_target / src.name)
+            report["restored"]["graph"] += 1
+        except Exception:
+            report["warnings"].append("graph restore failed: " + src.name)
+    backup_db = root / "graph" / _eg_restore.SQLITE_FILE
+    if backup_db.is_file():
+        old_db = current_db.with_name(current_db.name + ".restore-old")
+        try:
+            if current_db.is_file():
+                _eg_restore.checkpoint(current_db)
+                _atomic_copy(current_db, old_db)
+            _atomic_copy(backup_db, current_db)
+            for suffix in ("-wal", "-shm"):
+                Path(str(current_db) + suffix).unlink(missing_ok=True)
+            report["restored"]["graph"] += 1
+            try:
+                old_db.unlink(missing_ok=True)
+            except Exception:
+                pass
+        except Exception as exc:
+            if old_db.is_file():
+                try:
+                    _atomic_copy(old_db, current_db)
+                except Exception:
+                    pass
+            report["warnings"].append(
+                "graph restore failed: %s" % type(exc).__name__)
     report["ok"] = not report["warnings"]
     logger.info("[biocore] migrate restore done: %s warnings=%d",
                 report["restored"], len(report["warnings"]))
@@ -345,6 +403,15 @@ def _fix_accumulator(plugin, data, stats):
     return data
 
 
+def _graph_dir(plugin):
+    """Where the entity graph lives (authority first, legacy data dir second)."""
+    for candidate in (ui_settings.authority_dir(plugin) / "graph",
+                      _data_dir(plugin) / "graph"):
+        if candidate.is_dir():
+            return candidate
+    return ui_settings.authority_dir(plugin) / "graph"
+
+
 def _memory_dir(plugin):
     data = _data_dir(plugin)
     for candidate in (data / "memory",
@@ -416,6 +483,73 @@ def _backfill_memory(plugin, stats):
     return entries_total
 
 
+def _ensure_graph(plugin, stats, warnings):
+    """v3: SQLite graph (create / import legacy graph.json / recover corrupt)."""
+    try:
+        try:
+            from . import entity_graph as _eg
+        except Exception:  # pragma: no cover
+            import entity_graph as _eg  # type: ignore
+        graph_dir = _graph_dir(plugin)
+        graph_dir.mkdir(parents=True, exist_ok=True)
+        db_path = graph_dir / _eg.SQLITE_FILE
+        json_path = graph_dir / "graph.json"
+        db_existed = db_path.is_file()
+        db_corrupt = False
+        if db_existed:
+            try:
+                with db_path.open("rb") as _fh:
+                    db_corrupt = _fh.read(16) != b"SQLite format 3\x00"
+            except Exception:
+                db_corrupt = True
+        json_corrupt = False
+        json_data = None
+        if json_path.is_file():
+            try:
+                raw = json.loads(json_path.read_text(encoding="utf-8-sig"))
+                json_data = _eg.normalize_graph(raw)
+            except Exception:
+                json_corrupt = True
+                try:
+                    import shutil as _shutil
+                    _shutil.copyfile(
+                        json_path,
+                        json_path.with_name(json_path.name + ".corrupt.bak"))
+                except Exception:
+                    pass
+        store = _eg.open_store(db_path)
+        try:
+            db_empty = _eg.stats(store)["entities"] == 0
+            imported = {"entities": 0, "edges": 0}
+            source = "none"
+            if db_empty and json_data is not None and json_data["entities"]:
+                imported = store.import_json(json_path)
+                source = "json"
+            store.export_json(json_path)
+            state = _eg.stats(store)
+            if json_corrupt or db_corrupt:
+                stats["graph"] = "recovered"
+            elif source == "json":
+                stats["graph"] = "imported"
+            elif not db_existed:
+                stats["graph"] = "created"
+            else:
+                stats["graph"] = ("ok" if state["entities"] else "empty")
+            stats["graph_imported"] = imported
+            stats["graph_entities"] = state["entities"]
+            stats["graph_edges"] = state["edges"]
+            logger.info(
+                "[biocore] graph sqlite ready: db=%s entities=%d edges=%d "
+                "source=%s recovered=%s", db_path.name, state["entities"],
+                state["edges"], source, bool(json_corrupt or db_corrupt))
+        finally:
+            store.close()
+        return db_path
+    except Exception as exc:
+        warnings.append("graph init failed: %s" % type(exc).__name__)
+        stats["graph"] = "failed"
+        return None
+
 def migrate(plugin) -> dict:
     """Run the 1.3.4 -> 1.4.0 migration once; safe to call again."""
     report = {"applied": [], "warnings": [], "stats": {},
@@ -458,6 +592,7 @@ def migrate(plugin) -> dict:
     _backfill_memory(plugin, stats)
     if stats.get("memory") == "backfilled":
         report["applied"].append("memory")
+    _ensure_graph(plugin, stats, warnings)
     data["schema_version"] = SCHEMA_VERSION
     try:
         _write(authority, data)

@@ -35,8 +35,11 @@ class SendRecordTest(unittest.IsolatedAsyncioTestCase):
         logger = types.SimpleNamespace(
             warning=lambda *a, **k: warnings.append(a),
             info=lambda *a, **k: None)
+        async def _persist_history(umo, text):
+            return True
         plugin = types.SimpleNamespace(
             proactive_llm_enabled=False,
+            _persist_proactive_history=_persist_history,
             _sanitize_proactive_text=lambda text, cap=0: str(text or ""),
             _opening_repeats=lambda text: False,
             _record_proactive_sent=recorder)

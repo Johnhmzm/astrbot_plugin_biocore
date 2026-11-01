@@ -79,7 +79,7 @@ class AutonomyModuleTextTest(unittest.TestCase):
         built = self.build(self.plugin, _Core({"social_gap": 0.6, "lonely": 0.3}),
                            self.acc, self.now)
         self.assertTrue(str(built.get("prompt") or "").strip())
-        self.assertIn("【输出格式 · 必须遵守】", built["prompt"])
+        self.assertNotIn("【输出格式", built["prompt"])
         self.assertTrue(str(built.get("text") or "").strip())
         # 2026-10-31: hard cap removed by product decision (no truncation).
         self.assertEqual(int(built.get("max_chars") or 0), 0)

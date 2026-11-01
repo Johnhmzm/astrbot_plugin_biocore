@@ -333,7 +333,7 @@ def enrich_ctx(ctx=None):
             _rows = getattr(plugin, "_recent_proactive", None)
             if not _rows and callable(getattr(plugin, "_load_recent_proactive", None)):
                 _rows = plugin._load_recent_proactive()
-            _texts = [str(x).strip() for x in (_rows or [])[-2:] if str(x).strip()]
+            _texts = [str(x).strip() for x in (_rows or [])[-3:] if str(x).strip()]
             if _texts:
                 ctx["recent_proactive"] = "我刚说过：" + "；".join(_texts)
         except Exception:
@@ -400,9 +400,6 @@ def enrich_ctx(ctx=None):
             speak_style = ""
     if speak_style:
         ctx["speak_style"] = str(speak_style)
-    if not ctx.get("output_protocol"):
-        ctx["output_protocol"] = (base_opts.get("output_protocol")
-                                  or _expr_template.PROMPT_OUTPUT_PROTOCOL)
     relationship_text = str(ctx.get("relationship_text") or "")
     if not relationship_text:
         try:
@@ -422,7 +419,7 @@ def enrich_ctx(ctx=None):
             gap_text = "间隔：已 %.1f 小时没说话" % hours
             ctx["gap_text"] = gap_text
     opts = dict(base_opts)
-    for key in ("persona", "speak_style", "output_protocol"):
+    for key in ("persona", "speak_style"):
         if ctx.get(key) and not opts.get(key):
             opts[key] = ctx[key]
     meta["template_opts"] = opts

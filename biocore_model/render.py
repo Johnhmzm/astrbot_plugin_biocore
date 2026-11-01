@@ -178,17 +178,8 @@ def brevity_token(brevity) -> str:
 
 
 def _return_contract(memory_meta) -> str:
-    """Shared [BC-Return]/[BC-Note] suffix for telemetry and semantic modes."""
-    mm = memory_meta if isinstance(memory_meta, dict) else {}
-    suffix = ("\n[BC-Return] 末尾只输出一个 <bc>{e,i}</bc>（可选 n/x）；"
-              "不解释、不输出任何数值 delta。")
-    try:
-        _count = int(mm.get("count", 0) or 0)
-    except Exception:
-        _count = 0
-    if _count > 0 and mm.get("abstain"):
-        suffix += "\n[BC-Note] 记忆置信低或来源不明：不要当确定事实，可自然说记不清。"
-    return suffix
+    """No output protocol: the reply call only speaks; probe handles appraisal."""
+    return ""
 
 
 def _brief_clean(text, limit=30):

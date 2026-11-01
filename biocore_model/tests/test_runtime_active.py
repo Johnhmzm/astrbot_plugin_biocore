@@ -182,7 +182,8 @@ class LongPromptTest(unittest.TestCase):
         prompt = (system + "\n" + user).strip()
         self.assertGreater(len(prompt), 1200)
         self.assertIn(self.PERSONA[:40], system)
-        self.assertIn("【输出格式 · 必须遵守】", system)
+        self.assertNotIn("【输出格式", system)
+        self.assertNotIn("<bc>", system)
         self.assertNotIn("【输出格式", user)
         self.assertIn("情绪", user)        # state_block
         self.assertIn("关系", user)        # relationship

@@ -23,36 +23,39 @@ class GoalMixin:
             return str(g.get("name") or "")
 
 
-    def _goal_evidence(self, g: dict, local_text: str, context_text: str) -> float:
-        """Evidence that a goal is active, from this turn plus retrieved context.
+    def _goal_relevance_from_dims(self, dims) -> float:
+        """item-6: numeric goal relevance from probe dims (goal/involve/hit)."""
+        d = dims if isinstance(dims, dict) else {}
 
-        Local keyword hits are only one channel; memory / self-narrative text is
-        compared against the goal signature so relevance is not keyword-only.
-        """
+        def _n(key, default=0.0):
+            try:
+                return float(d.get(key, default) or default)
+            except Exception:
+                return default
+
+        return round(max(0.0, min(1.0,
+                                  0.45 * _n("involve") + 0.35 * abs(_n("goal"))
+                                  + 0.20 * _n("hit"))), 3)
+
+    def _goal_evidence(self, g: dict, local_text: str, context_text: str,
+                       dims=None) -> float:
+        """item-6: evidence from probe dims; text similarity only, no keyword scan."""
         try:
-            t = str(local_text or "")
-            ctx = str(context_text or "")
-            sig = self._goal_signature(g)
-            terms = tuple(g.get("keywords") or ())
-            terms += tuple((getattr(self, "goal_context_terms", {}) or {}).get(str(g.get("key") or ""), ()))
-            hits = sum(1 for w in terms if w and str(w) in t)
-            local = min(1.0, 0.35 + 0.18 * hits) if hits else 0.0
-            local = max(local, self._text_similarity(t, sig) * 0.75)
-            learned = 0.0
-            if ctx:
-                term_hits = [w for w in terms if w and str(w) in ctx]
-                coverage = len(term_hits) / max(1, len(terms))
-                density = min(1.0, len(term_hits) / 5.0)
-                learned = max(self._text_similarity(ctx[:900], sig) * 1.6,
-                              min(1.0, 0.5 * density + 0.9 * coverage))
-                for h in (getattr(self, "history", []) or [])[-12:]:
-                    _txt = str((h or {}).get("text") or "")
-                    if _txt and _txt in ctx:
-                        learned = max(learned, self._text_similarity(_txt, sig) * 0.8)
-            return max(0.0, min(1.0, max(local, 0.75 * learned)))
+            if dims:
+                base = self._goal_relevance_from_dims(dims)
+                try:
+                    pri = max(0.0, min(1.0, float(g.get("priority", 0.5) or 0.5)))
+                except Exception:
+                    pri = 0.5
+                return round(max(0.0, min(1.0, base * (0.6 + 0.4 * pri))), 3)
+            name = str(g.get("name") or "")
+            if not name:
+                return 0.0
+            text = str(local_text or "") or str(context_text or "")
+            return round(max(0.0, min(1.0,
+                                       self._text_similarity(text, name) * 0.75)), 3)
         except Exception:
             return 0.0
-
 
     def _resolve_goal_conflict(self, scores=None) -> None:
         """Pick a focus among active goals: high priority and low progress win."""
@@ -80,7 +83,8 @@ class GoalMixin:
         self.goal_conflict = [str(x[2].get("name") or "") for x in cand[1:]][:4]
 
 
-    def bind_goal_context(self, memory_text: str = "", self_model=None, recent=None, text: str = "") -> None:
+    def bind_goal_context(self, memory_text: str = "", self_model=None,
+                          recent=None, text: str = "", dims=None) -> None:
         """Fuse retrieved memory / self narrative / recent turns into goal relevance."""
         try:
             ctx_parts = [str(memory_text or "")]
@@ -97,7 +101,7 @@ class GoalMixin:
                 if not isinstance(g, dict):
                     continue
                 key = str(g.get("key") or "")
-                rel = self._goal_evidence(g, str(text or ""), ctx)
+                rel = self._goal_evidence(g, str(text or ""), ctx, dims=dims)
                 base[key] = round(max(float(base.get(key, 0.0) or 0.0), rel), 3)
             self.goal_scores = base
             if base:
@@ -106,38 +110,45 @@ class GoalMixin:
         except Exception:
             pass
 
-
-    def _update_goals(self, text: str, context: str = "") -> None:
+    def _update_goals(self, text: str, context: str = "", dims=None) -> None:
+        """item-6: goal scores from probe dims (goal/involve/hit); no word tables."""
         t = str(text or "")
         ctx = str(context or "")
         scores = {}
-        for g in getattr(self, "goals", []) or []:
-            if not isinstance(g, dict):
+        for item in getattr(self, "goals", []) or []:
+            if not isinstance(item, dict):
                 continue
-            key = str(g.get("key") or "")
-            scores[key] = round(self._goal_evidence(g, t, ctx), 3)
+            key = str(item.get("key") or "")
+            scores[key] = round(self._goal_evidence(item, t, ctx, dims=dims), 3)
         self.goal_scores = scores
         # Deterministic priority learning: repeated evidence raises a goal,
         # neglect decays it slowly (bounded EMA; no LLM involved).
         try:
-            for g in getattr(self, "goals", []) or []:
-                if not isinstance(g, dict):
+            for item in getattr(self, "goals", []) or []:
+                if not isinstance(item, dict):
                     continue
-                _key = str(g.get("key") or "")
+                _key = str(item.get("key") or "")
                 _rel = float(scores.get(_key, 0.0) or 0.0)
                 memory_meta.update_goal_priority(
-                    g, hit=(_rel > 0.05), relevance=_rel)
+                    item, hit=(_rel > 0.05), relevance=_rel)
         except Exception:
             pass
         best = max(scores.values()) if scores else 0.0
         self.appraisal["goal_relevance"] = round(best, 3)
         self._resolve_goal_conflict(scores)
-        _pos = sum(1 for w in ("谢谢", "喜欢", "陪", "开心", "信任", "爱") if w in t)
-        _neg = sum(1 for w in ("废物", "滚", "闭嘴", "讨厌", "没用", "难受") if w in t)
-        self.appraisal["norm_compatibility"] = round(max(0.0, min(1.0, 0.5 + 0.12 * _pos - 0.18 * _neg)), 3)
-        self.appraisal["expectedness"] = round(1.0 - float(self.appraisal.get("novelty", 0.0) or 0.0), 3)
-        self.appraisal["urgency"] = round(float(getattr(self, "a", 0.5)), 3)
+        d = dims if isinstance(dims, dict) else {}
 
+        def _n(key, default=0.0):
+            try:
+                return float(d.get(key, default) or default)
+            except Exception:
+                return default
+
+        norm = 0.5 + 0.25 * _n("goal") - 0.25 * _n("blame") - 0.15 * _n("hit")
+        self.appraisal["norm_compatibility"] = round(max(0.0, min(1.0, norm)), 3)
+        self.appraisal["expectedness"] = round(
+            1.0 - float(self.appraisal.get("novelty", 0.0) or 0.0), 3)
+        self.appraisal["urgency"] = round(float(getattr(self, "a", 0.5)), 3)
 
     def _advance_goals(self, v_delta: float = 0.0, social_delta: float = 0.0) -> None:
         """Goal progress follows the interaction outcome, not a fixed step."""
