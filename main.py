@@ -810,6 +810,53 @@ def _memory_backend_switch(plugin, target, memory_dir, backup_root=None):
         return report
 
 
+def _safety_gate_module():
+    try:
+        from .biocore_model import boundary_gate as _bg
+    except Exception:
+        try:
+            from biocore_model import boundary_gate as _bg
+        except Exception:
+            return None
+    return _bg
+
+
+def _safety_gate_flags(plugin):
+    """Three flags + hardcoded defaults (missing attr/key -> disabled)."""
+    mod = _safety_gate_module()
+    defaults = (dict(mod.DEFAULT_FLAGS) if mod is not None else
+                {"safety_enabled": False, "boundary_enabled": False,
+                 "crisis_safety_enabled": False})
+    return {key: bool(getattr(plugin, key, default))
+            for key, default in defaults.items()}
+
+
+def _apply_boundary_gate(plugin, user_text, reply_text):
+    """表达层安全闸（默认关闭）：命中时记一条 info 并返回最终文本。
+
+    - 不改提示词、不新增 LLM 调用；总开关关闭时原样放行。
+    - boundary_enabled 只拦三条边界；crisis_safety_enabled 只做危机先安全。
+    """
+    try:
+        mod = _safety_gate_module()
+        if mod is None:
+            return reply_text
+        decision = mod.evaluate(
+            reply_text, user_text=user_text,
+            flags=_safety_gate_flags(plugin))
+        if decision.get("blocked"):
+            logger.info(
+                "[biocore] safety gate hit rule=%s label=%s rules=%s",
+                decision.get("rule"), decision.get("label"),
+                ",".join(mod.rule_labels(decision.get("rules"))))
+        if decision.get("changed"):
+            return str(decision.get("text") or reply_text)
+        return reply_text
+    except Exception as exc:
+        logger.debug("[biocore] safety gate skipped: %s", exc)
+        return reply_text
+
+
 def _budget_dims_deltas(plugin, deltas, source="probe"):
     """P0-2: cap one message's total |dims delta| (default 0.2, config).
 
@@ -1465,11 +1512,14 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.14")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.15")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
         self._data_dir = DATA_DIR
+        # ui_settings.authority_dir() reads data_dir/DATA_DIR; set it before the
+        # startup safety-gate loader so the same ui_settings file is used.
+        self.data_dir = str(DATA_DIR)
         self._persist_dir = _PERSIST_DATA_DIR
         self._profile_path = PROFILE_PATH
         self._api_config_path = API_CONFIG_PATH
@@ -1836,16 +1886,29 @@ class BioCorePlugin(Star):
         # OFF = exact legacy behaviour (archive every candidate, no new fields).
         self.memory_worthiness_enabled = bool(
             self.config.get("memory_worthiness_enabled", True))
-        # Safety switch: default ON (new installs). When OFF, no masking,
-        # no cross-session isolation, no forced abstention, no poison filter.
-        # Saved old settings keep the user's stored value (load_settings below).
-        self.safety_enabled = bool(self.config.get("safety_enabled", True))
+        # 表达层安全闸：三个开关默认全部关闭（硬编码常量在
+        # biocore_model/boundary_gate.SAFETY_GATES_DEFAULT_ENABLED 里定义）。
+        # 缺键/旧配置 -> 回退到关闭，不会因为缺键变开启。用户可在设置里开启。
+        _gate_defaults = {"safety_enabled": False, "boundary_enabled": False,
+                          "crisis_safety_enabled": False}
+        _gate_mod = _safety_gate_module()
+        if _gate_mod is not None:
+            _gate_defaults = dict(_gate_mod.DEFAULT_FLAGS)
+        self.safety_enabled = bool(self.config.get(
+            "safety_enabled", _gate_defaults["safety_enabled"]))
+        self.boundary_enabled = bool(self.config.get(
+            "boundary_enabled", _gate_defaults["boundary_enabled"]))
+        self.crisis_safety_enabled = bool(self.config.get(
+            "crisis_safety_enabled", _gate_defaults["crisis_safety_enabled"]))
         self.cross_session_memory = not self.safety_enabled
         self.sensitive_memory_protection = self.safety_enabled
-        # P2: warn AFTER the value is assigned (previously logged false always).
-        if not self.safety_enabled:
-            logger.warning("[biocore] safety_enabled=false: 公开部署建议保持开启；"
-                           "私人使用可关（敏感掩码/跨会话隔离/低置信拒答/投毒过滤关闭）")
+        try:
+            self._load_safety_gates_ui()
+        except Exception:
+            pass
+        logger.info("[biocore] safety gates boundary=%s crisis=%s master=%s",
+                    self.boundary_enabled, self.crisis_safety_enabled,
+                    self.safety_enabled)
         # Hybrid lexical+MMR retrieval and LLM-proposed write candidates.
         self.hybrid_retrieval = bool(self.config.get("hybrid_retrieval", True))
         self.llm_memory_candidates = bool(self.config.get("llm_memory_candidates", True))
@@ -4653,6 +4716,42 @@ class BioCorePlugin(Star):
             self.profile = dict(DEFAULT_PROFILE)
             self.persona_text = ""
 
+    def _save_safety_gates_ui(self):
+        """Persist the three gates through ui_settings (same file as other UI settings)."""
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_safety
+            except Exception:
+                from biocore_model import ui_settings as _ui_safety
+            _ui_safety.save(self, {"safety": {
+                "enabled": bool(getattr(self, "safety_enabled", False)),
+                "boundary_enabled": bool(getattr(self, "boundary_enabled", False)),
+                "crisis_safety_enabled": bool(
+                    getattr(self, "crisis_safety_enabled", False))}})
+        except Exception as _ui_exc:
+            logger.debug("[biocore] safety gates ui save failed: %s", _ui_exc)
+
+    def _load_safety_gates_ui(self):
+        """Startup: AstrBot config wins; otherwise fall back to ui_settings."""
+        try:
+            try:
+                from .biocore_model import ui_settings as _ui_safety
+            except Exception:
+                from biocore_model import ui_settings as _ui_safety
+            data = _ui_safety.load(self)
+        except Exception:
+            return
+        safety = data.get("safety") if isinstance(data.get("safety"), dict) else {}
+        config = self.config if isinstance(self.config, dict) else {}
+        for file_key, attr in (("enabled", "safety_enabled"),
+                               ("boundary_enabled", "boundary_enabled"),
+                               ("crisis_safety_enabled", "crisis_safety_enabled")):
+            if attr in config or file_key not in safety:
+                continue
+            setattr(self, attr, bool(safety.get(file_key)))
+        self.cross_session_memory = not self.safety_enabled
+        self.sensitive_memory_protection = self.safety_enabled
+
     def _settings_path(self):
         return DATA_DIR / "settings.json"
 
@@ -4666,6 +4765,7 @@ class BioCorePlugin(Star):
                 # the key (otherwise they silently overrode plugin config).
                 for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                             "kb_enabled", "hybrid_retrieval", "safety_enabled",
+                            "boundary_enabled", "crisis_safety_enabled",
                             "llm_memory_candidates", "llm_only_reply_summary",
                             "we_memory_enabled"):
                     if key in d and key not in self.config:
@@ -4688,6 +4788,10 @@ class BioCorePlugin(Star):
                 "memory_dedup_embedding": bool(self.memory_dedup_embedding),
                 "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
                 "safety_enabled": bool(getattr(self, "safety_enabled", False)),
+                "boundary_enabled": bool(
+                    getattr(self, "boundary_enabled", False)),
+                "crisis_safety_enabled": bool(
+                    getattr(self, "crisis_safety_enabled", False)),
                 "llm_memory_candidates": bool(
                     getattr(self, "llm_memory_candidates", True)),
                 "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
@@ -9296,6 +9400,9 @@ class BioCorePlugin(Star):
                 getattr(self, "memory_worthiness_enabled", True)),
             "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
             "safety_enabled": bool(getattr(self, "safety_enabled", False)),
+            "boundary_enabled": bool(getattr(self, "boundary_enabled", False)),
+            "crisis_safety_enabled": bool(
+                getattr(self, "crisis_safety_enabled", False)),
             "llm_memory_candidates": bool(
                 getattr(self, "llm_memory_candidates", True)),
             "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
@@ -9534,10 +9641,20 @@ class BioCorePlugin(Star):
             self._save_api_config()
             return {"status": "ok", "data": {"key": key, "value": _cur.get("enabled") if key in _fn_enabled else _cur.get("provider")}}
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
-                       "hybrid_retrieval", "safety_enabled", "llm_memory_candidates",
+                       "hybrid_retrieval", "safety_enabled", "boundary_enabled",
+                       "crisis_safety_enabled", "llm_memory_candidates",
                        "llm_only_reply_summary", "persona_id",
                        "insight_auto_enabled"):
             return {"status": "error", "message": "unknown setting"}
+        if key in ("boundary_enabled", "crisis_safety_enabled"):
+            setattr(self, key, bool(data.get("value")))
+            self._save_settings()
+            self._save_safety_gates_ui()
+            await self._persist_plugin_config({key: bool(getattr(self, key))})
+            logger.info("[biocore] safety gate %s=%s", key,
+                        bool(getattr(self, key)))
+            return {"status": "ok",
+                    "data": {"key": key, "value": bool(getattr(self, key))}}
         if key == "persona_id":
             _val = str(data.get("value") or "").strip()
             self.persona_id = _val
@@ -9564,6 +9681,7 @@ class BioCorePlugin(Star):
             self.cross_session_memory = not self.safety_enabled
             self.sensitive_memory_protection = self.safety_enabled
             self._save_settings()
+            self._save_safety_gates_ui()
             await self._persist_plugin_config({key: self.safety_enabled})
             logger.info("[biocore] safety_enabled=%s", self.safety_enabled)
             return {"status": "ok", "data": {"key": key, "value": self.safety_enabled}}
@@ -13445,6 +13563,27 @@ class BioCorePlugin(Star):
                     logger.info("[biocore] inline state tag dims=%s c=%.2f", _inline.get("dims"), float(_inline.get("confidence", 0.0) or 0.0))
         except Exception as _inline_exc:
             logger.warning("[biocore] inline state tag failed: %s", _inline_exc)
+        # 表达层安全闸（默认关闭，用户可在设置开启）：只改可见文本，不改
+        # 提示词、不新增调用次数；总开关关闭时原样放行。
+        try:
+            _gated = _apply_boundary_gate(
+                self, str(getattr(event, "message_str", "") or ""), _reply)
+            if _gated != _reply:
+                _reply = _gated
+                try:
+                    response.completion_text = _gated
+                except Exception:
+                    pass
+                try:
+                    _chain = getattr(response, "result_chain", None)
+                    if _chain is not None and getattr(_chain, "chain", None):
+                        for _comp in _chain.chain:
+                            if hasattr(_comp, "text"):
+                                _comp.text = _gated
+                except Exception:
+                    pass
+        except Exception as _gate_exc:
+            logger.debug("[biocore] safety gate skipped: %s", _gate_exc)
         # emotion probe: one tiny async second call; never blocks the reply.
         if getattr(self, "emotion_probe_enabled", True) and not _inline_used:
             try:

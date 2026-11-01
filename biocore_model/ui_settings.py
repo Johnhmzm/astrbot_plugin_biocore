@@ -39,6 +39,9 @@ DEFAULTS = {
     # Preset structure (SillyTavern-style blocks): default ON; off falls back to
     # the legacy scattered prompt inserts.
     "preset": {"enabled": True},
+    # 表达层安全闸：三项默认全部关闭（硬编码默认在 biocore_model.boundary_gate）。
+    "safety": {"enabled": False, "boundary_enabled": False,
+               "crisis_safety_enabled": False},
 }
 
 _MODULE_DIR = Path(__file__).resolve().parent
@@ -243,6 +246,21 @@ def apply_to_plugin(plugin, data=None) -> dict:
     try:
         preset = data.get("preset") or {}
         plugin.preset_enabled = bool(preset.get("enabled", True))
+    except Exception:
+        pass
+    try:
+        safety = data.get("safety") or {}
+        config = getattr(plugin, "config", None)
+        config = config if isinstance(config, dict) else {}
+        for file_key, attr in (("enabled", "safety_enabled"),
+                               ("boundary_enabled", "boundary_enabled"),
+                               ("crisis_safety_enabled", "crisis_safety_enabled")):
+            if attr in config or file_key not in safety:
+                continue
+            setattr(plugin, attr, bool(safety.get(file_key)))
+        if "safety_enabled" in dir(plugin) or "safety_enabled" in vars(plugin):
+            plugin.cross_session_memory = not bool(plugin.safety_enabled)
+            plugin.sensitive_memory_protection = bool(plugin.safety_enabled)
     except Exception:
         pass
     return data

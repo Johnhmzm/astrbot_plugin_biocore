@@ -756,6 +756,9 @@ class RoutesMixin:
                 getattr(self, "memory_worthiness_enabled", True)),
             "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
             "safety_enabled": bool(getattr(self, "safety_enabled", False)),
+            "boundary_enabled": bool(getattr(self, "boundary_enabled", False)),
+            "crisis_safety_enabled": bool(
+                getattr(self, "crisis_safety_enabled", False)),
             "llm_memory_candidates": bool(
                 getattr(self, "llm_memory_candidates", True)),
             "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
@@ -1005,10 +1008,25 @@ class RoutesMixin:
             self._save_api_config()
             return {"status": "ok", "data": {"key": key, "value": _cur.get("enabled") if key in _fn_enabled else _cur.get("provider")}}
         if key not in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
-                       "hybrid_retrieval", "safety_enabled", "llm_memory_candidates",
+                       "hybrid_retrieval", "safety_enabled", "boundary_enabled",
+                       "crisis_safety_enabled", "llm_memory_candidates",
                        "llm_only_reply_summary", "persona_id",
                        "insight_auto_enabled"):
             return {"status": "error", "message": "unknown setting"}
+        if key in ("boundary_enabled", "crisis_safety_enabled"):
+            setattr(self, key, bool(data.get("value")))
+            self._save_settings()
+            _save_ui = getattr(self, "_save_safety_gates_ui", None)
+            if callable(_save_ui):
+                try:
+                    _save_ui()
+                except Exception:
+                    pass
+            await self._persist_plugin_config({key: bool(getattr(self, key))})
+            logger.info("[biocore] safety gate %s=%s", key,
+                        bool(getattr(self, key)))
+            return {"status": "ok",
+                    "data": {"key": key, "value": bool(getattr(self, key))}}
         if key == "persona_id":
             _val = str(data.get("value") or "").strip()
             self.persona_id = _val
@@ -1035,6 +1053,12 @@ class RoutesMixin:
             self.cross_session_memory = not self.safety_enabled
             self.sensitive_memory_protection = self.safety_enabled
             self._save_settings()
+            _save_ui = getattr(self, "_save_safety_gates_ui", None)
+            if callable(_save_ui):
+                try:
+                    _save_ui()
+                except Exception:
+                    pass
             await self._persist_plugin_config({key: self.safety_enabled})
             logger.info("[biocore] safety_enabled=%s", self.safety_enabled)
             return {"status": "ok", "data": {"key": key, "value": self.safety_enabled}}

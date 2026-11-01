@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=1.4.14">
+<link rel="stylesheet" href="./styles.css?v=1.4.15">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261101-2341">
-<script>window.__BIOCORE_BUILD__="build 2026-11-01 23:41 +08";</script>
+<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261102-0025">
+<script>window.__BIOCORE_BUILD__="build 2026-11-02 00:25 +08";</script>
 </head>
 <body>
 <div class="shell">
@@ -613,8 +613,12 @@
         
 
         
-<div class="setting-row" data-advanced="1"><div><b>安全限制（默认开）</b><small>开启后提供敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤；默认开。</small></div><label class="switch"><input type="checkbox" id="swSafetyEnabled" checked><span></span></label><p class="setting-warn" id="safetyWarn" hidden>该开关控制敏感信息掩码与投毒过滤；危机分级/日志由核心 GA-03 模块提供（默认只记录不拦截）。</p></div>
-        <div class="setting-row" id="crisisNoteRow"><div><b>危机分级</b><small>只记录不拦截；critical/high 会携带安全契约（资源、must_ack、不放弃），并写入 crisis 日志。</small></div></div>
+<div class="setting-row" id="safetyGatesHead"><div><b>表达层安全闸</b><small>默认关闭，开启后按对应规则拦截；总开关关闭时一律不拦。改动即时生效并落盘（ui_settings）。</small></div></div>
+        <div class="setting-row"><div><b>边界闸（默认关）</b><small>不诊断 / 不替代真实 / 不宣称意识；命中时删除越界句并记录一条 info 日志。</small></div><label class="switch"><input type="checkbox" id="swBoundaryEnabled"><span></span></label></div>
+        <div class="setting-row"><div><b>危机处置（默认关）</b><small>危机先安全：先确认安全并给求助渠道，只处置不限制。</small></div><label class="switch"><input type="checkbox" id="swCrisisSafetyEnabled"><span></span></label></div>
+        <div class="setting-row" data-advanced="1"><div><b>安全总开关（默认关）</b><small>关闭时上面两个闸一律不拦；开启后同时恢复敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤。</small></div><label class="switch"><input type="checkbox" id="swSafetyEnabled"><span></span></label><p class="setting-warn" id="safetyWarn" hidden>安全总开关已关闭：边界闸/危机处置一律不拦，敏感掩码与投毒过滤也关闭。</p></div>
+        <p class="api-note" id="safetyGatesNote">默认关闭，开启后按对应规则拦截。</p>
+        <div class="setting-row" id="crisisNoteRow"><div><b>危机分级</b><small>开启「危机处置」后：危机消息会先确认安全并给求助渠道；默认关闭。</small></div></div>
       
       </div>
 <div class="panel settings settings-panel" id="settingsModel">
@@ -752,20 +756,20 @@ window.addEventListener('error',function(e){window.__diagError('ERR: '+(e.messag
 window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__diagError('REJ: '+(r&&(r.stack||r.message)||r));});
 setTimeout(function(){var s=document.getElementById('topStatus');if(s&&s.textContent==='连接中…'){window.__diagError('WATCHDOG: load 未执行或未完成（5s）');}},5000);
 </script>
-<script src="./orb_math.js?v=1.4.14"></script>
-<script src="./turn_memory_view.js?v=1.4.14"></script>
-<script src="./app.js?v=1.4.14"></script>
-<script src="./ui_kit.js?v=1.4.14"></script>
-<script src="./registry.js?v=1.4.14"></script>
-<script src="./pipeline.js?v=1.4.14"></script>
-<script src="./now.js?v=1.4.14"></script>
-<script src="./relationship.js?v=1.4.14"></script>
-<script src="./records.js?v=1.4.14"></script>
-<script src="./debug.js?v=1.4.14"></script>
-<script src="./settings_ui.js?v=1.4.14"></script>
-<script src="./graph.js?v=1.4.14"></script>
-<script src="./nav_boot.js?v=1.4.14"></script>
-<script src="./orb.js?v=1.4.14"></script>
+<script src="./orb_math.js?v=1.4.15"></script>
+<script src="./turn_memory_view.js?v=1.4.15"></script>
+<script src="./app.js?v=1.4.15"></script>
+<script src="./ui_kit.js?v=1.4.15"></script>
+<script src="./registry.js?v=1.4.15"></script>
+<script src="./pipeline.js?v=1.4.15"></script>
+<script src="./now.js?v=1.4.15"></script>
+<script src="./relationship.js?v=1.4.15"></script>
+<script src="./records.js?v=1.4.15"></script>
+<script src="./debug.js?v=1.4.15"></script>
+<script src="./settings_ui.js?v=1.4.15"></script>
+<script src="./graph.js?v=1.4.15"></script>
+<script src="./nav_boot.js?v=1.4.15"></script>
+<script src="./orb.js?v=1.4.15"></script>
 
 </body>
 </html>

@@ -974,8 +974,8 @@ input[type=range]{width:180px;accent-color:var(--accent)}
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261101-2341">
-<script>window.__BIOCORE_BUILD__="build 2026-11-01 23:41 +08";</script>
+<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261102-0025">
+<script>window.__BIOCORE_BUILD__="build 2026-11-02 00:25 +08";</script>
 </head>
 <body>
 <div class="shell">
@@ -1580,8 +1580,12 @@ input[type=range]{width:180px;accent-color:var(--accent)}
         
 
         
-<div class="setting-row" data-advanced="1"><div><b>安全限制（默认开）</b><small>开启后提供敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤；默认开。</small></div><label class="switch"><input type="checkbox" id="swSafetyEnabled" checked><span></span></label><p class="setting-warn" id="safetyWarn" hidden>该开关控制敏感信息掩码与投毒过滤；危机分级/日志由核心 GA-03 模块提供（默认只记录不拦截）。</p></div>
-        <div class="setting-row" id="crisisNoteRow"><div><b>危机分级</b><small>只记录不拦截；critical/high 会携带安全契约（资源、must_ack、不放弃），并写入 crisis 日志。</small></div></div>
+<div class="setting-row" id="safetyGatesHead"><div><b>表达层安全闸</b><small>默认关闭，开启后按对应规则拦截；总开关关闭时一律不拦。改动即时生效并落盘（ui_settings）。</small></div></div>
+        <div class="setting-row"><div><b>边界闸（默认关）</b><small>不诊断 / 不替代真实 / 不宣称意识；命中时删除越界句并记录一条 info 日志。</small></div><label class="switch"><input type="checkbox" id="swBoundaryEnabled"><span></span></label></div>
+        <div class="setting-row"><div><b>危机处置（默认关）</b><small>危机先安全：先确认安全并给求助渠道，只处置不限制。</small></div><label class="switch"><input type="checkbox" id="swCrisisSafetyEnabled"><span></span></label></div>
+        <div class="setting-row" data-advanced="1"><div><b>安全总开关（默认关）</b><small>关闭时上面两个闸一律不拦；开启后同时恢复敏感信息掩码、跨会话隔离、低置信拒答、投毒过滤。</small></div><label class="switch"><input type="checkbox" id="swSafetyEnabled"><span></span></label><p class="setting-warn" id="safetyWarn" hidden>安全总开关已关闭：边界闸/危机处置一律不拦，敏感掩码与投毒过滤也关闭。</p></div>
+        <p class="api-note" id="safetyGatesNote">默认关闭，开启后按对应规则拦截。</p>
+        <div class="setting-row" id="crisisNoteRow"><div><b>危机分级</b><small>开启「危机处置」后：危机消息会先确认安全并给求助渠道；默认关闭。</small></div></div>
       
       </div>
 <div class="panel settings settings-panel" id="settingsModel">
@@ -2509,8 +2513,11 @@ setTimeout(function(){var s=document.getElementById('topStatus');if(s&&s.textCon
     // 索引诊断（核心模式已下线，2026-10-31）
     if(!$("coreIndexRow")){ const indexRow=document.createElement("div"); indexRow.className="setting-row"; indexRow.id="coreIndexRow"; indexRow.hidden=true;
       indexRow.innerHTML='<div><b>索引诊断</b><small id="coreIndexText">索引：—</small></div>'; statusPanel.appendChild(indexRow); }
-    // 安全：掩码/投毒开关 + 危机说明
-    moveById("swSafetyEnabled", safetyPanel);
+    // 安全：表达层安全闸（边界闸 / 危机处置 / 安全总开关）+ 掩码/投毒说明
+    ["safetyGatesHead", "swBoundaryEnabled", "swCrisisSafetyEnabled",
+     "swSafetyEnabled"].forEach(function (id) { moveById(id, safetyPanel); });
+    var gateNote = $("safetyGatesNote");
+    if (gateNote && safetyPanel) safetyPanel.appendChild(gateNote);
     const warn=$("safetyWarn"); if(warn&&warn.parentNode) safetyPanel.appendChild(warn);
     if(!$("crisisNoteRow")){ const note=document.createElement("div"); note.className="setting-row"; note.id="crisisNoteRow";
       note.innerHTML='<div><b>危机分级</b><small>只记录不拦截；critical/high 会携带安全契约（资源、must_ack、不放弃），并写入 crisis 日志。</small></div>'; safetyPanel.appendChild(note); }
@@ -2639,7 +2646,7 @@ setTimeout(function(){var s=document.getElementById('topStatus');if(s&&s.textCon
     feat_visual_nodes: ["swShowMemoryNodes"],
     feat_visual_links: ["swShowLinks"],
     feat_visual_rings: ["swShowEcho","swShowDominance","swShowSocial"],
-    feat_safety: ["swSafetyEnabled"],
+    feat_safety: ["swSafetyEnabled", "swBoundaryEnabled", "swCrisisSafetyEnabled"],
     feat_llm_image: ["fn_image_caption_enabled"],
   };
   window.LLM_ADVANCED_IDS = ["fn_event_summary_enabled","fn_event_ranking_enabled","fn_insight_enabled","fn_memory_summary_enabled","fn_relationship_impression_enabled","fn_repair_hint_enabled","fn_diary_enabled","fn_relationship_narrative_enabled","fn_image_caption_enabled","fn_pragmatics_hint_enabled","fn_tom_probe_enabled","fn_humor_hint_enabled","swInsightAuto"];
@@ -4667,6 +4674,8 @@ if($("swVisualAdvanced")){
     });
   }
   bindBehaviorToggle("swMemEmbedding","memory_dedup_embedding");
+  bindBehaviorToggle("swBoundaryEnabled","boundary_enabled");
+  bindBehaviorToggle("swCrisisSafetyEnabled","crisis_safety_enabled");
   bindBehaviorToggle("swSafetyEnabled","safety_enabled");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
@@ -4765,6 +4774,10 @@ if($("swVisualAdvanced")){
     if (swc) swc.checked = !!comp.enabled;
     const swSafety = $("swSafetyEnabled");
     if (swSafety) swSafety.checked = !!data.safety_enabled;
+    const swBoundary = $("swBoundaryEnabled");
+    if (swBoundary) swBoundary.checked = !!data.boundary_enabled;
+    const swCrisisSafety = $("swCrisisSafetyEnabled");
+    if (swCrisisSafety) swCrisisSafety.checked = !!data.crisis_safety_enabled;
     const swHybrid = $("swHybridRetrieval");
     if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
     const swLlmCand = $("swLlmCandidates");
@@ -5282,7 +5295,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.14";
+  const BIO_VERSION = "v1.4.15";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";
