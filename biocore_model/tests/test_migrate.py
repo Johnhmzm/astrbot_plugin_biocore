@@ -98,7 +98,7 @@ class MigrationTest(unittest.TestCase):
             auth = (Path(tmp) / "plugin_data" / "astrbot_plugin_biocore"
                     / "ui_settings.json")
             saved = json.loads(auth.read_text(encoding="utf-8"))
-            self.assertEqual(saved.get("schema_version"), 2)
+            self.assertEqual(saved.get("schema_version"), 3)
             acc = saved["autonomy"]["accumulator"]
             self.assertAlmostEqual(float(acc["theta"]), 0.5239, places=3)
             self.assertGreaterEqual(float(acc["V"]), 0.0)
@@ -132,7 +132,7 @@ class MigrationTest(unittest.TestCase):
             auth = (Path(tmp) / "plugin_data" / "astrbot_plugin_biocore"
                     / "ui_settings.json")
             saved = json.loads(auth.read_text(encoding="utf-8"))
-            self.assertEqual(saved.get("schema_version"), 2)
+            self.assertEqual(saved.get("schema_version"), 3)
             self.assertEqual(migrate.migrate(plugin)["applied"], [])
 
     def test_second_run_is_idempotent(self):
@@ -161,7 +161,7 @@ class MigrationTest(unittest.TestCase):
             auth = fresh / "ui_settings.json"
             self.assertTrue(auth.is_file())
             self.assertEqual(json.loads(auth.read_text(encoding="utf-8"))
-                             .get("schema_version"), 2)
+                             .get("schema_version"), 3)
 
 
 if __name__ == "__main__":

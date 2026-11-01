@@ -7,7 +7,7 @@ const dir = dirname(fileURLToPath(import.meta.url))
 const base = join(dir, '..', 'pages', 'dashboard')
 const read = (name) => readFileSync(join(base, name), 'utf8')
 let html = readFileSync(join(base, 'index.src.html'), 'utf8')
-for (const name of ['orb_math.js', 'orb.js', 'app.js', 'ui_kit.js', 'registry.js', 'pipeline.js', 'now.js', 'relationship.js', 'records.js', 'debug.js', 'settings_ui.js', 'nav_boot.js']) {
+for (const name of ['orb_math.js', 'orb.js', 'turn_memory_view.js', 'app.js', 'ui_kit.js', 'registry.js', 'pipeline.js', 'now.js', 'relationship.js', 'records.js', 'debug.js', 'graph.js', 'settings_ui.js', 'nav_boot.js']) {
   const pattern = new RegExp('<script[^>]*src="(?:\.\/)?' + name.replace(/[.]/g, '\\.') + '[^"]*"[^>]*><\\/script>')
   html = html.replace(pattern, '<script>\n' + read(name) + '\n</script>')
 }

@@ -20,7 +20,7 @@ class TemplateTest(unittest.TestCase):
         self.assertLess(user.index('亲近'), user.index('几小时前'))
         self.assertLess(user.index('想关心'), user.index('语气自然'))
         self.assertNotIn('【输出格式', user)
-        self.assertIn('<bc>', out['system'])
+        self.assertNotIn('<bc>', out['system'])
     def test_missing_optional_skipped(self):
         out = et.build_proactive(state_ctx={'state_block': '平静'}, opts=OPTS)
         self.assertEqual(out['order'], ['状态'])
@@ -43,8 +43,8 @@ class TemplateTest(unittest.TestCase):
         self.assertIn('a；b', out['user'])
     def test_protocol_default_present_in_system(self):
         out = et.build_reply(opts={})
-        self.assertIn('【输出格式 · 必须遵守】', out['system'])
-        self.assertIn('<bc>{"e":"joy","i":0.6}</bc>', out['system'])
+        self.assertNotIn('【输出格式', out['system'])
+        self.assertNotIn('<bc>', out['system'])
         self.assertNotIn('【输出格式', out['user'])
 
 class GuardTest(unittest.TestCase):

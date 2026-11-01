@@ -18,7 +18,8 @@ QUESTION_TYPES = {
     "event": ("那个事后来怎么样了？", "上次说的那件事有进展吗？"),
     "preference": ("你更喜欢哪个？", "这两种你更偏好哪种？"),
 }
-MOOD_WORDS = ("开心", "高兴", "累", "烦", "难过", "焦虑", "无聊", "生气", "委屈", "紧张")
+# item-4: mood comes from the probe's dims (goal/blame/hit) or valence,
+# never from a word table.
 
 
 def daily_self_life(seed, now, energy=0.7, valence=0.0, count=None):
@@ -63,14 +64,39 @@ def pick_question(responsiveness, recent_types=None, rng=None):
     return {"type": kind, "text": r.choice(QUESTION_TYPES[kind])}
 
 
-def infer_user_model(recent_messages, now=None):
-    """Heuristics: short+slow -> busy, mood words -> mood_hint, follow-ups -> engagement."""
+def _num(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def mood_hint_from_dims(dims=None, valence=None):
+    """item-4: probe dims -> mood_hint, with valence as a pured numeric fallback."""
+    d = dims if isinstance(dims, dict) else {}
+    goal = _num(d.get("goal"))
+    blame = _num(d.get("blame"))
+    hit = _num(d.get("hit"))
+    if blame >= 0.5 or hit >= 0.5 or goal <= -0.25:
+        return "low"
+    if goal >= 0.25 and hit < 0.4:
+        return "good"
+    if valence is not None:
+        value = _num(valence)
+        if value <= -0.2:
+            return "low"
+        if value >= 0.2:
+            return "good"
+    return "unknown"
+
+
+def infer_user_model(recent_messages, now=None, dims=None, valence=None):
+    """Timing hints from structure; mood_hint from probe dims (item-4)."""
     messages = list(recent_messages or [])
     model = {"mood_hint": "unknown", "busy_hint": "unknown", "last_topic": "", "engagement": 0.5}
     if not messages:
         return model
     short = slow = 0
-    mood_hits = 0
     questions = 0
     for item in messages[-5:]:
         text = str((item or {}).get("text") or "")
@@ -79,8 +105,6 @@ def infer_user_model(recent_messages, now=None):
             short += 1
         if delay >= 600:
             slow += 1
-        if any(word in text for word in MOOD_WORDS):
-            mood_hits += 1
         if "?" in text or "？" in text:
             questions += 1
         if text.strip():
@@ -89,8 +113,7 @@ def infer_user_model(recent_messages, now=None):
         model["busy_hint"] = "busy"
     elif short + slow == 0:
         model["busy_hint"] = "free"
-    if mood_hits:
-        model["mood_hint"] = "low" if any(word in str((messages[-1] or {}).get("text") or "") for word in ("累", "烦", "难过", "焦虑")) else "good"
+    model["mood_hint"] = mood_hint_from_dims(dims, valence)
     model["engagement"] = round(min(1.0, 0.4 + 0.15 * len(messages) + 0.1 * questions), 3)
     return model
 

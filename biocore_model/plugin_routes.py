@@ -789,7 +789,8 @@ class RoutesMixin:
             # L-T02/L-T03..L-T12 read-only runtime surface (bounded, no prompt text)
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
-            "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],
+            "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],            # task-124: last reply's used-memory receipt (read-only, bounded).
+            "turn_memory": dict(getattr(self, "_last_turn_memory", {}) or {}),
             # task-36 read-only projections are appended ONLY when their opt-in
             # switches are ON (P1-2: default OFF => no new page/status fields).
             "kb_config": {"enabled": bool(getattr(self, "kb_enabled", False)),
@@ -1341,6 +1342,13 @@ class RoutesMixin:
                                            "kb_names": self.kb_names})
         logger.info("[biocore] kb config enabled=%s names=%s", self.kb_enabled, self.kb_names)
         return {"status": "ok", "data": {"enabled": self.kb_enabled, "names": self.kb_names}}
+
+    async def page_graph(self):
+        helper = getattr(self, "_graph_page_payload", None)
+        if callable(helper):
+            return await helper()
+        return {"status": "ok",
+                "data": {"stats": {}, "entities": [], "edges": []}}
 
     async def page_models(self):
         from quart import request

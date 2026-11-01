@@ -139,17 +139,30 @@ class StateMixin:
         return {"mode": mode, "brevity": brevity}
 
 
-    def update_conflict_ema(self, text, *, novelty=0.0, correction=False,
-                            contradiction=False) -> dict:
-        """Botvinick 2001 proxy: contradiction/correction/instruction conflict EMA."""
-        value = str(text or "")
-        cues = ("不对", "不是", "你错了", "矛盾", "但是", "可是", "然而",
-                "说错", "纠正", "改口", "冲突", "说反")
-        hits = sum(1 for cue in cues if cue in value)
-        corr = 1.0 if (correction or any(w in value for w in ("不对", "你错了", "纠正", "改口"))) else 0.0
-        contrad = 1.0 if (contradiction or any(w in value for w in ("矛盾", "不是这样", "说错了"))) else 0.0
+    def update_conflict_ema(self, text=None, *, novelty=0.0, correction=False,
+                            contradiction=False, dims=None) -> dict:
+        """Botvinick 2001 proxy: numeric conflict from probe dims (item-3).
+
+        text is accepted for signature stability and intentionally ignored;
+        correction/contradiction are explicit caller flags, not word matches.
+        """
+        del text
+        data = dims if isinstance(dims, dict) else {}
+
+        def _d(key, default=0.0):
+            try:
+                return float(data.get(key, default) or default)
+            except Exception:
+                return default
+
+        blocked = max(0.0, -_d("goal"))
+        blame = _clip(_d("blame"), 0.0, 1.0)
+        unsure = max(0.0, 0.5 - _d("certainty", 0.5)) * 2.0
+        corr = 1.0 if correction else 0.0
+        contrad = 1.0 if contradiction else 0.0
         nov = _clip(novelty, 0.0, 1.0)
-        delta = _clip(0.45 * min(1.0, hits / 2.0) + 0.30 * corr
+        signal = _clip(max(blocked, blame, unsure), 0.0, 1.0)
+        delta = _clip(0.45 * signal + 0.30 * corr
                       + 0.15 * contrad + 0.10 * nov, 0.0, 1.0)
         self.conflict_ema = _clip(0.80 * float(getattr(self, "conflict_ema", 0.0)) + 0.20 * delta,
                                   0.0, 1.0)
@@ -166,17 +179,32 @@ class StateMixin:
                 "delta": round(delta, 4), "high": bool(high)}
 
 
-    def update_rumination_ema(self, text, *, emotion="neutral", intensity=0.0,
-                              novelty=0.0) -> dict:
-        """Nolen-Hoeksema 1991 proxy: repeated negative topic EMA (bounded)."""
-        value = str(text or "")
-        negative = (str(emotion or "") in ("sadness", "anger", "fear", "loneliness")
-                    or any(w in value for w in ("难受", "难过", "烦", "焦虑", "委屈",
-                                                "不想", "讨厌", "崩溃", "累")))
-        topic = value[:40] if negative else ""
-        repeat = False
-        if negative and topic and self._last_neg_topic:
-            repeat = memory_meta.text_similarity(topic, self._last_neg_topic) >= 0.5
+    def update_rumination_ema(self, text=None, *, emotion="neutral", intensity=0.0,
+                              novelty=0.0, dims=None, negative=None) -> dict:
+        """Nolen-Hoeksema 1991 proxy: negative affect EMA from labels/dims (item-3).
+
+        text is accepted for signature stability and intentionally ignored;
+        recurrence is keyed by the negative emotion label, not word matches.
+        """
+        del text
+        data = dims if isinstance(dims, dict) else {}
+
+        def _d(key, default=0.0):
+            try:
+                return float(data.get(key, default) or default)
+            except Exception:
+                return default
+
+        label = str(emotion or "neutral").strip().lower() or "neutral"
+        if negative is None:
+            negative = (label in ("sadness", "anger", "fear", "loneliness")
+                        or _clip(_d("hit"), 0.0, 1.0) >= 0.5
+                        or _clip(_d("blame"), 0.0, 1.0) >= 0.5)
+        else:
+            negative = bool(negative)
+        topic = label if negative else ""
+        repeat = bool(negative and topic
+                      and getattr(self, "_last_neg_topic", "") == topic)
         if negative:
             self._neg_repeat = (int(getattr(self, "_neg_repeat", 0) or 0) + 1
                                 if repeat else 1)
@@ -185,7 +213,6 @@ class StateMixin:
             add = inc * (0.5 + 0.5 * _clip(intensity, 0.0, 1.0))
             self.rumination_ema = _clip(float(getattr(self, "rumination_ema", 0.0)) + add,
                                         0.0, 1.0)
-            # §6/LIT: 3 consecutive same-topic negative rounds -> suppression mark.
             if int(getattr(self, "_neg_repeat", 0) or 0) >= 3:
                 self.rumination_suppress = True
         else:

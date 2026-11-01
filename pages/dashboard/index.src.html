@@ -3,12 +3,12 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=1.4.12">
+<link rel="stylesheet" href="./styles.css?v=1.4.13">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261031-2135">
-<script>window.__BIOCORE_BUILD__="build 2026-10-31 09:30 +08";</script>
+<meta name="biocore-asset-cache" content="pages/dashboard/app.js?v=20261101-2140">
+<script>window.__BIOCORE_BUILD__="build 2026-11-01 21:40 +08";</script>
 </head>
 <body>
 <div class="shell">
@@ -393,6 +393,11 @@
         </div>
         <p class="api-note" id="memHintNote">策略提示：--</p>
         <p class="api-note" id="memRecallNote">召回元数据是只读投影：校准偏移只作用于本轮召回的置信度（≤±0.05，不写存储）；工作集 TTL 2 小时在召回时过滤，这里显示后端已给的原始列表。</p>
+        <div class="hist-block" id="turnMemoryBlock">
+          <small>TURN MEMORY / 本轮使用的记忆（只读 · 最多 4 条）</small>
+          <div id="turnMemoryList"></div>
+          <p class="api-note" id="turnMemoryNote">本轮记忆：等一次真实回复后显示常驻 / 检索 / 图记忆的来源与选择原因。</p>
+        </div>
         <div class="hist-block" id="chainBlock">
           <small>CHAIN LINKS / 事件链（只读 · 默认关）</small>
           <div id="chainList"></div>
@@ -449,6 +454,8 @@
       <div class="section-title"><div><div class="eyebrow">DEBUG</div><h2>调试</h2></div><span class="hint" id="debugHint">读取中…</span></div>
       <div class="ui3-root" id="debugRoot"><div class="ui3-empty">加载中…</div></div>
     </section>
+
+    <section class="view" id="view-graph"></section>
 
     <section class="view active" id="view-pipeline">
       <div class="section-title"><div><div class="eyebrow">PIPELINE</div><h2>流水线 · 步骤与开关</h2></div><span class="hint">PIPE-3 · 影子运行</span></div>
@@ -736,18 +743,20 @@ window.addEventListener('error',function(e){window.__diagError('ERR: '+(e.messag
 window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__diagError('REJ: '+(r&&(r.stack||r.message)||r));});
 setTimeout(function(){var s=document.getElementById('topStatus');if(s&&s.textContent==='连接中…'){window.__diagError('WATCHDOG: load 未执行或未完成（5s）');}},5000);
 </script>
-<script src="./orb_math.js?v=1"></script>
-<script src="./app.js?v=1"></script>
-<script src="./ui_kit.js?v=1"></script>
-<script src="./registry.js?v=1"></script>
-<script src="./pipeline.js?v=1"></script>
-<script src="./now.js?v=1"></script>
-<script src="./relationship.js?v=1"></script>
-<script src="./records.js?v=1"></script>
-<script src="./debug.js?v=1"></script>
-<script src="./settings_ui.js?v=1"></script>
-<script src="./nav_boot.js?v=1"></script>
-<script src="./orb.js?v=1"></script>
+<script src="./orb_math.js?v=1.4.13"></script>
+<script src="./turn_memory_view.js?v=1.4.13"></script>
+<script src="./app.js?v=1.4.13"></script>
+<script src="./ui_kit.js?v=1.4.13"></script>
+<script src="./registry.js?v=1.4.13"></script>
+<script src="./pipeline.js?v=1.4.13"></script>
+<script src="./now.js?v=1.4.13"></script>
+<script src="./relationship.js?v=1.4.13"></script>
+<script src="./records.js?v=1.4.13"></script>
+<script src="./debug.js?v=1.4.13"></script>
+<script src="./settings_ui.js?v=1.4.13"></script>
+<script src="./graph.js?v=1.4.13"></script>
+<script src="./nav_boot.js?v=1.4.13"></script>
+<script src="./orb.js?v=1.4.13"></script>
 
 </body>
 </html>

@@ -13,14 +13,8 @@ SENSITIZATION_HISTORY_MAX_AGE = 2 * 86400.0
 RECOVERY_CONTEXT_MIN = 0.8
 RECOVERY_CONTEXT_MAX = 1.2
 
-LEX = {
-    "sadness": ("难过", "伤心", "委屈", "哭", "失望", "累", "撑不住", "难受", "委屈", "失落", "低落"),
-    "anger": ("生气", "烦", "气死", "骂", "傻逼", "滚", "恶心", "废物", "垃圾", "讨厌", "闭嘴", "没用", "蠢", "去死", "烦", "别烦", "闭嘴", "滚", "讨厌", "气人"),
-    "fear": ("怕", "焦虑", "紧张", "担心", "失眠", "慌", "慌", "不安", "怕", "紧张"),
-    "joy": ("开心", "高兴", "喜欢", "好耶", "笑死", "可爱", "谢谢"),
-    "loneliness": ("孤独", "一个人", "没人", "空虚", "丢下", "被丢下", "冷落", "忽视", "没人理", "不理我", "抛弃", "一个人", "孤单"),
-}
-
+# item-3: no lexical emotion table. Text -> affect comes only from the model
+# probe dims (feedback_flow W matrix); this module keeps numeric constants only.
 EMOTION_SPECTRUM = [
     ("admiration", "钦佩", 0.40, 0.25, 0.45, 0.55),
     ("adoration", "爱慕", 0.80, 0.45, 0.40, 0.90),

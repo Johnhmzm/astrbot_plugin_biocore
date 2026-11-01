@@ -2148,6 +2148,38 @@
       }
     }
     try { renderModelTracePanels(core && core.snapshot); } catch (e) {}
+    try { renderTurnMemory(); } catch (e) {}
+  }
+  // P0-3 本轮记忆可见：本轮回复实际用到的常驻/检索/图记忆（只读收据）。
+  // 投影逻辑在 turn_memory_view.js（纯函数），这里只负责拼只读卡片。
+  function renderTurnMemory(){
+    const wrap=$("turnMemoryList");
+    if(!wrap) return;
+    const note=$("turnMemoryNote");
+    let view=null;
+    try{
+      const V=window.BioTurnMemoryView;
+      if(V&&typeof V.summary==="function") view=V.summary(data&&data.turn_memory);
+    }catch(e){ view=null; }
+    const rows=(view&&Array.isArray(view.rows))?view.rows:[];
+    if(!rows.length){
+      wrap.innerHTML='<div class="empty-mini">本轮没有用到记忆（或还没有发生一次真实回复）。</div>';
+      if(note) note.textContent="本轮记忆：暂无。一次真实回复后，这里列出最多 4 条（来源 + 选择原因）。";
+      return;
+    }
+    wrap.innerHTML=rows.map(row=>{
+      const tier=String(row.tier||"");
+      return '<div class="mem-card" data-turn-memory="1">'+
+        '<div class="mem-card-head">'+
+          '<span class="mem-tier mem-tier-'+(tier||"unknown")+'">#'+esc(String(row.rank))+(tier?(" "+esc(memTierLabel(tier))):"")+'</span>'+
+          '<span class="mem-source">来源 '+esc(memSourceLabel(row.source))+'</span>'+
+          '<span class="hint">score '+esc(Number(row.score||0).toFixed(3))+' · #'+esc(String(row.id||"").slice(0,12)||"—")+'</span>'+
+        '</div>'+
+        '<p class="mem-text">'+esc(String(row.text||row.id||"—"))+'</p>'+
+        '<div class="mem-meta-row"><small>原因：'+esc(String(row.reason||"规则打分"))+'</small></div>'+
+      '</div>';
+    }).join("");
+    if(note) note.textContent="本轮用了 "+rows.length+" 条记忆（只读投影）：来源是检索通道，原因是排序因素"+(view&&view.total>rows.length?("；共 "+view.total+" 条"):"")+"。";
   }
   // Extract the G2/L9 refusal posture token from the bounded strategy hint.
   function _postureFromHint(hint){
@@ -3152,7 +3184,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.12";
+  const BIO_VERSION = "v1.4.13";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";

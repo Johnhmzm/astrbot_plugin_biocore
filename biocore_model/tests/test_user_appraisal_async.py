@@ -98,10 +98,12 @@ class ScheduleTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(task)
         await asyncio.wait_for(task, timeout=1)
 
-    async def test_insult_cooling_is_immediate(self):
+    async def test_insult_cooling_off_by_default(self):
         plugin = FakePlugin()
+        plugin.lexical_fallback_enabled = False
         plugin._user_appraisal_immediate(object(), "你真废物，闭嘴")
-        self.assertGreater(plugin._last_insult_ts, 0.0)
+        # item-5: no word-table insult cooling; the probe owns semantics.
+        self.assertEqual(plugin._last_insult_ts, 0.0)
 
     async def test_async_result_writes_once(self):
         plugin = FakePlugin()
@@ -144,7 +146,8 @@ class ScheduleTest(unittest.IsolatedAsyncioTestCase):
 class WiringStaticTest(unittest.TestCase):
     def test_async_log_and_schedule(self):
         self.assertIn("async=True", SOURCE)
-        self.assertIn("_schedule_user_appraisal(event, core, text)", SOURCE)
+        self.assertIn("self._user_appraisal_immediate(event, text)", SOURCE)
+        self.assertNotIn("self._schedule_user_appraisal(event, core, text)", SOURCE)
         self.assertIn("_user_appraisal_async", SOURCE)
 
 

@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import time
 
-try:
-    from .expr_template import PROMPT_OUTPUT_PROTOCOL
-except Exception:  # pragma: no cover - package ships with the plugin
-    from biocore_model.expr_template import PROMPT_OUTPUT_PROTOCOL
 GAP_BANDS = ((1.0, "刚刚"), (6.0, "几小时前"), (24.0, "大半天"),
              (72.0, "两天多"), (float("inf"), "好几天"))
 
@@ -138,10 +134,9 @@ def build_proactive_prompt(system_persona, speak_style, state_block, relationshi
     user += ["【动机】%s（%s，强度 %.2f）· 综合冲动 ×%.2f"
              % (reason.get("text") or "想说话了", reason.get("code") or "lonely",
                 _num(reason.get("weight")), _num(total_mult, 1.0)),
-             "【要求】一次一句、约 10 字、最多 30 字、可换行；不要解释动机/不要提触发或限制/不要复述数值；严格按系统里的【输出格式】输出情绪标签。"]
+             "【要求】一次一句、约 10 字、最多 30 字、可换行；不要解释动机/不要提触发或限制/不要复述数值；不要输出任何标签或 JSON。"]
     system = "\n".join(part for part in (str(system_persona or "").strip(),
-                                         str(speak_style or "").strip(),
-                                         PROMPT_OUTPUT_PROTOCOL) if part)
+                                         str(speak_style or "").strip()) if part)
     return {"system": system, "user": "\n".join(user)}
 
 

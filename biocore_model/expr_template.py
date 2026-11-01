@@ -2,6 +2,8 @@
 """EXP-4: deterministic prompt assembly (L3). Pure dependency injection."""
 from __future__ import annotations
 
+from . import template_expr as _tpl
+
 ORDER_USER = ("状态", "关系", "间隔", "你记得", "意图", "语气")
 
 # Single source of truth for the hidden output contract emitted in SYSTEM.
@@ -21,12 +23,23 @@ def _join(parts):
     return "\n".join(str(part).strip() for part in parts if part and str(part).strip())
 
 
+def _render_template(text, opts):
+    """Optional {{ }} / {% %} pass; no-op when the text has no tags."""
+    tpl = str(text or "")
+    if "{{" not in tpl and "{%" not in tpl:
+        return tpl
+    try:
+        return _tpl.render(tpl, (opts or {}).get("template_vars") or {})
+    except Exception:
+        return tpl
+
+
 def _system(persona, speak, opts=None):
     opts = opts or {}
-    protocol = str(opts.get("output_protocol") or PROMPT_OUTPUT_PROTOCOL).strip()
+    # No output protocol: the reply call only speaks; probe owns appraisal.
     legend = str(opts.get("numeric_legend") or "").strip()
     return _join([persona or opts.get("persona"), legend,
-                  speak or opts.get("speak_style"), protocol])
+                  speak or opts.get("speak_style")])
 
 
 def _user_blocks(state_text, relationship_text, gap_text, hints, intent, tone, guard, opts, recent=""):
@@ -63,8 +76,8 @@ def build_proactive(snapshot=None, relationship=None, state_ctx=None, intent=Non
     user, used = _user_blocks(state_text, relationship_text, gap_text, hints,
                               intent_text, tone, guard, opts,
                               recent=ctx.get("recent_proactive") or "")
-    return {"system": _system(opts.get("persona"), opts.get("speak_style"), opts),
-            "user": user, "order": used}
+    return {"system": _render_template(_system(opts.get("persona"), opts.get("speak_style"), opts), opts),
+            "user": _render_template(user, opts), "order": used}
 
 
 def build_reply(snapshot=None, relationship=None, state_ctx=None, tone=None,
@@ -87,5 +100,6 @@ def build_reply(snapshot=None, relationship=None, state_ctx=None, tone=None,
     user, used = _user_blocks(state_text, relationship_text, gap_text, hints,
                               intent_text, tone, guard, opts,
                               recent=ctx.get("recent_proactive") or "")
-    return {"system": _system(opts.get("persona"), opts.get("speak_style"), opts),
-            "user": user, "order": used}
+    return {"system": _render_template(
+                _system(opts.get("persona"), opts.get("speak_style"), opts), opts),
+            "user": _render_template(user, opts), "order": used}

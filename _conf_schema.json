@@ -214,6 +214,18 @@
     "type": "bool",
     "default": true
   },
+  "layered_memory_enabled": {
+    "description": "分层记忆（默认开）",
+    "hint": "默认开启：常驻事实（昵称/偏好/钉住条目）每轮注入，事件按需注入；纯规则、无 LLM 调用。关闭后不注入分层块。",
+    "type": "bool",
+    "default": true
+  },
+  "layered_memory_retrieval_limit": {
+    "description": "分层记忆·事件条数上限（默认 2）",
+    "hint": "检索层每轮最多注入的事件条数；0=不注入事件，范围 0–5。常驻事实不受此限。",
+    "type": "int",
+    "default": 2
+  },
   "memory_worthiness_enabled": {
     "description": "记忆点判定（默认开）",
     "hint": "默认开启：事件按确定性多角度 W/W_her/K 评分，只有 W≥0.60 且（W_her≥0.45 或 I≥0.75）或 K≥0.70 才生成记忆点；0.40–0.60 只归档；<0.40 或工具问答不生成。关闭 = 完全回到旧行为（不过滤、不写 worthiness）。无新增 LLM。",
@@ -261,6 +273,24 @@
     "hint": "开启后，请求时会检索 kb_names 中的知识库并注入 [BioCore Knowledge]。默认关闭。",
     "type": "bool",
     "default": false
+  },
+  "graph_memory_enabled": {
+    "description": "图记忆写入（默认开）",
+    "hint": "复用回复内的状态标签抽取实体/关系并写入本地 SQLite 图（每条消息最多 3 实体 3 边，失败静默）。关闭后不写图。",
+    "type": "bool",
+    "default": true
+  },
+  "provider_fallback_order": {
+    "description": "主 LLM 故障转移顺序（默认空=关闭）",
+    "hint": "按顺序填写 AstrBot provider_id；主 provider 抛错/超时后依次尝试，成功即记录 current_provider。空列表=只走主 provider。",
+    "type": "list",
+    "default": []
+  },
+  "provider_fallback_cooldown_s": {
+    "description": "provider 失败冷却秒数（默认 60）",
+    "hint": "某 provider 失败后 N 秒内不再尝试；0=不冷却。",
+    "type": "float",
+    "default": 60
   },
   "kb_names": {
     "description": "知识库名称",
@@ -864,5 +894,17 @@
     "hint": "默认留空；已迁移的 core_store 会被自动检测。",
     "type": "string",
     "default": ""
+  },
+  "dims_delta_limit_enabled": {
+    "description": "单条消息状态变化总量上限（默认开）",
+    "hint": "P0-2：state_tag/probe 的 dims 写入影响被限制在一条消息内；关闭后回到 1.4.12 行为（每通道各自限幅，总量不设限）。",
+    "type": "bool",
+    "default": true
+  },
+  "dims_delta_limit": {
+    "description": "单条消息状态变化总量上限值（默认 0.2）",
+    "hint": "所有 dims 造成的状态变化绝对值之和 ≤ 该值；超出时所有通道按同一比例缩放（保持方向与通道比例），日志记录 raw/scaled。范围 0.01–1.0。",
+    "type": "float",
+    "default": 0.2
   }
 }

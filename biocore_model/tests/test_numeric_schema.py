@@ -76,8 +76,7 @@ class InjectionTest(unittest.TestCase):
         system = out["system"]
         self.assertIn(schema.LEGEND_HEADER, system)
         self.assertLess(system.index("小灰"), system.index(schema.LEGEND_HEADER))
-        self.assertLess(system.index(schema.LEGEND_HEADER),
-                        system.index("【输出格式"))
+        self.assertNotIn("【输出格式", system)
         self.assertNotIn(schema.LEGEND_HEADER, out["user"])
 
     def test_no_legend_when_flat(self):
