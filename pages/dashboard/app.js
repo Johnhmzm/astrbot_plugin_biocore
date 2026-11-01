@@ -445,8 +445,11 @@
     // 索引诊断（核心模式已下线，2026-10-31）
     if(!$("coreIndexRow")){ const indexRow=document.createElement("div"); indexRow.className="setting-row"; indexRow.id="coreIndexRow"; indexRow.hidden=true;
       indexRow.innerHTML='<div><b>索引诊断</b><small id="coreIndexText">索引：—</small></div>'; statusPanel.appendChild(indexRow); }
-    // 安全：掩码/投毒开关 + 危机说明
-    moveById("swSafetyEnabled", safetyPanel);
+    // 安全：表达层安全闸（边界闸 / 危机处置 / 安全总开关）+ 掩码/投毒说明
+    ["safetyGatesHead", "swBoundaryEnabled", "swCrisisSafetyEnabled",
+     "swSafetyEnabled"].forEach(function (id) { moveById(id, safetyPanel); });
+    var gateNote = $("safetyGatesNote");
+    if (gateNote && safetyPanel) safetyPanel.appendChild(gateNote);
     const warn=$("safetyWarn"); if(warn&&warn.parentNode) safetyPanel.appendChild(warn);
     if(!$("crisisNoteRow")){ const note=document.createElement("div"); note.className="setting-row"; note.id="crisisNoteRow";
       note.innerHTML='<div><b>危机分级</b><small>只记录不拦截；critical/high 会携带安全契约（资源、must_ack、不放弃），并写入 crisis 日志。</small></div>'; safetyPanel.appendChild(note); }
@@ -575,7 +578,7 @@
     feat_visual_nodes: ["swShowMemoryNodes"],
     feat_visual_links: ["swShowLinks"],
     feat_visual_rings: ["swShowEcho","swShowDominance","swShowSocial"],
-    feat_safety: ["swSafetyEnabled"],
+    feat_safety: ["swSafetyEnabled", "swBoundaryEnabled", "swCrisisSafetyEnabled"],
     feat_llm_image: ["fn_image_caption_enabled"],
   };
   window.LLM_ADVANCED_IDS = ["fn_event_summary_enabled","fn_event_ranking_enabled","fn_insight_enabled","fn_memory_summary_enabled","fn_relationship_impression_enabled","fn_repair_hint_enabled","fn_diary_enabled","fn_relationship_narrative_enabled","fn_image_caption_enabled","fn_pragmatics_hint_enabled","fn_tom_probe_enabled","fn_humor_hint_enabled","swInsightAuto"];
@@ -2603,6 +2606,8 @@ if($("swVisualAdvanced")){
     });
   }
   bindBehaviorToggle("swMemEmbedding","memory_dedup_embedding");
+  bindBehaviorToggle("swBoundaryEnabled","boundary_enabled");
+  bindBehaviorToggle("swCrisisSafetyEnabled","crisis_safety_enabled");
   bindBehaviorToggle("swSafetyEnabled","safety_enabled");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
@@ -2701,6 +2706,10 @@ if($("swVisualAdvanced")){
     if (swc) swc.checked = !!comp.enabled;
     const swSafety = $("swSafetyEnabled");
     if (swSafety) swSafety.checked = !!data.safety_enabled;
+    const swBoundary = $("swBoundaryEnabled");
+    if (swBoundary) swBoundary.checked = !!data.boundary_enabled;
+    const swCrisisSafety = $("swCrisisSafetyEnabled");
+    if (swCrisisSafety) swCrisisSafety.checked = !!data.crisis_safety_enabled;
     const swHybrid = $("swHybridRetrieval");
     if (swHybrid) swHybrid.checked = data.hybrid_retrieval !== false;
     const swLlmCand = $("swLlmCandidates");
@@ -3218,7 +3227,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.14";
+  const BIO_VERSION = "v1.4.15";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";

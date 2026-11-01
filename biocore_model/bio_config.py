@@ -120,12 +120,15 @@ class ConfigMixin:
                 # the key (otherwise they silently overrode plugin config).
                 for key in ("proactive_reply", "memory_dedup_embedding", "inject_intent",
                             "kb_enabled", "hybrid_retrieval", "safety_enabled",
+                            "boundary_enabled", "crisis_safety_enabled",
                             "llm_memory_candidates", "llm_only_reply_summary",
                             "we_memory_enabled"):
                     if key in d and key not in self.config:
                         setattr(self, key, bool(d[key]))
-                if "safety_enabled" in d and "safety_enabled" not in self.config:
-                    self.safety_enabled = bool(d.get("safety_enabled"))
+                if ("safety_enabled" in d or "boundary_enabled" in d
+                        or "crisis_safety_enabled" in d):
+                    if "safety_enabled" in d and "safety_enabled" not in self.config:
+                        self.safety_enabled = bool(d.get("safety_enabled"))
                     self.cross_session_memory = not self.safety_enabled
                     self.sensitive_memory_protection = self.safety_enabled
                 if "persona_id" in d and "persona_id" not in self.config:
@@ -142,6 +145,10 @@ class ConfigMixin:
                 "memory_dedup_embedding": bool(self.memory_dedup_embedding),
                 "hybrid_retrieval": bool(getattr(self, "hybrid_retrieval", True)),
                 "safety_enabled": bool(getattr(self, "safety_enabled", False)),
+                "boundary_enabled": bool(
+                    getattr(self, "boundary_enabled", False)),
+                "crisis_safety_enabled": bool(
+                    getattr(self, "crisis_safety_enabled", False)),
                 "llm_memory_candidates": bool(
                     getattr(self, "llm_memory_candidates", True)),
                 "we_memory_enabled": bool(getattr(self, "we_memory_enabled", False)),
