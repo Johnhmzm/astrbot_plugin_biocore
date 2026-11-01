@@ -1128,7 +1128,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.1")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.11")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
@@ -1654,7 +1654,7 @@ class BioCorePlugin(Star):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         self._load_profile()
         self._load_settings()
-        # 1.3.4 -> 1.4.1 data migration: after settings load, before the first
+        # 1.3.4 -> 1.4.11 data migration: after settings load, before the first
         # life loop. Idempotent (schema_version); never crashes startup.
         try:
             try:
@@ -3889,12 +3889,15 @@ class BioCorePlugin(Star):
 
         deps.send_text = _send_text
         result = _tick_mod.tick_once(deps, current)
+        _acc_after = deps.load_acc() or {}
         logger.info("[biocore] autonomy tick engine=module V=%.3f theta=%.3f sent=%d "
-                    "skipped=%d blocked=%d reason=%s",
-                    float(deps.load_acc().get("V", 0.0) or 0.0),
+                    "skipped=%d blocked=%d reason=%s blocked_reasons=%s pending=%s",
+                    float(_acc_after.get("V", 0.0) or 0.0),
                     float(params.get("theta", 0.55) or 0.55),
                     len(result.get("sent") or []), len(result.get("skipped") or []),
-                    len(result.get("blocked") or []), result.get("reason", ""))
+                    len(result.get("blocked") or []), result.get("reason", ""),
+                    result.get("blocked_reasons") or [],
+                    bool(_acc_after.get("pending_fire", False)))
         return list(result.get("sent") or [])
 
 
@@ -3946,16 +3949,21 @@ class BioCorePlugin(Star):
                 _speak_style = str(_pr.render_length_rule(_target, _maxc))
         except Exception:
             _speak_style = str(getattr(self, "speak_style", "") or "")
+        try:
+            try:
+                from .biocore_model import schema as _sch
+            except Exception:
+                from biocore_model import schema as _sch
+            _legend = str(_sch.numeric_legend(snapshot if isinstance(snapshot, dict) else {}) or "")
+        except Exception:
+            _legend = ""
         built = _etpl.build_proactive(
             snapshot, relationship=relationship,
             state_ctx={"state_block": state_block, "gap": gap,
                        "recent_proactive": (self._recent_proactive_context()
                                             if callable(getattr(self, "_recent_proactive_context", None))
                                             else ""),
-                       "numeric_legend": (lambda _st: (
-                           __import__("biocore_model.schema", fromlist=["numeric_legend"])
-                           .numeric_legend(_st) if _st else ""))(
-                               snapshot if isinstance(snapshot, dict) else {})},
+                       "numeric_legend": _legend},
             intent=acc_state.get("intent"), tone=acc_state.get("tone"),
             opts={"persona": str(getattr(self, "persona_text", "") or ""),
                   "speak_style": _speak_style,
@@ -3967,9 +3975,14 @@ class BioCorePlugin(Star):
             _recent_prompt = ""
         if _recent_prompt:
             prompt = prompt + "\n\n" + _recent_prompt
+        text = _reason.fallback_text(reason, self._autonomy_template(core)) or "在吗？"
+        logger.info("[biocore] proactive build reason=%s weight=%.2f parts=%d text_len=%d",
+                    (reason or {}).get("code") if isinstance(reason, dict) else "",
+                    float((reason or {}).get("weight", 0.0) or 0.0) if isinstance(reason, dict) else 0.0,
+                    len(parts or {}), len(text))
         return {"prompt": prompt, "system": str(built.get("system") or ""),
                 "max_chars": 0, "reason": str(reason or ""),
-                "text": _reason.fallback_text(reason, self._autonomy_template(core))}
+                "text": text}
 
     def _sanitize_proactive_text(self, text, max_chars=0) -> str:
         """Proactive text: strip protocol tags, collapse duplicate punctuation, cap."""
@@ -9853,7 +9866,7 @@ class BioCorePlugin(Star):
         return max(0.0, score)
 
     def _attention_gate_admit(self, score: float, entry_id: str = "") -> bool:
-        """L17 hard/probabilistic gate (Anderson et al. 2004, 10.1037/0033-295X.111.4.1036)."""
+        """L17 hard/probabilistic gate (Anderson et al. 2004, 10.1037/0033-295X.111.4.11036)."""
         try:
             _a = math.log(max(1e-9, float(score)))
             _tau = math.log(RETRIEVAL_THRESHOLD) + float(getattr(self, "attention_gate_shift", 0.0) or 0.0)
