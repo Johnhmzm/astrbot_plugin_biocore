@@ -639,6 +639,21 @@ def _ensure_memory_sqlite(plugin, stats, warnings):
         stats["memory_db"] = report.get("state", "failed")
         stats["memory_db_entries"] = int(report.get("entries", 0) or 0)
         stats["memory_db_sessions"] = int(report.get("sessions", 0) or 0)
+        _migration = report.get("migration") or {}
+        stats["memory_dedupe_merged"] = int(
+            _migration.get("merged_pairs", 0) or 0)
+        stats["memory_dedupe_deleted"] = int(
+            _migration.get("deleted_rows", 0) or 0)
+        stats["memory_dedupe_backup"] = str(
+            report.get("dedupe_backup") or "")
+        if _migration.get("ran"):
+            logger.info(
+                "[biocore] memory dedupe: merged_pairs=%d deleted_rows=%d "
+                "backfilled=%d backup=%s",
+                int(stats["memory_dedupe_merged"]),
+                int(stats["memory_dedupe_deleted"]),
+                int(_migration.get("backfilled", 0) or 0),
+                bool(stats["memory_dedupe_backup"]))
         if not report.get("ok"):
             warnings.append("memory sqlite ensure failed: %s"
                             % str(report.get("error") or "")[:120])

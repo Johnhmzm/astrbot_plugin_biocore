@@ -59,7 +59,8 @@ class SchemaTest(unittest.TestCase):
                     "PRAGMA journal_mode").fetchone()[0].lower(), "wal")
                 self.assertEqual(store._conn.execute(
                     "PRAGMA busy_timeout").fetchone()[0], 5000)
-                self.assertEqual(store.schema_version(), 4)
+                self.assertEqual(store.schema_version(), ms.SCHEMA_VERSION)
+                self.assertIn(ms.TEXT_HASH_INDEX, indexes)
                 self.assertTrue(Path(tmp, ms.SQLITE_FILE).is_file())
             finally:
                 store.close()
@@ -115,7 +116,9 @@ class CrudTest(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_identical_text_gets_unique_ids(self):
+    def test_identical_text_is_deduped_per_session(self):
+        # task-147: same normalized text inside one session is one row; the
+        # same text in another session is a separate row (unique per session).
         with tempfile.TemporaryDirectory() as tmp:
             store = ms.open_store(tmp)
             try:
@@ -124,10 +127,13 @@ class CrudTest(unittest.TestCase):
                 store.save_doc("s1", doc)
                 store.save_doc("s2", {"entries": [{"text": "同样的话", "ts": 3.0}]})
                 total = store.stats()["entries"]
-                self.assertEqual(total, 3)
+                self.assertEqual(total, 2)
                 ids = {row[0] for row in store._conn.execute(
                     "SELECT id FROM entries")}
-                self.assertEqual(len(ids), 3)
+                self.assertEqual(len(ids), 2)
+                per_session = {row[0]: row[1] for row in store._conn.execute(
+                    "SELECT session, COUNT(*) FROM entries GROUP BY session")}
+                self.assertEqual(per_session, {"s1": 1, "s2": 1})
             finally:
                 store.close()
 

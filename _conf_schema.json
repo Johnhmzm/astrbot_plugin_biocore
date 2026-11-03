@@ -233,8 +233,14 @@
     "default": true
   },
   "boundary_enabled": {
-    "description": "边界闸（默认关）",
-    "hint": "默认关闭。开启后只拦三条边界：不诊断（不下临床判断）/ 不替代真实关系 / 不宣称意识；命中时删除越界句并写一条 info 日志。不改提示词、不增加 LLM 调用。",
+    "description": "边界闸（内容安全，默认关）",
+    "hint": "默认关闭。开启后只拦三条内容边界：不诊断（不下临床判断）/ 不替代真实关系 / 不宣称意识；命中时删除越界句并写一条 info 日志。与「她的底线」无关（那由 boundary_lines_enabled 控制）。不改提示词、不增加 LLM 调用。",
+    "type": "bool",
+    "default": false
+  },
+  "boundary_lines_enabled": {
+    "description": "她的底线（默认关，独立开关）",
+    "hint": "默认关闭=旧行为。开启后用用户原文判定 tool/old_score/lie/contempt 四条关系底线；越界时写 core.boundary、短路常规 probe 路径并开启修复流程（repair_enabled 开时），回复变短变冷。与内容安全闸 boundary_enabled 完全独立、互不影响。",
     "type": "bool",
     "default": false
   },
@@ -556,6 +562,132 @@
   "sycophancy_check_enabled": {
     "description": "迎合检测（默认开，只读）",
     "hint": "默认开：确定性检测高强度同意/高风险附和（结合否定/hedge），只写 state.sycophancy_check 与只读面板，不改变回复。",
+    "type": "bool",
+    "default": true
+  },
+  "self_intent_enabled": {
+    "description": "自我层意图（默认开）",
+    "hint": "默认开：每轮确定性计算 intents（要你陪/自己待着/拒绝话题/顺着你/说真话，≤2 个且权重归一）、motivation、self_weight、satisfaction，写 core.self_intent 并打一行日志；表达层按 length_scale/initiative 调回复长度与主动性。不新增 LLM 调用。关闭后回到只顺着你的旧行为。",
+    "type": "bool",
+    "default": true
+  },
+  "prospective_enabled": {
+    "description": "前瞻记忆提醒（默认开）",
+    "hint": "默认开：每轮只读检查 plugin_data/<plugin>/biocore/prospective.json 里到期的承诺/事件，到点生成一句“该问一句”的提示写进 core.pending_prompts 并交给表达层；不直接发消息。关闭后不读文件、不产生提示。",
+    "type": "bool",
+    "default": true
+  },
+  "voice_bank_enabled": {
+    "description": "语气库口头习惯（默认开）",
+    "hint": "默认开：每轮从 plugin_data/<plugin>/biocore/voice_bank.json 按状态/关系挑 0~2 条口头习惯拼进表达约束；空库返回空。关闭后不读文件、不加约束。",
+    "type": "bool",
+    "default": true
+  },
+  "metacog_enabled": {
+    "description": "元认知收敛与自我修正（默认开）",
+    "hint": "默认开：用本轮答案置信/校验命中/冲突产出 directives——低置信收敛（长度×0.8）、连续 3 轮低置信长度×0.7、冲突允许补一句修正。关闭后不写 core.metacog、不改长度。",
+    "type": "bool",
+    "default": true
+  },
+  "diag_trace_enabled": {
+    "description": "“这一轮为什么”诊断（默认关，只读）",
+    "hint": "默认关=不写文件、无行为变化。开启后每次真实回复把状态变化/意图与候选排序/长度约束/提示词差异写进 plugin_data/astrbot_plugin_biocore/trace.jsonl（只留最近 50 轮），并在面板「这一轮为什么」只读展示最近 3 轮；不调 LLM、不改回复。",
+    "type": "bool",
+    "default": false
+  },
+  "attribution_enabled": {
+    "description": "归因层（默认开）",
+    "hint": "默认开：用 probe dims（blame/goal/hit/involve）+ 关系推断 locus/stability/controllability/emotion，写 core.attribution 并经 x_directives 总线影响语气；不改是否回复。关闭后 core.attribution 保持旧值、不加语气。",
+    "type": "bool",
+    "default": true
+  },
+  "repair_enabled": {
+    "description": "越界后的修复流程（默认开）",
+    "hint": "默认开：越界后按 cold→state→record→turn_page 四阶段随时间推进，写 core.repair 与 core.reply_policy，并经 x_directives 限制下一轮长度/主动性。关闭则不推进修复阶段，冲突按现状自然衰减。",
+    "type": "bool",
+    "default": true
+  },
+  "exit_silence_enabled": {
+    "description": "退出/沉默决策（默认关）",
+    "hint": "默认关=每轮照常回。开启后按能量/压力/效价/关系/话题强度做 respond/delay/silent/end_topic 四选一；silent 时本轮不注入 [BC] 且回复置空不发送，主动拍发送前也走同一判定。",
+    "type": "bool",
+    "default": false
+  },
+  "granularity_enabled": {
+    "description": "二级情绪粒度（默认开，只读）",
+    "hint": "默认开：六原型标签细化成二级词（委屈/失望/被忽视/被冒犯/不安/疲惫），写 core.emotion_granularity 并在面板+日志展示；只读，不改长度、不改回复、不调 LLM。关闭后回到六原型标签。",
+    "type": "bool",
+    "default": true
+  },
+  "affective_labor_enabled": {
+    "description": "情绪劳动负荷（默认开）",
+    "hint": "默认开：每轮比较「表现出的状态」与「真实感受」的偏差→能耗→累计负荷，写 core.affective_labor；负荷风险≥0.60 时经 x_directives 总线收紧 tone 与长度（下一轮生效）。关闭后不累计、不约束。",
+    "type": "bool",
+    "default": true
+  },
+  "self_verification_enabled": {
+    "description": "自我校验/纠正倾向（默认开）",
+    "hint": "默认开：被误解程度（probe blame/hit）+ 自我清晰度 + 亲近度→纠正倾向，写 core.self_verification；倾向高时经 x_directives 总线给出 allow_correction 与一句纠正提示。关闭后不产生纠正倾向。",
+    "type": "bool",
+    "default": true
+  },
+  "value_order_enabled": {
+    "description": "价值排序（默认开，只做取舍依据）",
+    "hint": "默认开：用 Schwartz 十维价值 + 损失厌恶/沉没成本/现状偏好对「说出真实想法 vs 先顺着对方」排序，写 core.value_order；不进长度、不改输出。",
+    "type": "bool",
+    "default": true
+  },
+  "dissonance_enabled": {
+    "description": "言行失调（默认开）",
+    "hint": "默认开：对比既有立场与本轮表现，算 0-1 失调强度与缓解方式（承认/改口/合理化/沉默），写 core.dissonance；强度高时下一轮经 x_directives 给 tone。",
+    "type": "bool",
+    "default": true
+  },
+  "attachment_behavior_enabled": {
+    "description": "依恋行为（默认开）",
+    "hint": "默认开：安全/焦虑/回避三型 → 主动度/寻求/退缩，写 core.attachment_behavior；主动度经 x_directives 影响 initiative。",
+    "type": "bool",
+    "default": true
+  },
+  "relation_stage_enabled": {
+    "description": "关系阶段（默认开）",
+    "hint": "默认开：互动/自我披露/修复/相处天数/冲突 → 陌生/熟悉/亲近/稳定 + 动作，写 core.relation_stage；阶段低时经 x_directives 降 initiative。",
+    "type": "bool",
+    "default": true
+  },
+  "narrative_enabled": {
+    "description": "自传叙事（默认开）",
+    "hint": "默认开：从关键事件生成自传条目与三指标（一致性/矛盾/修复），写 core.narrative，面板只读显示三指标；矛盾高时下一轮给一句澄清提示。",
+    "type": "bool",
+    "default": true
+  },
+  "reconstruction_enabled": {
+    "description": "记忆重构漂移（默认开，只写 meta）",
+    "hint": "默认开：召回时按当前心情给条目微量漂移（重要记忆不漂、总量守恒），只写 core.recall_meta，绝不修改记忆库内容。",
+    "type": "bool",
+    "default": true
+  },
+  "source_monitoring_enabled": {
+    "description": "来源监控/心情一致召回（默认开，只写 meta）",
+    "hint": "默认开：召回时估计记忆来源（经历/被告知/推测）、来源置信、误归属与心情一致召回权重，只写 core.recall_meta，不改记忆库。",
+    "type": "bool",
+    "default": true
+  },
+  "possible_selves_enabled": {
+    "description": "可能自我（默认开，仅面板/叙事）",
+    "hint": "默认开：目标自我与当前画像的差距→权重与一句「她还想成为…」，写 core.possible_selves；只给面板/叙事，不改长度不改输出。",
+    "type": "bool",
+    "default": true
+  },
+  "compassion_fatigue_enabled": {
+    "description": "共情疲劳（默认开）",
+    "hint": "默认开：连续倾听与负面密度→共情衰减（有地板、按空闲恢复），写 core.compassion_fatigue；empathy 低时经 x_directives 收敛 tone/长度。",
+    "type": "bool",
+    "default": true
+  },
+  "secrecy_enabled": {
+    "description": "保密决策（默认开，只记录/面板）",
+    "hint": "默认开：敏感度/关系/场合安全→tell/withhold/reframe 与累计压力，写 core.secret；只记录与面板，不直接改输出。",
     "type": "bool",
     "default": true
   },

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <meta name="color-scheme" content="light dark" /><title>BioCore · 生物情绪核心</title>
-<link rel="stylesheet" href="./styles.css?v=1.4.15">
+<link rel="stylesheet" href="./styles.css?v=1.4.16">
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
@@ -364,6 +364,9 @@
         <button type="button" class="persona-tab fold-panel folded" data-session-tab="relationship">
           <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3"/><circle cx="17" cy="10" r="2.5"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M14 20c0-2.8 1.8-5 4-5s3 1.4 3 3"/></svg></span><small>用户关系</small></span>
         </button>
+        <button type="button" class="persona-tab fold-panel folded" data-session-tab="diag">
+          <span class="fold-face"><span class="fold-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/><path d="M8 8h8M8 12h5M8 16h3"/></svg></span><small>这一轮为什么</small></span>
+        </button>
       </div>
       <div class="panel session-tabpanel" id="sessionPanelRecords" data-session-tab="records">
         <div class="panel-head"><h3>会话记录</h3><span class="hint">SESSION LIST</span></div>
@@ -392,6 +395,11 @@
           <div><small>conflicts / 冲突条数</small><b id="memRecallConflicts">--</b></div>
         </div>
         <p class="api-note" id="memHintNote">策略提示：--</p>
+        <p class="api-note" id="selfIntentNote">她的意图：--</p>
+        <p class="api-note" id="granularityNote">二级情绪：--</p>
+        <p class="api-note" id="narrativeNote">叙事指标：一致 -- · 矛盾 -- · 修复 --</p>
+        <p class="api-note" id="possibleSelfNote">可能自我：--</p>
+        <p class="api-note" id="secrecyNote">保密：--</p>
         <p class="api-note" id="memRecallNote">召回元数据是只读投影：校准偏移只作用于本轮召回的置信度（≤±0.05，不写存储）；工作集 TTL 2 小时在召回时过滤，这里显示后端已给的原始列表。</p>
         <div class="hist-block" id="turnMemoryBlock">
           <small>TURN MEMORY / 本轮使用的记忆（只读 · 最多 4 条）</small>
@@ -409,6 +417,12 @@
           <small>TOMBSTONES / 已删除记忆（软删除，可审计；点“恢复”可撤销）</small>
           <div id="memTombstoneList"></div>
         </div>
+      </div>
+
+      <div class="panel session-tabpanel" id="sessionPanelDiag" data-session-tab="diag">
+        <div class="panel-head"><h3>这一轮为什么</h3><span class="hint">只读 · 默认关 diag_trace_enabled · trace.jsonl 保留最近 50 轮</span></div>
+        <p class="api-note" id="diagNote">默认关闭时不写文件、不改变回复。开启后每次真实回复记录：哪些数值动了、意图与候选排序、长度约束的来源、提示词与上一轮的差异；这里只读展示最近 3 轮。</p>
+        <div id="diagRows"></div>
       </div>
 
       <div class="panel session-tabpanel" id="sessionPanelSummary" data-session-tab="summary">
@@ -756,20 +770,20 @@ window.addEventListener('error',function(e){window.__diagError('ERR: '+(e.messag
 window.addEventListener('unhandledrejection',function(e){var r=e&&e.reason;window.__diagError('REJ: '+(r&&(r.stack||r.message)||r));});
 setTimeout(function(){var s=document.getElementById('topStatus');if(s&&s.textContent==='连接中…'){window.__diagError('WATCHDOG: load 未执行或未完成（5s）');}},5000);
 </script>
-<script src="./orb_math.js?v=1.4.15"></script>
-<script src="./turn_memory_view.js?v=1.4.15"></script>
-<script src="./app.js?v=1.4.15"></script>
-<script src="./ui_kit.js?v=1.4.15"></script>
-<script src="./registry.js?v=1.4.15"></script>
-<script src="./pipeline.js?v=1.4.15"></script>
-<script src="./now.js?v=1.4.15"></script>
-<script src="./relationship.js?v=1.4.15"></script>
-<script src="./records.js?v=1.4.15"></script>
-<script src="./debug.js?v=1.4.15"></script>
-<script src="./settings_ui.js?v=1.4.15"></script>
-<script src="./graph.js?v=1.4.15"></script>
-<script src="./nav_boot.js?v=1.4.15"></script>
-<script src="./orb.js?v=1.4.15"></script>
+<script src="./orb_math.js?v=1.4.16"></script>
+<script src="./turn_memory_view.js?v=1.4.16"></script>
+<script src="./app.js?v=1.4.16"></script>
+<script src="./ui_kit.js?v=1.4.16"></script>
+<script src="./registry.js?v=1.4.16"></script>
+<script src="./pipeline.js?v=1.4.16"></script>
+<script src="./now.js?v=1.4.16"></script>
+<script src="./relationship.js?v=1.4.16"></script>
+<script src="./records.js?v=1.4.16"></script>
+<script src="./debug.js?v=1.4.16"></script>
+<script src="./settings_ui.js?v=1.4.16"></script>
+<script src="./graph.js?v=1.4.16"></script>
+<script src="./nav_boot.js?v=1.4.16"></script>
+<script src="./orb.js?v=1.4.16"></script>
 
 </body>
 </html>

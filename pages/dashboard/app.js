@@ -2150,6 +2150,59 @@
         hintEl.textContent="策略提示："+hint+(posture?("（"+posture+" 是姿态 token，不是 gate：不决定是否回复）"):"");
       }
     }
+    // task-173: 二级情绪标签（只读投射，来自 page/status.emotion_granularity）。
+    const grEl=$("granularityNote");
+    if(grEl){
+      const gr=(data&&data.emotion_granularity&&typeof data.emotion_granularity==="object")?data.emotion_granularity:null;
+      if(!gr||gr.enabled!==true){
+        grEl.textContent="二级情绪：--（granularity_enabled 关闭或还没有状态）";
+      } else {
+        const line=String(gr.line||gr.display||"");
+        const labels=(Array.isArray(gr.secondary)?gr.secondary:[]).map(x=>String(x&&x.label||"")).filter(Boolean);
+        grEl.textContent="二级情绪："+(line||"--")+(labels.length>1?(" · "+labels.slice(1).join(" / ")):"");
+      }
+    }
+    // task-174: 叙事三指标 / 可能自我 / 保密（只读投射）。
+    const naEl=$("narrativeNote");
+    if(naEl){
+      const na=(data&&data.narrative&&typeof data.narrative==="object")?data.narrative:null;
+      const m=(na&&na.metrics&&typeof na.metrics==="object")?na.metrics:null;
+      if(!na||na.enabled!==true||!m){
+        naEl.textContent="叙事指标：一致 -- · 矛盾 -- · 修复 --（narrative_enabled 关闭或暂无事件）";
+      } else {
+        naEl.textContent="叙事指标：一致 "+Number(m.consistency||0).toFixed(2)+" · 矛盾 "+Number(m.contradiction||0).toFixed(2)+" · 修复 "+Number(m.repair||0).toFixed(2)+" · 条目 "+Number(na.entries||0);
+      }
+    }
+    const psEl=$("possibleSelfNote");
+    if(psEl){
+      const ps=(data&&data.possible_selves&&typeof data.possible_selves==="object")?data.possible_selves:null;
+      psEl.textContent="可能自我："+((ps&&ps.sentence)?String(ps.sentence):"--");
+    }
+    const seEl=$("secrecyNote");
+    if(seEl){
+      const se=(data&&data.secrecy&&typeof data.secrecy==="object")?data.secrecy:null;
+      if(!se||se.enabled!==true) seEl.textContent="保密：--（secrecy_enabled 关闭）";
+      else seEl.textContent="保密："+String(se.last_action||"--")+" · 压力 "+Number(se.pressure||0).toFixed(2)+(se.contained?"（仍可控）":"（已逼近上限）")+" · 保留次数 "+Number(se.withholds||0);
+    }
+    // task-148: 她的意图（只读投射；没有真实回复前显示默认行）。
+    const siEl=$("selfIntentNote");
+    if(siEl){
+      const si=(data&&data.self_intent&&typeof data.self_intent==="object")?data.self_intent:null;
+      const intents=(si&&Array.isArray(si.intents))?si.intents:[];
+      if(!si||!intents.length){
+        siEl.textContent="她的意图：--（还没有发生一次真实回复）";
+      } else {
+        const rows=intents.map(it=>String(it.kind||"")+" "+Number(it.weight||0).toFixed(2)).join(" / ");
+        const extra=[];
+        if(si.self_weight!=null) extra.push("自我权重 "+Number(si.self_weight).toFixed(2));
+        if(si.motivation) extra.push("想做："+String(si.motivation));
+        const mc=(si.metacog&&typeof si.metacog==="object")?si.metacog:null;
+        if(mc&&mc.band) extra.push("元认知 "+String(mc.band)+(mc.converge?" 收敛":"")+(mc.allow_self_correction?" 可修正":""));
+        if(Array.isArray(si.pending_prompts)&&si.pending_prompts.length) extra.push("到期提醒 "+si.pending_prompts.length);
+        if(Array.isArray(si.voice_phrases)&&si.voice_phrases.length) extra.push("口头习惯 "+si.voice_phrases.join("/"));
+        siEl.textContent="她的意图："+rows+(extra.length?(" · "+extra.join(" · ")):"");
+      }
+    }
     try { renderModelTracePanels(core && core.snapshot); } catch (e) {}
     try { renderTurnMemory(); } catch (e) {}
   }
@@ -2329,6 +2382,41 @@
         +'<div class="chips">'+links+'</div></div>';
     }).join("");
   }
+  // task-171: 「这一轮为什么」只读诊断（page/status.diag_trace，最近 3 轮）。
+  function renderDiagTrace(){
+    const wrap=$("diagRows"); if(!wrap) return;
+    const diag=(data&&data.diag_trace&&typeof data.diag_trace==="object")?data.diag_trace:null;
+    const rows=(diag&&Array.isArray(diag.rows))?diag.rows:[];
+    if(!diag||diag.enabled!==true){
+      wrap.innerHTML='<div class="empty-mini">诊断默认关闭：在 AstrBot 插件配置里打开 diag_trace_enabled 后，这里显示最近 3 轮。</div>';
+      return;
+    }
+    if(!rows.length){
+      wrap.innerHTML='<div class="empty-mini">还没有真实回复轮次。发生一次回复后这里出现记录。</div>';
+      return;
+    }
+    wrap.innerHTML=rows.slice(0,3).map((r,i)=>{
+      if(!r||typeof r!=="object") return "";
+      const delta=(r.state_delta&&typeof r.state_delta==="object")?r.state_delta:{};
+      const deltaText=Object.keys(delta).map(k=>esc(k)+" "+Number(delta[k]).toFixed(3)).join(" · ")||"—";
+      const it=(r.intent&&typeof r.intent==="object")?r.intent:{};
+      const intentText=(it.top?String(it.top):"—")+(it.weight!=null?" "+Number(it.weight).toFixed(2):"")+(it.reason?(" · "+String(it.reason)):"");
+      const len=(r.length&&typeof r.length==="object")?r.length:{};
+      const lengthText="×"+Number(len.scale==null?1:len.scale).toFixed(2)+" · "+String(len.brevity||"normal")+" · 来源 "+String(len.source||"default");
+      const pr=(r.prompt&&typeof r.prompt==="object")?r.prompt:{};
+      const promptText=(pr.changed?"变了":"未变")+(pr.chars_delta!=null?(" · 字数Δ"+Number(pr.chars_delta)):"")+(pr.preview?(" · "+String(pr.preview)):"");
+      const mc=(r.metacog&&typeof r.metacog==="object")?r.metacog:{};
+      const rowHtml=[
+        '<div class="mem-card-head"><span class="mem-tag">状态变化</span><span class="hint">'+esc(deltaText)+'</span></div>',
+        '<div class="mem-card-head"><span class="mem-tag">意图</span><span class="hint">'+esc(intentText)+'</span></div>',
+        '<div class="mem-card-head"><span class="mem-tag">长度</span><span class="hint">'+esc(lengthText)+'</span></div>',
+        '<div class="mem-card-head"><span class="mem-tag">提示词</span><span class="hint">'+esc(promptText)+'</span></div>',
+        (mc.band?('<div class="mem-card-head"><span class="mem-tag">元认知</span><span class="hint">'+esc(String(mc.band)+" · "+String(mc.reason||""))+'</span></div>'):""),
+      ].join("");
+      const when=(r.ts?new Date(Number(r.ts)*1000).toLocaleTimeString():"—");
+      return '<div class="hist-block"><small>#'+esc(String(r.turn==null?i+1:r.turn))+' · '+esc(String(r.session||"").slice(0,28))+' · '+esc(when)+'</small><div class="mem-card">'+rowHtml+'</div></div>';
+    }).join("");
+  }
   function render(){
     const core=(data.cores&&data.cores[0])||demo.cores[0];
     const s=core.snapshot||{}, it=core.intent||{}, p=data.profile||{};
@@ -2355,6 +2443,7 @@
     renderSelfPanels(s);
     renderSteadyState(s);
     renderRecallMeta(core);
+    renderDiagTrace();
     applyPanelVisibility();
     renderAutonomyPanel(s, core.key);
     renderLearningPanel(s);
@@ -3227,7 +3316,7 @@ if($("swVisualAdvanced")){
       if(t.classList.contains('active')) activate(null); else activate(name);
     }));
   }
-  const BIO_VERSION = "v1.4.15";
+  const BIO_VERSION = "v1.4.16";
   setTimeout(() => { const _sv = $("sideVersion"); if (_sv) _sv.textContent = BIO_VERSION + " · tendency layer"; }, 0);
   setTimeout(() => { const _bs = $("buildStamp"); if (_bs) _bs.textContent = (window.__BIOCORE_BUILD__ || ""); }, 0);
   const BIO_REPO_SLUG = "Johnhmzm/astrbot_plugin_biocore";

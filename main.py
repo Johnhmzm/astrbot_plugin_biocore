@@ -689,11 +689,20 @@ def _init_memory_backend(plugin, memory_dir, backup_root=None):
             "store_report": resolved.get("store_report") or {},
         })
         try:
-            _compacted = int((resolved.get("store_report") or {}).get(
-                "compacted", 0) or 0)
+            _store_report = resolved.get("store_report") or {}
+            _compacted = int(_store_report.get("compacted", 0) or 0)
             if _compacted:
                 logger.info("[biocore] memory raw compacted=%d (legacy vectors)",
                             _compacted)
+            _dedupe = _store_report.get("migration") or {}
+            if _dedupe.get("ran"):
+                logger.info(
+                    "[biocore] memory dedupe migrated: merged_pairs=%d "
+                    "deleted_rows=%d backfilled=%d backup=%s",
+                    int(_dedupe.get("merged_pairs", 0) or 0),
+                    int(_dedupe.get("deleted_rows", 0) or 0),
+                    int(_dedupe.get("backfilled", 0) or 0),
+                    bool(_store_report.get("dedupe_backup")))
         except Exception:
             pass
         setattr(plugin, "_memory_backend", backend)
@@ -930,6 +939,23 @@ def _intero_style(core, target, cap):
             from biocore_model import intero_style as _intero
         out = _intero.style(getattr(core, "intero", None),
                             target=target, cap=cap)
+        # task-148: the self layer scales this turn's length rule / initiative
+        # (numbers only; the interpretation layer still owns the wording).
+        try:
+            _si_scale = float(getattr(core, "self_length_scale", 1.0) or 1.0)
+            if ((getattr(core, "self_intent_enabled", False)
+                 or getattr(core, "metacog_enabled", False))
+                    and abs(_si_scale - 1.0) >= 0.05):
+                out = dict(out)
+                out["target"] = max(4, int(round(
+                    float(out.get("target", target) or target) * _si_scale)))
+                out["cap"] = max(8, int(round(
+                    float(out.get("cap", cap) or cap) * _si_scale)))
+                out["initiative"] = float(
+                    getattr(core, "self_initiative",
+                            out.get("initiative", 0.5)) or 0.0)
+        except Exception:
+            pass
         try:
             core.expression_style = {
                 key: out.get(key) for key in
@@ -1321,6 +1347,34 @@ class BioCore(UtilMixin, EmotionMixin, GoalMixin, StateMixin, SnapshotMixin, Dai
         self.path_monitor = None
         self.sycophancy_check = None
         self.sycophancy_check_enabled = False
+        # task-148: self layer (pure module; default ON, no LLM call). The
+        # expectation dict drifts across turns and lives only in memory.
+        self.self_intent_enabled = True
+        self._self_intent_expected = {}
+        self._self_intent_result = None
+        # task-149/150/151: self-layer turn batch (each switch independently
+        # rolls back to the old behaviour when OFF).
+        self.prospective_enabled = True
+        self.voice_bank_enabled = True
+        self.metacog_enabled = True
+        self._prospective_hint = ""
+        self._voice_hint = ""
+        self._metacog_hint = ""
+        # task-171: read-only "why this turn" diagnosis (default OFF).
+        self.diag_trace_enabled = False
+        self._diag_pending = None
+        self._diag_last_prompt = ""
+        self._diag_turns = 0
+        # task-172 batch-1 wiring switches (docs/WIRING-PLAN.md §2).
+        self.attribution_enabled = True
+        self.boundary_enabled = False
+        self.repair_enabled = True
+        self.exit_silence_enabled = False
+        self._x_pairs = []
+        self._x_hint = ""
+        self._boundary_crossed_turn = False
+        self._exit_silent_turn = False
+        self._repair_last_ts = 0.0
         self.rumination_suppress = False
         self.temporal_validity_enabled = False
         self.mood_congruence_enabled = False
@@ -1512,7 +1566,7 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
-@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.15")
+@register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.16")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
         # L0 config layer: inject paths so ConfigMixin never imports main
@@ -1630,6 +1684,58 @@ class BioCorePlugin(Star):
             self.bc_budget_chars = 700
         self.sycophancy_check_enabled = bool(
             self.config.get("sycophancy_check_enabled", True))
+        # task-148: self layer switch (default ON; config-owned, never restored).
+        self.self_intent_enabled = bool(
+            self.config.get("self_intent_enabled", True))
+        # task-149/150/151: self-layer batch switches (default ON).
+        self.prospective_enabled = bool(
+            self.config.get("prospective_enabled", True))
+        self.voice_bank_enabled = bool(
+            self.config.get("voice_bank_enabled", True))
+        self.metacog_enabled = bool(
+            self.config.get("metacog_enabled", True))
+        # task-171: diagnosis switch (default OFF = zero behaviour change).
+        self.diag_trace_enabled = bool(
+            self.config.get("diag_trace_enabled", False))
+        # task-172 batch-1 switches (each OFF = pre-wiring behaviour).
+        self.attribution_enabled = bool(
+            self.config.get("attribution_enabled", True))
+        # boundary_enabled is the content-safety gate (boundary_gate.py);
+        # boundary_lines_enabled is HER own bottom lines (boundary.py).
+        self.boundary_lines_enabled = bool(
+            self.config.get("boundary_lines_enabled", False))
+        self.repair_enabled = bool(
+            self.config.get("repair_enabled", True))
+        self.exit_silence_enabled = bool(
+            self.config.get("exit_silence_enabled", False))
+        # task-173 batch-2 switches (each OFF = pre-wiring behaviour).
+        self.granularity_enabled = bool(
+            self.config.get("granularity_enabled", True))
+        self.affective_labor_enabled = bool(
+            self.config.get("affective_labor_enabled", True))
+        self.self_verification_enabled = bool(
+            self.config.get("self_verification_enabled", True))
+        # task-174 batch-3 switches (each OFF = pre-wiring behaviour).
+        self.value_order_enabled = bool(
+            self.config.get("value_order_enabled", True))
+        self.dissonance_enabled = bool(
+            self.config.get("dissonance_enabled", True))
+        self.attachment_behavior_enabled = bool(
+            self.config.get("attachment_behavior_enabled", True))
+        self.relation_stage_enabled = bool(
+            self.config.get("relation_stage_enabled", True))
+        self.narrative_enabled = bool(
+            self.config.get("narrative_enabled", True))
+        self.reconstruction_enabled = bool(
+            self.config.get("reconstruction_enabled", True))
+        self.source_monitoring_enabled = bool(
+            self.config.get("source_monitoring_enabled", True))
+        self.possible_selves_enabled = bool(
+            self.config.get("possible_selves_enabled", True))
+        self.compassion_fatigue_enabled = bool(
+            self.config.get("compassion_fatigue_enabled", True))
+        self.secrecy_enabled = bool(
+            self.config.get("secrecy_enabled", True))
         self.bc_dedupe_enabled = bool(self.config.get("bc_dedupe_enabled", True))
         try:
             self.bc_dedupe_history = max(1, min(50, int(
@@ -3805,6 +3911,14 @@ class BioCorePlugin(Star):
             state = core.autonomy_state(relationship, now=current)
             if not state.get("enabled") or not state.get("ready"):
                 return None, state or {}
+            # task-148: when the self layer wants to keep to herself, she does
+            # not reach out proactively on her own.
+            if bool(getattr(self, "self_intent_enabled", True)):
+                try:
+                    if float(getattr(core, "self_initiative", 0.5) or 0.5) < 0.30:
+                        return None, state
+                except Exception:
+                    pass
             # Stage-2: refusal_protocol is now a real gate, not a posture token.
             rel_state = relationship.get("state") if isinstance(relationship, dict) else {}
             rel_state = rel_state if isinstance(rel_state, dict) else {}
@@ -3861,6 +3975,38 @@ class BioCorePlugin(Star):
                 core, self._relationship_of(user_data), now=current)
             if not text:
                 return False
+            # task-172: exit_or_silence also decides whether a proactive
+            # message may be sent at all (default OFF = old behaviour).
+            if bool(getattr(self, "exit_silence_enabled", False)):
+                try:
+                    try:
+                        from .biocore_model import exit_or_silence as _ex_mod2
+                    except Exception:
+                        from biocore_model import exit_or_silence as _ex_mod2
+                    _ex_rel2 = self._relationship_of(user_data)
+                    _ex_rel2 = (_ex_rel2.get("state")
+                                if isinstance(_ex_rel2.get("state"), dict)
+                                else _ex_rel2)
+                    _ex2 = _ex_mod2.exit_or_silence(
+                        state={
+                            "energy": float(getattr(core, "energy", 0.6) or 0.0),
+                            "stress": float(getattr(core, "stress", 0.3) or 0.0),
+                            "valence": float(getattr(core, "v", 0.0) or 0.0),
+                            "social": float(getattr(core, "social", 0.6) or 0.0),
+                        },
+                        relationship=_ex_rel2,
+                        topic={"intensity": float(
+                            getattr(core, "boundary_pressure", 0.0) or 0.0)},
+                        flags={"enabled": True})
+                    core.exit = _ex2
+                    if not _ex_mod2.should_reply(_ex2):
+                        logger.info(
+                            "[biocore] proactive suppressed by exit: %s",
+                            str(_ex2.get("reason") or "")[:40])
+                        return False
+                except Exception as _ex2_exc:
+                    logger.debug("[biocore] proactive exit skipped: %s",
+                                 _ex2_exc)
             await event.send(MessageChain([Plain(text)]))
             try:
                 from biocore_model import policy_learning as _pl_send
@@ -9347,6 +9493,239 @@ class BioCorePlugin(Star):
                                  "backup_dir": "", "ts": None}
         return {"status": "ok", "data": data}
 
+    def _first_core_with(self, attr):
+        """First live core that has a non-empty dict attribute (panel helper)."""
+        try:
+            for _key, _candidate in list(self.cores.items())[:20]:
+                value = getattr(_candidate, attr, None)
+                if isinstance(value, dict) and value:
+                    return _candidate
+        except Exception:
+            return None
+        return None
+
+    def _narrative_payload(self):
+        """Task-174: read-only autobiography metrics for the panel."""
+        _default = {"enabled": bool(getattr(self, "narrative_enabled", True)),
+                    "metrics": {"consistency": 0.0, "contradiction": 0.0,
+                                "repair": 0.0},
+                    "entries": 0, "events": 0}
+        try:
+            core = self._first_core_with("narrative")
+            data = getattr(core, "narrative", None) if core else None
+            if not isinstance(data, dict):
+                return _default
+            metrics = data.get("metrics") if isinstance(
+                data.get("metrics"), dict) else {}
+            rows = []
+            for row in (data.get("entries") or [])[:3]:
+                if isinstance(row, dict):
+                    rows.append({"theme": str(row.get("theme") or "")[:12],
+                                 "text": str(row.get("text") or "")[:40]})
+            return {
+                "enabled": bool(data.get("enabled", True)),
+                "metrics": {
+                    "consistency": round(max(0.0, min(1.0, float(
+                        metrics.get("consistency", 0.0) or 0.0))), 3),
+                    "contradiction": round(max(0.0, min(1.0, float(
+                        metrics.get("contradiction", 0.0) or 0.0))), 3),
+                    "repair": round(max(0.0, min(1.0, float(
+                        metrics.get("repair", 0.0) or 0.0))), 3),
+                },
+                "entries": len(data.get("entries") or []),
+                "events": int(data.get("events", 0) or 0),
+                "latest": rows,
+            }
+        except Exception:
+            return _default
+
+    def _possible_selves_payload(self):
+        """Task-174: read-only possible-self sentence for the panel."""
+        _default = {"enabled": bool(getattr(self, "possible_selves_enabled", True)),
+                    "top": "", "sentence": "", "selves": []}
+        try:
+            core = self._first_core_with("possible_selves")
+            data = getattr(core, "possible_selves", None) if core else None
+            if not isinstance(data, dict):
+                return _default
+            rows = [{"name": str(row.get("name") or "")[:24],
+                     "share": round(max(0.0, min(1.0, float(
+                         row.get("share", 0.0) or 0.0))), 3)}
+                    for row in (data.get("selves") or [])[:3]
+                    if isinstance(row, dict)]
+            return {"enabled": bool(data.get("enabled", True)),
+                    "top": str(data.get("top") or "")[:24],
+                    "sentence": str(data.get("sentence") or "")[:30],
+                    "selves": rows}
+        except Exception:
+            return _default
+
+    def _secrecy_payload(self):
+        """Task-174: read-only disclosure decision for the panel."""
+        _default = {"enabled": bool(getattr(self, "secrecy_enabled", True)),
+                    "pressure": 0.0, "contained": True, "withholds": 0,
+                    "last_action": ""}
+        try:
+            core = self._first_core_with("secret_view")
+            data = getattr(core, "secret_view", None) if core else None
+            if not isinstance(data, dict):
+                return _default
+            return {"enabled": True,
+                    "pressure": round(max(0.0, min(1.0, float(
+                        data.get("pressure", 0.0) or 0.0))), 3),
+                    "contained": bool(data.get("contained", True)),
+                    "withholds": int(data.get("withholds", 0) or 0),
+                    "last_action": str(data.get("last_action") or "")[:12]}
+        except Exception:
+            return _default
+
+    def _granularity_payload(self):
+        """Task-173: read-only second-level emotion label for the panel."""
+        _default = {"enabled": bool(getattr(self, "granularity_enabled", True)),
+                    "display": "", "line": "", "secondary": []}
+        try:
+            core = None
+            try:
+                _items = list(self.cores.items())[:20]
+            except Exception:
+                _items = []
+            for _key, _candidate in _items:
+                if isinstance(getattr(_candidate, "emotion_granularity", None), dict):
+                    core = _candidate
+                    break
+            view = getattr(core, "emotion_granularity", None) if core else None
+            if not isinstance(view, dict) or not view.get("enabled", True):
+                return _default
+            return {
+                "enabled": True,
+                "display": str(view.get("display") or "")[:20],
+                "line": str(view.get("line") or "")[:40],
+                "primary": str(view.get("primary") or "")[:20],
+                "primary_zh": str(view.get("primary_zh") or "")[:20],
+                "secondary": [{"key": str(row.get("key") or "")[:16],
+                               "label": str(row.get("label") or "")[:16]}
+                              for row in (view.get("secondary") or [])[:2]
+                              if isinstance(row, dict)],
+                "fallback": bool(view.get("fallback", False)),
+            }
+        except Exception:
+            return _default
+
+    def _diag_trace_path(self):
+        """Task-171: jsonl path for the read-only turn diagnosis."""
+        try:
+            return DATA_DIR / "trace.jsonl"
+        except Exception:
+            return None
+
+    def _diag_trace_rows(self, limit=50):
+        """Read the newest bounded diagnosis rows; never raises."""
+        rows = []
+        try:
+            path = self._diag_trace_path()
+            if path is not None and path.exists():
+                lines = path.read_text(encoding="utf-8").splitlines()
+                for line in lines[-max(1, int(limit)):]:
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        continue
+                    if isinstance(row, dict):
+                        rows.append(row)
+        except Exception:
+            rows = []
+        return rows[-max(1, int(limit)):]
+
+    def _diag_trace_write(self, rows):
+        """Atomically replace trace.jsonl with the newest 50 rows; never raises."""
+        try:
+            path = self._diag_trace_path()
+            if path is None:
+                return False
+            kept = [row for row in (rows or []) if isinstance(row, dict)][-50:]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            text = "\n".join(json.dumps(row, ensure_ascii=False)
+                              for row in kept)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(text + ("\n" if text else ""), encoding="utf-8")
+            tmp.replace(path)
+            return True
+        except Exception:
+            return False
+
+    def _diag_trace_payload(self):
+        """Task-171: read-only projection for the dashboard (newest 5)."""
+        try:
+            if not bool(getattr(self, "diag_trace_enabled", False)):
+                return {"enabled": False, "rows": []}
+            return {"enabled": True, "rows": self._diag_trace_rows(5)}
+        except Exception:
+            return {"enabled": False, "rows": []}
+
+    def _self_layer_data_file(self, name: str) -> Path:
+        """Path for one self-layer data file (plugin_data/<plugin>/biocore/)."""
+        try:
+            base = DATA_DIR / "biocore"
+            base.mkdir(parents=True, exist_ok=True)
+            return base / str(name)
+        except Exception:
+            return DATA_DIR / str(name)
+
+    def _self_layer_json_read(self, path, default):
+        """Read a small JSON file; never raises, returns default on any error."""
+        try:
+            if path.exists():
+                data = json.loads(path.read_text(encoding="utf-8"))
+                if isinstance(data, (dict, list)):
+                    return data
+        except Exception:
+            pass
+        return default
+
+    def _self_layer_json_write(self, path, data) -> bool:
+        """Atomically write one small JSON file; never raises."""
+        try:
+            if not isinstance(data, (dict, list)):
+                return False
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+            tmp.replace(path)
+            return True
+        except Exception:
+            return False
+
+    def _self_intent_status_payload(self) -> dict:
+        """task-148 panel projection: current her-intent (read-only, bounded)."""
+        _default = {"enabled": bool(getattr(self, "self_intent_enabled", True)),
+                    "top": "顺着你", "top_weight": 0.0, "self_weight": 0.5,
+                    "motivation": "", "intents": [], "pending_prompts": [],
+                    "voice_phrases": [], "metacog": {}}
+        try:
+            try:
+                from .biocore_model import self_intent as _si_view
+            except Exception:
+                from biocore_model import self_intent as _si_view
+            core = None
+            try:
+                for _key, _candidate in list(self.cores.items())[:20]:
+                    if isinstance(getattr(_candidate, "self_intent", None), dict):
+                        core = _candidate
+                        break
+                if core is None:
+                    _items = list(self.cores.items())[:1]
+                    core = _items[0][1] if _items else None
+            except Exception:
+                core = None
+            return _si_view.payload(
+                getattr(core, "self_intent", None) if core is not None else None,
+                pending_prompts=getattr(core, "pending_prompts", None),
+                voice_phrases=getattr(core, "voice_phrases", None),
+                metacog=getattr(core, "metacog", None))
+        except Exception:
+            return _default
+
     async def page_status(self):
         try:
             self._ensure_life_task()
@@ -9441,6 +9820,37 @@ class BioCorePlugin(Star):
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
             "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],
+            # task-148 panel projection: current intents/self_weight/motivation
+            # (read-only; defaults when no turn has run yet).
+            "self_intent": (self._self_intent_status_payload()
+                            if hasattr(self, "_self_intent_status_payload")
+                            else {"enabled": False, "top": "顺着你",
+                                  "top_weight": 0.0, "self_weight": 0.5,
+                                  "motivation": "", "intents": [],
+                                  "pending_prompts": [], "voice_phrases": [],
+                                  "metacog": {}}),
+            # task-174 read-only batch-3 panels.
+            "narrative": (self._narrative_payload()
+                          if hasattr(self, "_narrative_payload")
+                          else {"enabled": False, "metrics": {}, "entries": 0}),
+            "possible_selves": (self._possible_selves_payload()
+                                if hasattr(self, "_possible_selves_payload")
+                                else {"enabled": False, "top": "",
+                                      "sentence": "", "selves": []}),
+            "secrecy": (self._secrecy_payload()
+                        if hasattr(self, "_secrecy_payload")
+                        else {"enabled": False, "pressure": 0.0,
+                              "contained": True, "withholds": 0,
+                              "last_action": ""}),
+            # task-173 read-only second-level emotion label (granularity).
+            "emotion_granularity": (self._granularity_payload()
+                                    if hasattr(self, "_granularity_payload")
+                                    else {"enabled": False, "display": "",
+                                          "line": "", "secondary": []}),
+            # task-171 read-only diagnosis (newest 5 of the 50 kept turns).
+            "diag_trace": (self._diag_trace_payload()
+                           if hasattr(self, "_diag_trace_payload")
+                           else {"enabled": False, "rows": []}),
             # task-124: last reply's used-memory receipt (read-only, bounded).
             "turn_memory": dict(getattr(self, "_last_turn_memory", {}) or {}),
             # task-36 read-only projections are appended ONLY when their opt-in
@@ -12309,6 +12719,52 @@ class BioCorePlugin(Star):
             self._seed_trust_from_user(event, core)
         except Exception:
             pass
+        # task-172 batch-1: boundary judgment first (default OFF). A crossing is
+        # a relational event, not a content violation: record it, open the repair
+        # flow, and short-circuit the regular probe path below.
+        self._x_pairs = []
+        self._x_hint = ""
+        self._boundary_crossed_turn = False
+        self._exit_silent_turn = False
+        if bool(getattr(self, "boundary_lines_enabled", False)):
+            try:
+                try:
+                    from .biocore_model import boundary as _bd_mod
+                except Exception:
+                    from biocore_model import boundary as _bd_mod
+                _bd_rel = self._relationship_of(self._user_record(event))
+                _bd_rel = (_bd_rel.get("state")
+                           if isinstance(_bd_rel.get("state"), dict) else _bd_rel)
+                _bd_result = _bd_mod.judge(
+                    str(getattr(event, "message_str", "") or ""), _bd_rel,
+                    flags={"enabled": True})
+                core.boundary = _bd_result
+                if _bd_mod.crossed(_bd_result):
+                    self._boundary_crossed_turn = True
+                    try:
+                        core.boundary_handoff = dict(
+                            _bd_result.get("handoff") or {})
+                    except Exception:
+                        pass
+                    logger.info(
+                        "[biocore] boundary crossed kind=%s severity=%.2f",
+                        _bd_result.get("kind"),
+                        float(_bd_result.get("severity", 0.0) or 0.0))
+                    if bool(getattr(self, "repair_enabled", True)):
+                        try:
+                            from .biocore_model import repair_after_boundary as _rp_mod
+                        except Exception:
+                            from biocore_model import repair_after_boundary as _rp_mod
+                        core.repair = _rp_mod.start(
+                            _bd_result, _bd_rel, flags={"enabled": True})
+                        self._repair_last_ts = time.time()
+                        self._x_pairs.append(
+                            ("repair", _rp_mod.directives(core.repair)))
+                else:
+                    logger.info("[biocore] boundary ok severity=%.2f",
+                                float(_bd_result.get("severity", 0.0) or 0.0))
+            except Exception as _bd_exc:
+                logger.debug("[biocore] boundary skipped: %s", _bd_exc)
         # A4: capture open loops from *before* this turn so the continuity
         # opener cannot echo a loop created by the current message.
         _prior_open_loops = [dict(x) for x in (getattr(core, "open_loops", []) or [])
@@ -12323,6 +12779,25 @@ class BioCorePlugin(Star):
                     if isinstance(c, str):
                         text = c
                         break
+        # task-171: "这一轮为什么" read-only diagnosis (default OFF). Capture the
+        # pre-turn state here; the response side completes and writes one record.
+        self._diag_pending = None
+        if bool(getattr(self, "diag_trace_enabled", False)):
+            try:
+                try:
+                    from .biocore_model import diag_trace as _diag_mod
+                except Exception:
+                    from biocore_model import diag_trace as _diag_mod
+                self._diag_pending = {
+                    "session": str(getattr(event, "unified_msg_origin",
+                                          "default") or "default"),
+                    "ts": round(time.time(), 3),
+                    "before": _diag_mod.state_snapshot(core),
+                    "text_chars": len(str(text or "")),
+                }
+            except Exception as _diag_exc:
+                logger.debug("[biocore] diag capture skipped: %s", _diag_exc)
+                self._diag_pending = None
         # P1-2: unconditional before any branch that reads it.
         _learn_session = str(getattr(event, "unified_msg_origin", "default") or "default")
         # The core must observe the incoming message; otherwise v/a/stress and
@@ -12352,6 +12827,89 @@ class BioCorePlugin(Star):
             except Exception:
                 pass
         _user_data = self._touch_user(event, core)
+        # task-148: self layer — what *she* wants this turn. Pure deterministic
+        # module (no LLM call); failure never blocks the reply. Reads core state
+        # + relationship + needs + the probe's estimate of the other side +
+        # silence since the last message; writes one result onto the core.
+        self._self_intent_result = None
+        if (bool(getattr(self, "self_intent_enabled", True))
+                and not bool(getattr(self, "_boundary_crossed_turn", False))):
+            try:
+                try:
+                    from .biocore_model import self_intent as _self_intent_mod
+                except Exception:
+                    from biocore_model import self_intent as _self_intent_mod
+                _si_inter = getattr(core, "interpersonal", None)
+                _si_probe = getattr(core, "probe_dims", None)
+                _si_other = {}
+                if isinstance(_si_inter, dict):
+                    _si_other["v"] = float(
+                        _si_inter.get("other_valence_est", 0.0) or 0.0)
+                if isinstance(_si_probe, dict):
+                    _si_other["blame"] = float(_si_probe.get("blame", 0.0) or 0.0)
+                    _si_other["hit"] = float(_si_probe.get("hit", 0.0) or 0.0)
+                _si_absence = (_user_data.get("absence")
+                               if isinstance(_user_data, dict) else None)
+                try:
+                    _si_silence = max(0.0, float(
+                        (_si_absence or {}).get("gap_days", 0.0) or 0.0) * 86400.0)
+                except Exception:
+                    _si_silence = 0.0
+                _si_snapshot = {
+                    "v": float(getattr(core, "v", 0.0) or 0.0),
+                    "a": float(getattr(core, "a", 0.4) or 0.0),
+                    "stress": float(getattr(core, "stress", 0.2) or 0.0),
+                    "energy": float(getattr(core, "energy", 0.55) or 0.0),
+                    "social": float(getattr(core, "social", 0.55) or 0.0),
+                    "trust": float(getattr(core, "trust", 0.55) or 0.0),
+                    "boundary_pressure": float(
+                        getattr(core, "boundary_pressure", 0.0) or 0.0),
+                    "boredom": float(getattr(core, "boredom", 0.0) or 0.0),
+                    "novelty_need": float(
+                        getattr(core, "novelty_need", 0.5) or 0.0),
+                    "attention": float(getattr(core, "attention", 0.5) or 0.0),
+                    "labels": dict(getattr(core, "labels", {}) or {}),
+                }
+                _si_result = _self_intent_mod.evaluate(
+                    snapshot=_si_snapshot,
+                    relationship=self._relationship_of(_user_data),
+                    needs=getattr(core, "needs", None),
+                    other_estimate=_si_other,
+                    expected=getattr(self, "_self_intent_expected", None),
+                    silence_seconds=_si_silence,
+                    flags={"enabled": True})
+                _si_directive = _self_intent_mod.directives(_si_result)
+                self._self_intent_expected = dict(
+                    _si_result.get("expected") or {})
+                self._self_intent_result = _si_result
+                try:
+                    core.self_intent_enabled = True
+                    core.self_intent = _si_result
+                    core.self_motivation = str(
+                        _si_result.get("motivation") or "")
+                    core.self_initiative = float(
+                        _si_directive.get("initiative", 0.0) or 0.0)
+                    core.self_length_scale = float(
+                        _si_directive.get("length_scale", 1.0) or 1.0)
+                except Exception:
+                    pass
+                _si_top = (_si_result.get("intents") or [{}])[0]
+                logger.info(
+                    "[biocore] self intent top=%s weight=%.2f motivation=%s "
+                    "self_weight=%.2f satisfaction=%.3f drive=%.2f urge=%.2f "
+                    "silence=%.0fs length=%.2f initiative=%.2f",
+                    _si_result.get("top"),
+                    float(_si_top.get("weight", 0.0) or 0.0),
+                    _si_result.get("motivation"),
+                    float(_si_result.get("self_weight", 0.5) or 0.0),
+                    float(_si_result.get("satisfaction", 0.0) or 0.0),
+                    float(_si_result.get("drive", 0.0) or 0.0),
+                    float(_si_result.get("urge", 0.0) or 0.0),
+                    float(_si_result.get("silence_seconds", 0.0) or 0.0),
+                    float(_si_directive.get("length_scale", 1.0) or 1.0),
+                    float(_si_directive.get("initiative", 0.0) or 0.0))
+            except Exception as _si_exc:
+                logger.warning("[biocore] self intent skipped: %s", _si_exc)
         # Always-on life loop: the first message is a guaranteed async context
         # (or a retry after plugin construction saw no running loop).
         try:
@@ -12406,6 +12964,316 @@ class BioCorePlugin(Star):
                            _appr_sched_exc)
         _mem = await self._memory_recall(event, text, core, _img, vec=_query_vec, voice=_voice,
                                          user_data=_user_data)
+        # task-149/150/151: self-layer turn batch (pure modules; no LLM call).
+        # prospective -> due commitments become pending prompts + one bounded
+        # hint; voice_bank -> 0-2 phrases for the expression constraint;
+        # metacog -> confidence/conflict directives (length + self-correction).
+        # Every switch is independent and default ON; OFF => old behaviour.
+        self._prospective_hint = ""
+        self._voice_hint = ""
+        self._metacog_hint = ""
+        _sl_self_on = bool(getattr(self, "self_intent_enabled", True))
+        _sl_meta_on = bool(getattr(self, "metacog_enabled", True))
+        _sl_scale = float(getattr(core, "self_length_scale", 1.0) or 1.0)
+        if not _sl_self_on:
+            _sl_scale = 1.0
+        try:
+            _sl_now = time.time()
+            _sl_rel = self._relationship_of(_user_data)
+            _sl_rel_state = (_sl_rel.get("state")
+                             if isinstance(_sl_rel.get("state"), dict)
+                             else _sl_rel)
+            # Keep the expression knobs honest across runtime switch changes:
+            # a disabled layer must not inherit the previous turn's numbers.
+            try:
+                core.self_intent_enabled = _sl_self_on
+                core.metacog_enabled = _sl_meta_on
+                if not _sl_self_on:
+                    core.self_initiative = 0.5
+                if not _sl_self_on and not _sl_meta_on:
+                    _sl_scale = 1.0
+                core.pending_prompts = []
+                core.voice_phrases = []
+                if not _sl_meta_on:
+                    core.metacog = {}
+            except Exception:
+                pass
+            # --- prospective memory (task-149) ---
+            if bool(getattr(self, "prospective_enabled", True)):
+                try:
+                    try:
+                        from .biocore_model import prospective as _pm_mod
+                    except Exception:
+                        from biocore_model import prospective as _pm_mod
+                    _pm_path = self._self_layer_data_file("prospective.json")
+                    _pm_doc = self._self_layer_json_read(_pm_path, {})
+                    _pm_store = _pm_doc
+                    _pm_last = 0.0
+                    if isinstance(_pm_doc, dict):
+                        _pm_store = _pm_doc.get("items") or []
+                        try:
+                            _pm_last = float(
+                                _pm_doc.get("last_check_ts") or 0.0)
+                        except Exception:
+                            _pm_last = 0.0
+                    if not isinstance(_pm_store, list):
+                        _pm_store = []
+                    # Check the window since the previous turn (or one day for
+                    # a fresh store), so a commitment is hinted once, not every
+                    # turn, and an old overdue item is still surfaced once.
+                    _pm_window = (max(0.0, _sl_now - _pm_last)
+                                  if _pm_last > 0 else 86400.0)
+                    _pm_store, _pm_overdue = _pm_mod.mark_overdue(
+                        _pm_store, _sl_now)
+                    _pm_due = _pm_mod.due_now(_pm_store, _sl_now,
+                                              window_s=_pm_window)
+                    _pm_hints = []
+                    for _pm_row in _pm_due[:2]:
+                        _pm_hint = str(_pm_mod.build_hint(_pm_row, _sl_now)
+                                       or "")[:40]
+                        if _pm_hint:
+                            _pm_hints.append(_pm_hint)
+                    try:
+                        core.pending_prompts = _pm_hints
+                    except Exception:
+                        pass
+                    if _pm_hints:
+                        self._prospective_hint = _pm_hints[0]
+                    self._self_layer_json_write(
+                        _pm_path, {"items": _pm_store,
+                                   "last_check_ts": round(_sl_now, 3)})
+                    if _pm_due or _pm_overdue:
+                        logger.info(
+                            "[biocore] prospective due=%d overdue=%d hints=%d",
+                            len(_pm_due), int(_pm_overdue), len(_pm_hints))
+                except Exception as _pm_exc:
+                    logger.warning("[biocore] prospective skipped: %s", _pm_exc)
+            # --- voice bank (task-150) ---
+            if bool(getattr(self, "voice_bank_enabled", True)):
+                try:
+                    try:
+                        from .biocore_model import voice_bank as _vb_mod
+                    except Exception:
+                        from biocore_model import voice_bank as _vb_mod
+                    _vb_raw = self._self_layer_json_read(
+                        self._self_layer_data_file("voice_bank.json"), [])
+                    if isinstance(_vb_raw, dict):
+                        _vb_raw = _vb_raw.get("entries") or []
+                    _vb_used = self._self_layer_json_read(
+                        self._self_layer_data_file("voice_bank_used.json"), {})
+                    if isinstance(_vb_used, dict):
+                        _vb_used = _vb_used.get("used") or {}
+                    _vb_tension = 0.3
+                    try:
+                        _vb_intero = getattr(core, "intero", None)
+                        if isinstance(_vb_intero, dict):
+                            _vb_tension = float(
+                                _vb_intero.get("tension", 0.3) or 0.3)
+                    except Exception:
+                        _vb_tension = 0.3
+                    _vb_state = {
+                        "v": float(getattr(core, "v", 0.0) or 0.0),
+                        "tension": _vb_tension,
+                    }
+                    try:
+                        _vb_closeness = float(
+                            _sl_rel_state.get("closeness", 0.0) or 0.0)
+                    except Exception:
+                        _vb_closeness = 0.0
+                    _vb_stage = ("intimate" if _vb_closeness >= 0.85 else
+                                 "close" if _vb_closeness >= 0.70 else
+                                 "normal" if _vb_closeness >= 0.45 else
+                                 "stranger")
+                    _vb_phrases = _vb_mod.pick(
+                        _vb_state, {"stage": _vb_stage}, _vb_used, _sl_now,
+                        entries=_vb_raw)
+                    _vb_phrases = [str(x)[:20]
+                                   for x in (_vb_phrases or [])[:2]
+                                   if str(x).strip()]
+                    try:
+                        core.voice_phrases = _vb_phrases
+                    except Exception:
+                        pass
+                    if _vb_phrases:
+                        _vb_used_next = _vb_mod.mark_used(
+                            _vb_used, _vb_phrases, _sl_now)
+                        self._self_layer_json_write(
+                            self._self_layer_data_file(
+                                "voice_bank_used.json"),
+                            {"used": _vb_used_next})
+                        self._voice_hint = (
+                            "口头习惯：" + "；".join(_vb_phrases))[:60]
+                        logger.info("[biocore] voice picks=%s stage=%s",
+                                    _vb_phrases, _vb_stage)
+                except Exception as _vb_exc:
+                    logger.warning("[biocore] voice bank skipped: %s", _vb_exc)
+            # --- metacognition (task-151) ---
+            if _sl_meta_on:
+                try:
+                    try:
+                        from .biocore_model import metacog as _mc_mod
+                    except Exception:
+                        from biocore_model import metacog as _mc_mod
+                    _mc_meta = getattr(self, "_last_memory_meta", None)
+                    _mc_meta = _mc_meta if isinstance(_mc_meta, dict) else {}
+                    _mc_conf = _mc_meta.get("answer_confidence")
+                    try:
+                        _mc_conf = 0.6 if _mc_conf is None else float(_mc_conf)
+                    except Exception:
+                        _mc_conf = 0.6
+                    _mc_guard = 0
+                    _mc_rc = getattr(self, "_last_reverse_check", None)
+                    if (isinstance(_mc_rc, dict)
+                            and isinstance(_mc_rc.get("violations"), list)):
+                        _mc_guard = len(_mc_rc.get("violations") or [])
+                    _mc_conflict = False
+                    try:
+                        _mc_conflict = (
+                            bool(int(_mc_meta.get("conflicts", 0) or 0))
+                            or float(_sl_rel_state.get("conflict", 0.0)
+                                     or 0.0) >= 0.60
+                            or float(getattr(core, "conflict_ema", 0.0)
+                                     or 0.0) >= 0.60)
+                    except Exception:
+                        _mc_conflict = False
+                    _mc_history = self._self_layer_json_read(
+                        self._self_layer_data_file("metacog.json"), {})
+                    if (isinstance(_mc_history, dict)
+                            and isinstance(_mc_history.get("history"), dict)):
+                        _mc_history = _mc_history.get("history")
+                    _mc_result = _mc_mod.evaluate(
+                        confidence=_mc_conf, guard_hits=_mc_guard,
+                        conflict=_mc_conflict, history=_mc_history,
+                        flags={"enabled": True})
+                    _mc_directive = _mc_mod.directives(_mc_result)
+                    try:
+                        core.metacog = _mc_result
+                    except Exception:
+                        pass
+                    _mc_scale = float(
+                        _mc_directive.get("length_scale", 1.0) or 1.0)
+                    _sl_scale = min(_sl_scale, max(0.0, _mc_scale))
+                    _mc_tone = str(_mc_directive.get("tone") or "")[:40]
+                    if _mc_tone:
+                        self._metacog_hint = _mc_tone
+                    self._self_layer_json_write(
+                        self._self_layer_data_file("metacog.json"),
+                        {"history": _mc_mod.remember(_mc_history, _mc_result)})
+                    logger.info(
+                        "[biocore] metacog band=%s conf=%.2f guard=%d "
+                        "converge=%s correction=%s scale=%.2f",
+                        _mc_result.get("band"),
+                        float(_mc_result.get("confidence", 0.0) or 0.0),
+                        int(_mc_guard), bool(_mc_result.get("converge")),
+                        bool(_mc_result.get("allow_self_correction")),
+                        _mc_scale)
+                except Exception as _mc_exc:
+                    logger.warning("[biocore] metacog skipped: %s", _mc_exc)
+            try:
+                core.self_length_scale = max(0.5, min(1.5, _sl_scale))
+            except Exception:
+                pass
+        except Exception as _sl_exc:
+            logger.warning("[biocore] self layer batch skipped: %s", _sl_exc)
+        # task-174 reconstruction + source_monitoring: recall-time meta ONLY.
+        # The memory store is never rewritten here (read-only wiring).
+        try:
+            core.recall_meta = {}
+        except Exception:
+            pass
+        if (bool(getattr(self, "reconstruction_enabled", True))
+                or bool(getattr(self, "source_monitoring_enabled", True))):
+            try:
+                _rm_mod = None
+                _sm_mod = None
+                if bool(getattr(self, "reconstruction_enabled", True)):
+                    try:
+                        from .biocore_model import reconstruction as _rm_mod
+                    except Exception:
+                        from biocore_model import reconstruction as _rm_mod
+                if bool(getattr(self, "source_monitoring_enabled", True)):
+                    try:
+                        from .biocore_model import source_monitoring as _sm_mod
+                    except Exception:
+                        from biocore_model import source_monitoring as _sm_mod
+                _rm_doc = self._load_memory(event) or {}
+                _rm_by_id = {}
+                for _rm_row in (_rm_doc.get("entries") or []):
+                    if isinstance(_rm_row, dict):
+                        _rm_by_id[str(_rm_row.get("id") or "")] = _rm_row
+                _rm_ids = [str(x) for x in
+                           (getattr(self, "_last_memory_entries", []) or [])]
+                _rm_store = getattr(core, "recall_drift", None)
+                _rm_store = dict(_rm_store) if isinstance(_rm_store, dict) else {}
+                _rm_items = []
+                for _rm_id in _rm_ids[:5]:
+                    _row = _rm_by_id.get(_rm_id)
+                    if not isinstance(_row, dict):
+                        continue
+                    _rm_text = str(_row.get("text") or "")[:80]
+                    try:
+                        _rm_imp = max(0.0, min(1.0, float(
+                            _row.get("importance", 0.5) or 0.5)))
+                    except Exception:
+                        _rm_imp = 0.5
+                    try:
+                        _rm_val = max(-1.0, min(1.0, float(
+                            _row.get("valence", 0.0) or 0.0)))
+                    except Exception:
+                        _rm_val = 0.0
+                    _rm_item = {"id": _rm_id, "text": _rm_text[:40]}
+                    if _rm_mod is not None:
+                        _rm_dr = _rm_mod.drift(
+                            {"text": _rm_text, "importance": _rm_imp,
+                             "valence": _rm_val},
+                            mood=float(getattr(core, "v", 0.0) or 0.0),
+                            recalls=int(_row.get("hits", 0) or 0) + 1,
+                            prior_drift=_rm_store.get(_rm_id, 0.0),
+                            flags={"enabled": True})
+                        _rm_store[_rm_id] = _rm_dr["total"]
+                        _rm_item.update({"drift": _rm_dr["delta"],
+                                         "drift_total": _rm_dr["total"],
+                                         "drift_reason": _rm_dr["reason"]})
+                    if _sm_mod is not None:
+                        try:
+                            _rm_age = max(0.0, (time.time() - float(
+                                _row.get("ts", 0) or 0)) / 86400.0)
+                        except Exception:
+                            _rm_age = 0.0
+                        _rm_mon = _sm_mod.monitor(
+                            {"source": (_row.get("memory_source")
+                                        or _row.get("source") or ""),
+                             "age_days": _rm_age, "similarity": 0.3,
+                             "valence": _rm_val, "importance": _rm_imp,
+                             "rehearsals": int(_row.get("hits", 0) or 0)},
+                            {"valence": float(getattr(core, "v", 0.0) or 0.0),
+                             "arousal": float(getattr(core, "a", 0.4) or 0.0)},
+                            flags={"enabled": True})
+                        _rm_item.update({
+                            "source": _rm_mon.get("source"),
+                            "source_label": _rm_mon.get("label"),
+                            "source_confidence": _rm_mon.get("confidence"),
+                            "misattribution": _rm_mon.get("misattribution"),
+                            "recall_bias": _rm_mon.get("recall_bias"),
+                            "recall_weight": _rm_mon.get("recall_weight"),
+                            "source_reason": _rm_mon.get("reason")})
+                    _rm_items.append(_rm_item)
+                core.recall_drift = _rm_store
+                core.recall_meta = {
+                    "enabled": True,
+                    "reconstruction": _rm_mod is not None,
+                    "source_monitoring": _sm_mod is not None,
+                    "items": _rm_items[:5],
+                    "count": len(_rm_items),
+                }
+                if _rm_items:
+                    logger.info(
+                        "[biocore] recall_meta items=%d drift=%.3f source=%s",
+                        len(_rm_items),
+                        float(_rm_items[0].get("drift_total", 0.0) or 0.0),
+                        _rm_items[0].get("source_label"))
+            except Exception as _rm_exc:
+                logger.debug("[biocore] recall_meta skipped: %s", _rm_exc)
         try:
             from .biocore_model import runtime as _bc_reply_runtime
             _bc_reply_runtime.run_reply(_bc_reply_runtime.make_request_ctx(self, event, core, text, _user_data, _mem))
@@ -12423,6 +13291,466 @@ class BioCorePlugin(Star):
                                    recent=_recent_turns, text=text)
         except Exception:
             pass
+        # task-172 attributor (default ON): probe dims -> attribution -> bus.
+        # A boundary crossing short-circuits the regular probe path.
+        if (bool(getattr(self, "attribution_enabled", True))
+                and not bool(getattr(self, "_boundary_crossed_turn", False))):
+            try:
+                try:
+                    from .biocore_model import attributor as _at_mod
+                except Exception:
+                    from biocore_model import attributor as _at_mod
+                _at_rel = self._relationship_of(_user_data)
+                _at_rel = (_at_rel.get("state")
+                           if isinstance(_at_rel.get("state"), dict) else _at_rel)
+                _at_result = _at_mod.attribute(
+                    dims=getattr(core, "probe_dims", None), event={},
+                    relationship=_at_rel, flags={"enabled": True})
+                core.attribution = _at_result
+                self._x_pairs.append(
+                    ("attributor", _at_mod.directives(_at_result)))
+            except Exception as _at_exc:
+                logger.debug("[biocore] attributor skipped: %s", _at_exc)
+        # === task-174 batch-3 (nine modules; every directive goes to the one
+        # _x_pairs bus merged later; switches default ON, OFF == old behaviour).
+        _b3_now = time.time()
+        _b3_rel = self._relationship_of(_user_data)
+        _b3_rel = (_b3_rel.get("state")
+                   if isinstance(_b3_rel.get("state"), dict) else _b3_rel)
+        try:
+            _b3_inter = int((_user_data or {}).get("interactions", 0) or 0)
+        except Exception:
+            _b3_inter = 0
+        try:
+            _b3_first = float((_user_data or {}).get("first_seen", 0.0) or 0.0)
+        except Exception:
+            _b3_first = 0.0
+        _b3_age_days = (max(0.0, (_b3_now - _b3_first) / 86400.0)
+                        if _b3_first > 0.0 else 0.0)
+        try:
+            _b3_closeness = max(0.0, min(1.0, float(
+                _b3_rel.get("closeness", 0.5) or 0.5)))
+        except Exception:
+            _b3_closeness = 0.5
+        try:
+            _b3_conflict = max(0.0, min(1.0, float(
+                _b3_rel.get("conflict", 0.0) or 0.0)))
+        except Exception:
+            _b3_conflict = 0.0
+        _b3_private = bool(self._is_private_event(event))
+        _b3_abs_hours = 0.0
+        try:
+            _b3_abs = (_user_data or {}).get("absence")
+            if isinstance(_b3_abs, dict):
+                _b3_abs_hours = max(0.0, float(
+                    _b3_abs.get("gap_days", 0.0) or 0.0) * 24.0)
+        except Exception:
+            _b3_abs_hours = 0.0
+        # 1) value_order: ranking of "say it" vs "go along"; no length change.
+        if bool(getattr(self, "value_order_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import value_order as _vo_mod
+                except Exception:
+                    from biocore_model import value_order as _vo_mod
+                _vo_weights = _vo_mod.normalize(
+                    getattr(core, "value_weights", None))
+                _vo_options = [
+                    {"name": "说出真实想法",
+                     "gains": {"universalism": 0.6, "self_direction": 0.4},
+                     "losses": {"security": 0.3, "benevolence": 0.2}},
+                    {"name": "先顺着对方",
+                     "gains": {"benevolence": 0.4, "security": 0.5},
+                     "losses": {"universalism": 0.2},
+                     "keeps_status_quo": True},
+                ]
+                core.value_weights = _vo_weights
+                core.value_order = _vo_mod.rank(
+                    _vo_options, _vo_weights,
+                    {"relationship_age_days": _b3_age_days,
+                     "investment": min(1.0, _b3_inter / 100.0)},
+                    flags={"enabled": True})
+                logger.info("[biocore] value_order chosen=%s threshold=%.2f",
+                            core.value_order.get("chosen"),
+                            float(core.value_order.get("threshold", 0.0)
+                                  or 0.0))
+            except Exception as _vo_exc:
+                logger.debug("[biocore] value_order skipped: %s", _vo_exc)
+        # 2) relation_stage: stage/action; low stage lowers initiative.
+        if bool(getattr(self, "relation_stage_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import relation_stage as _rs_mod
+                except Exception:
+                    from biocore_model import relation_stage as _rs_mod
+                _rs_state = {
+                    "interactions": _b3_inter,
+                    "disclosures": max(0, _b3_inter // 4),
+                    "repairs": 0,
+                    "days_known": _b3_age_days,
+                    "conflict": _b3_conflict,
+                }
+                _rs_result = _rs_mod.evaluate(_rs_state, flags={"enabled": True})
+                core.relation_stage = _rs_result
+                _rs_dir = _rs_mod.directives(_rs_result)
+                _rs_init = {"陌生": 0.30, "熟悉": 0.45,
+                            "亲近": 0.60, "稳定": 0.55}.get(
+                                str(_rs_result.get("stage") or ""), 0.5)
+                _rs_dir["initiative"] = _rs_init
+                self._x_pairs.append(("relation_stage", _rs_dir))
+            except Exception as _rs_exc:
+                logger.debug("[biocore] relation_stage skipped: %s", _rs_exc)
+        # 3) attachment_behavior: style -> initiative via the bus.
+        if bool(getattr(self, "attachment_behavior_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import attachment_behavior as _ab_mod
+                except Exception:
+                    from biocore_model import attachment_behavior as _ab_mod
+                _ab_style = "secure"
+                try:
+                    _ab_style = str(
+                        (self.profile or {}).get("attachment_style")
+                        or getattr(self, "attachment_style", "")
+                        or "secure")
+                except Exception:
+                    _ab_style = "secure"
+                _ab_result = _ab_mod.evaluate(
+                    _ab_style,
+                    {"closeness": _b3_closeness,
+                     "stress": float(getattr(core, "stress", 0.3) or 0.0),
+                     "ignored": bool(_b3_abs_hours >= 72.0)},
+                    flags={"enabled": True})
+                core.attachment_behavior = _ab_result
+                self._x_pairs.append(
+                    ("attachment_behavior", _ab_mod.directives(_ab_result)))
+            except Exception as _ab_exc:
+                logger.debug("[biocore] attachment_behavior skipped: %s", _ab_exc)
+        # 4) possible_selves: target gap; panel/narrative only (no length).
+        if bool(getattr(self, "possible_selves_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import possible_selves as _ps_mod
+                except Exception:
+                    from biocore_model import possible_selves as _ps_mod
+                _ps_selves = None
+                try:
+                    _sm = getattr(self, "self_model", None)
+                    if isinstance(_sm, dict):
+                        _ps_selves = (_sm.get("possible_selves")
+                                      or _sm.get("selves"))
+                    if not _ps_selves and isinstance(self.profile, dict):
+                        _ps_selves = self.profile.get("possible_selves")
+                except Exception:
+                    _ps_selves = None
+                core.possible_selves = _ps_mod.rank(
+                    _ps_selves if isinstance(_ps_selves, list) else [],
+                    getattr(core, "value_weights", None),
+                    flags={"enabled": True})
+                if core.possible_selves.get("sentence"):
+                    logger.info("[biocore] possible_selves %s",
+                                core.possible_selves.get("sentence"))
+            except Exception as _ps_exc:
+                logger.debug("[biocore] possible_selves skipped: %s", _ps_exc)
+        # 5) dissonance (from last turn) -> tone when the tension is high.
+        if bool(getattr(self, "dissonance_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import dissonance as _di_mod2
+                except Exception:
+                    from biocore_model import dissonance as _di_mod2
+                _di_prev = getattr(core, "dissonance", None)
+                if (isinstance(_di_prev, dict)
+                        and float(_di_prev.get("dissonance", 0.0)
+                                  or 0.0) >= 0.60):
+                    self._x_pairs.append(
+                        ("dissonance", _di_mod2.directives(_di_prev)))
+            except Exception as _di_exc2:
+                logger.debug("[biocore] dissonance directive skipped: %s", _di_exc2)
+        # 6) narrative (from last turn) -> one clarification when messy.
+        if bool(getattr(self, "narrative_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import narrative as _na_mod2
+                except Exception:
+                    from biocore_model import narrative as _na_mod2
+                _na_prev = getattr(core, "narrative", None)
+                if isinstance(_na_prev, dict):
+                    _na_dir = _na_mod2.directives(_na_prev)
+                    if _na_dir.get("tone") or _na_dir.get("allow_clarify"):
+                        self._x_pairs.append(("narrative", _na_dir))
+            except Exception as _na_exc2:
+                logger.debug("[biocore] narrative directive skipped: %s", _na_exc2)
+        # 7) compassion_fatigue: listening load -> empathy decay -> tone.
+        if bool(getattr(self, "compassion_fatigue_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import compassion_fatigue as _cf_mod
+                except Exception:
+                    from biocore_model import compassion_fatigue as _cf_mod
+                _cf_labels = getattr(core, "labels", {}) or {}
+                _cf_neg = str(_cf_labels.get("emotion") or "") in (
+                    "sadness", "anger", "fear", "loneliness")
+                _cf_streak = (int(getattr(self, "_comfort_streak", 0) or 0) + 1
+                              if _cf_neg else 0)
+                self._comfort_streak = _cf_streak
+                try:
+                    _cf_density = max(0.0, min(1.0,
+                        0.6 * float(getattr(core, "stress", 0.3) or 0.0)
+                        + 0.4 * float(getattr(core, "boundary_pressure", 0.0)
+                                      or 0.0)))
+                except Exception:
+                    _cf_density = 0.2
+                _cf_result = _cf_mod.fatigue(
+                    consecutive=_cf_streak, negative_density=_cf_density,
+                    idle_hours=_b3_abs_hours, flags={"enabled": True})
+                core.compassion_fatigue = _cf_result
+                _cf_dir = _cf_mod.directives(_cf_result)
+                if _cf_dir.get("tone") or _cf_dir.get("length_scale", 1.0) < 1.0:
+                    self._x_pairs.append(("compassion_fatigue", _cf_dir))
+                logger.info("[biocore] compassion_fatigue band=%s empathy=%.2f",
+                            _cf_result.get("band"),
+                            float(_cf_result.get("empathy", 1.0) or 1.0))
+            except Exception as _cf_exc:
+                logger.debug("[biocore] compassion_fatigue skipped: %s", _cf_exc)
+        # 8) secrecy: disclosure decision; record + panel only (no output change).
+        if bool(getattr(self, "secrecy_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import secrecy as _se_mod
+                except Exception:
+                    from biocore_model import secrecy as _se_mod
+                try:
+                    _se_sensitivity = max(0.0, min(1.0,
+                        0.45 * float(getattr(core, "stress", 0.3) or 0.0)
+                        + 0.35 * float(getattr(core, "boundary_pressure", 0.0)
+                                       or 0.0)
+                        + 0.20 * _b3_conflict))
+                except Exception:
+                    _se_sensitivity = 0.3
+                _se_state = _se_mod.update(
+                    getattr(core, "secret", None), _se_sensitivity,
+                    _b3_closeness, 0.85 if _b3_private else 0.30,
+                    now=_b3_now)
+                core.secret = _se_state
+                core.secret_view = _se_mod.view(_se_state)
+            except Exception as _se_exc:
+                logger.debug("[biocore] secrecy skipped: %s", _se_exc)
+        # task-173 granularity (default ON, read-only): refine the six prototypes
+        # into second-level words for the panel/log. Never changes length.
+        if bool(getattr(self, "granularity_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import granularity as _gr_mod
+                    from .biocore_model import emotion_geometry as _eg_mod
+                except Exception:
+                    from biocore_model import granularity as _gr_mod
+                    from biocore_model import emotion_geometry as _eg_mod
+                _gr_state = {
+                    "v": float(getattr(core, "v", 0.0) or 0.0),
+                    "a": float(getattr(core, "a", 0.4) or 0.0),
+                    "d": float(getattr(core, "d", 0.55) or 0.0),
+                    "social": float(getattr(core, "social", 0.55) or 0.0),
+                    "trust": float(getattr(core, "trust", 0.55) or 0.0),
+                    "stress": float(getattr(core, "stress", 0.2) or 0.0),
+                }
+                _gr_scores = dict((_eg_mod.classify(_gr_state) or {}).get("probs") or {})
+                _gr_attr = getattr(core, "attribution", None)
+                _gr_context = {
+                    "offense": (0.5 if isinstance(_gr_attr, dict)
+                                and str(_gr_attr.get("emotion") or "") == "anger"
+                                else 0.0),
+                    "fatigue": 0.0,
+                }
+                try:
+                    _gr_context["fatigue"] = round(max(0.0, min(1.0,
+                        0.6 * (1.0 - float(getattr(core, "energy", 0.6) or 0.0))
+                        + 0.4 * _gr_state["stress"])), 3)
+                except Exception:
+                    pass
+                _gr_view = _gr_mod.view(
+                    _gr_scores, context=_gr_context,
+                    config={"enabled": True, "max_labels": 2})
+                core.emotion_granularity = _gr_view
+                logger.info("[biocore] emotion granularity primary=%s line=%s secondary=%s",
+                            _gr_view.get("primary"), _gr_view.get("line"),
+                            [row.get("label") for row in (_gr_view.get("secondary") or [])])
+            except Exception as _gr_exc:
+                logger.debug("[biocore] granularity skipped: %s", _gr_exc)
+        # task-173 affective_labor: high accumulated load restrains the next turn
+        # (the load itself is updated on the response side).
+        if bool(getattr(self, "affective_labor_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import affective_labor as _al_mod
+                except Exception:
+                    from biocore_model import affective_labor as _al_mod
+                self._labor_felt = {
+                    "v": float(getattr(core, "v", 0.0) or 0.0),
+                    "a": float(getattr(core, "a", 0.4) or 0.0),
+                    "d": float(getattr(core, "d", 0.55) or 0.0),
+                    "social": float(getattr(core, "social", 0.55) or 0.0),
+                    "trust": float(getattr(core, "trust", 0.55) or 0.0),
+                    "stress": float(getattr(core, "stress", 0.2) or 0.0),
+                }
+                _al_state = getattr(core, "affective_labor", None)
+                _al_view = _al_mod.view(_al_state)
+                core.affective_labor_risk = float(_al_view.get("risk", 0.0) or 0.0)
+                if float(_al_view.get("risk", 0.0) or 0.0) >= 0.60:
+                    self._x_pairs.append((
+                        "affective_labor",
+                        {"length_scale": 0.85, "tone": "累了，话少一点",
+                         "note": "情绪劳动负荷偏高",
+                         "initiative": 0.35}))
+                    logger.info("[biocore] affective_labor load=%.2f risk=%.2f",
+                                float(_al_view.get("load", 0.0) or 0.0),
+                                float(_al_view.get("risk", 0.0) or 0.0))
+            except Exception as _al_exc:
+                logger.debug("[biocore] affective_labor directive skipped: %s", _al_exc)
+        # task-173 self_verification: being misread raises the urge to correct;
+        # a high urge allows one correction through the bus.
+        if bool(getattr(self, "self_verification_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import self_verification as _sv_mod
+                except Exception:
+                    from biocore_model import self_verification as _sv_mod
+                _sv_now = time.time()
+                _sv_state = getattr(core, "self_verification", None)
+                _sv_state = (_sv_state if isinstance(_sv_state, dict)
+                             else _sv_mod.initial(_sv_now))
+                _sv_state = _sv_mod.decay(_sv_state, _sv_now)
+                _sv_dims = getattr(core, "probe_dims", None)
+                _sv_dims = _sv_dims if isinstance(_sv_dims, dict) else {}
+                _sv_misread = max(0.0, min(1.0,
+                    0.5 * float(_sv_dims.get("blame", 0.0) or 0.0)
+                    + 0.5 * float(_sv_dims.get("hit", 0.0) or 0.0)))
+                _sv_rel = self._relationship_of(_user_data)
+                _sv_rel = (_sv_rel.get("state")
+                           if isinstance(_sv_rel.get("state"), dict) else _sv_rel)
+                try:
+                    _sv_closeness = max(0.0, min(1.0, float(
+                        _sv_rel.get("closeness", 0.5) or 0.5)))
+                except Exception:
+                    _sv_closeness = 0.5
+                _sv_clarity = 0.6
+                _sm = getattr(self, "self_model", None)
+                if isinstance(_sm, dict):
+                    try:
+                        _sv_clarity = max(0.0, min(1.0, float(
+                            _sm.get("clarity", _sm.get("self_clarity", 0.6))
+                            or 0.6)))
+                    except Exception:
+                        _sv_clarity = 0.6
+                _sv_state = _sv_mod.observe(
+                    _sv_state, _sv_misread, clarity=_sv_clarity,
+                    relation=_sv_closeness, severity=0.8, now=_sv_now,
+                    event="misunderstood" if _sv_misread > 0.0 else "")
+                core.self_verification = _sv_state
+                _sv_intent = _sv_mod.intent(_sv_state)
+                core.self_verification_view = _sv_mod.view(_sv_state)
+                if _sv_intent.get("want_correct"):
+                    self._x_pairs.append((
+                        "self_verification",
+                        {"allow_correction": True,
+                         "tone": "可以补一句纠正",
+                         "length_scale": 1.0,
+                         "note": "觉得被误解了"}))
+                    logger.info(
+                        "[biocore] self_verification urge=%.2f strength=%s",
+                        float(_sv_intent.get("correction", 0.0) or 0.0),
+                        _sv_intent.get("strength"))
+            except Exception as _sv_exc:
+                logger.debug("[biocore] self_verification skipped: %s", _sv_exc)
+        # task-172 repair (default ON): an already-open flow restrains this turn.
+        if (bool(getattr(self, "repair_enabled", True))
+                and not bool(getattr(self, "_boundary_crossed_turn", False))):
+            try:
+                try:
+                    from .biocore_model import repair_after_boundary as _rp_mod2
+                except Exception:
+                    from biocore_model import repair_after_boundary as _rp_mod2
+                _rp_state = getattr(core, "repair", None)
+                if isinstance(_rp_state, dict) and _rp_state.get("active"):
+                    self._x_pairs.append(
+                        ("repair", _rp_mod2.directives(_rp_state)))
+            except Exception as _rp_exc:
+                logger.debug("[biocore] repair directive skipped: %s", _rp_exc)
+        # task-172 exit_or_silence (default OFF): may turn this turn into silence.
+        if bool(getattr(self, "exit_silence_enabled", False)):
+            try:
+                try:
+                    from .biocore_model import exit_or_silence as _ex_mod
+                except Exception:
+                    from biocore_model import exit_or_silence as _ex_mod
+                _ex_rel = self._relationship_of(_user_data)
+                _ex_rel = (_ex_rel.get("state")
+                           if isinstance(_ex_rel.get("state"), dict) else _ex_rel)
+                _ex_state = {
+                    "energy": float(getattr(core, "energy", 0.6) or 0.0),
+                    "stress": float(getattr(core, "stress", 0.3) or 0.0),
+                    "valence": float(getattr(core, "v", 0.0) or 0.0),
+                    "social": float(getattr(core, "social", 0.6) or 0.0),
+                }
+                _ex_topic = {
+                    "intensity": float(
+                        getattr(core, "boundary_pressure", 0.0) or 0.0),
+                    "kind": ("conflict"
+                             if float(_ex_rel.get("conflict", 0.0)
+                                      or 0.0) >= 0.6 else ""),
+                }
+                _ex_result = _ex_mod.exit_or_silence(
+                    state=_ex_state, relationship=_ex_rel, topic=_ex_topic,
+                    flags={"enabled": True})
+                core.exit = _ex_result
+                self._x_pairs.append(
+                    ("exit", _ex_mod.directives(_ex_result)))
+                if not _ex_mod.should_reply(_ex_result):
+                    self._exit_silent_turn = True
+                    logger.info("[biocore] exit silent reason=%s",
+                                str(_ex_result.get("reason") or "")[:40])
+            except Exception as _ex_exc:
+                logger.debug("[biocore] exit_or_silence skipped: %s", _ex_exc)
+        # task-172: ONE bus merge for every batch-1 module (no per-module wiring).
+        try:
+            try:
+                from .biocore_model import x_directives as _xd_mod
+            except Exception:
+                from biocore_model import x_directives as _xd_mod
+            _x_merged = _xd_mod.merge_named(self._x_pairs)
+            core.x_directives = _x_merged
+            _x_len = float(_x_merged.get("length_scale", 1.0) or 1.0)
+            if abs(_x_len - 1.0) >= 0.01:
+                core.self_length_scale = min(
+                    float(getattr(core, "self_length_scale", 1.0) or 1.0),
+                    _x_len)
+            # initiative defaults to 0.5 in the bus; only clamp it when some
+            # module actually declared one (repair / exit do, attributor does not).
+            _x_init_explicit = any(
+                isinstance(_d, dict) and ("initiative" in _d or "proactive" in _d)
+                for _name, _d in (self._x_pairs or []))
+            if _x_init_explicit:
+                core.self_initiative = min(
+                    float(getattr(core, "self_initiative", 0.5) or 0.5),
+                    float(_x_merged.get("initiative", 0.5) or 0.0))
+            _x_tone = str(_x_merged.get("tone") or "").strip()
+            _x_note = str(_x_merged.get("note") or "").strip()
+            self._x_hint = (_x_tone or _x_note)[:60]
+            if _x_merged.get("allow_correction"):
+                self._x_hint = (self._x_hint + "；可以补一句修正").strip("；")[:80]
+            if self._x_pairs:
+                logger.info(
+                    "[biocore] x_directives sources=%s len=%.2f initiative=%.2f "
+                    "tone=%s",
+                    _x_merged.get("sources"),
+                    float(_x_merged.get("length_scale", 1.0) or 1.0),
+                    float(_x_merged.get("initiative", 0.5) or 0.0),
+                    self._x_hint)
+        except Exception as _x_exc:
+            logger.debug("[biocore] x_directives merge skipped: %s", _x_exc)
+        if bool(getattr(self, "_exit_silent_turn", False)):
+            logger.info("[biocore] exit silent: skipping injection this turn")
+            return
         _events = self._event_context(event)
         # L-T02..L-T12: one bounded strategy/cause/receipt token, plus optional
         # proposal-only LLM refinements (each function default OFF).
@@ -12490,6 +13818,20 @@ class BioCorePlugin(Star):
                     _strategy_hint, _proposal_hint)
         except Exception as exc:
             logger.warning("[biocore] proposal hint failed: %s", exc)
+        # task-149/150/151: the self-layer batch feeds the expression layer one
+        # bounded constraint token each (prospective / voice / metacog).
+        try:
+            for _sl_hint in (getattr(self, "_prospective_hint", ""),
+                             getattr(self, "_voice_hint", ""),
+                             getattr(self, "_metacog_hint", ""),
+                             getattr(self, "_x_hint", "")):
+                if _sl_hint:
+                    _strategy_hint = interpretation.combine_strategy_hint(
+                        _strategy_hint, str(_sl_hint)[:60])
+            if _strategy_hint:
+                self._last_strategy_hint = str(_strategy_hint)[:140]
+        except Exception as _sl_hint_exc:
+            logger.debug("[biocore] self layer hint skipped: %s", _sl_hint_exc)
         # task-35: workspace token only when the autonomy loop is enabled.
         _ws_token = ""
         try:
@@ -12501,6 +13843,18 @@ class BioCorePlugin(Star):
             _ws_token = ""
         # task-35: refusal posture -> brevity (L2 truncation), default OFF.
         _brevity = "normal"
+        # task-148: the self layer's length directive picks the brevity token
+        # (the refusal posture below still wins when that switch is enabled).
+        try:
+            if (getattr(core, "self_intent_enabled", False)
+                    or getattr(core, "metacog_enabled", False)):
+                _si_scale = float(getattr(core, "self_length_scale", 1.0) or 1.0)
+                if _si_scale <= 0.85:
+                    _brevity = "short"
+                elif _si_scale >= 1.10:
+                    _brevity = "medium"
+        except Exception:
+            pass
         if getattr(self, "refusal_brevity_enabled", False):
             try:
                 _brevity = str(core.refusal_posture(
@@ -12708,6 +14062,68 @@ class BioCorePlugin(Star):
             # Market compliance: never mutate req.system_prompt. Inject the
             # single [BC]/[BH] block as a temporary content part instead.
             self._attach_compact(req, _compact)
+        # task-171: complete the request half of the diagnosis (length constraint,
+        # hints, prompt diff). The response side adds the after-state and writes.
+        if (bool(getattr(self, "diag_trace_enabled", False))
+                and isinstance(getattr(self, "_diag_pending", None), dict)):
+            try:
+                try:
+                    from .biocore_model import diag_trace as _diag_mod2
+                except Exception:
+                    from biocore_model import diag_trace as _diag_mod2
+                _diag_pending = self._diag_pending
+                _diag_scale = float(
+                    getattr(core, "self_length_scale", 1.0) or 1.0)
+                _diag_source = "default"
+                if abs(_diag_scale - 1.0) >= 0.05:
+                    _diag_meta = getattr(core, "metacog", None)
+                    if (isinstance(_diag_meta, dict)
+                            and _diag_meta.get("converge")):
+                        _diag_source = "metacog"
+                    elif getattr(self, "self_intent_enabled", True):
+                        _diag_source = "self_intent"
+                    else:
+                        _diag_source = "metacog"
+                elif str(_brevity) != "normal":
+                    _diag_source = "brevity"
+                _diag_style = getattr(core, "expression_style", None)
+                _diag_style = (_diag_style
+                               if isinstance(_diag_style, dict) else {})
+                _diag_pending["length"] = {
+                    "scale": round(_diag_scale, 3),
+                    "brevity": str(_brevity),
+                    "source": _diag_source,
+                    "target": int(_diag_style.get("target", 0) or 0),
+                    "cap": int(_diag_style.get("cap", 0) or 0),
+                }
+                _diag_pending["hints"] = {
+                    "strategy": str(_strategy_hint or "")[:140],
+                    "prospective": str(
+                        getattr(self, "_prospective_hint", "") or "")[:80],
+                    "voice": str(getattr(self, "_voice_hint", "") or "")[:80],
+                    "metacog": str(
+                        getattr(self, "_metacog_hint", "") or "")[:80],
+                }
+                _diag_pending["intent"] = (
+                    dict(core.self_intent)
+                    if isinstance(getattr(core, "self_intent", None), dict)
+                    else {})
+                _diag_pending["metacog"] = (
+                    dict(core.metacog)
+                    if isinstance(getattr(core, "metacog", None), dict)
+                    else {})
+                _diag_pending["pending_prompts"] = list(
+                    getattr(core, "pending_prompts", None) or [])[:3]
+                _diag_pending["voice_phrases"] = list(
+                    getattr(core, "voice_phrases", None) or [])[:2]
+                _diag_pending["prompt"] = _diag_mod2.prompt_diff(
+                    str(getattr(self, "_diag_last_prompt", "") or ""),
+                    str(_compact or ""))
+                self._diag_last_prompt = str(_compact or "")[-4000:]
+                self._diag_pending = _diag_pending
+            except Exception as _diag_exc2:
+                logger.debug("[biocore] diag request half skipped: %s",
+                             _diag_exc2)
 
     def _attach_compact(self, req, block) -> bool:
         """Market compliance: inject via a TEMP content part only.
@@ -13585,7 +15001,8 @@ class BioCorePlugin(Star):
         except Exception as _gate_exc:
             logger.debug("[biocore] safety gate skipped: %s", _gate_exc)
         # emotion probe: one tiny async second call; never blocks the reply.
-        if getattr(self, "emotion_probe_enabled", True) and not _inline_used:
+        if (getattr(self, "emotion_probe_enabled", True) and not _inline_used
+                and not bool(getattr(self, "_boundary_crossed_turn", False))):
             try:
                 try:
                     from .biocore_model import appraisal as _appraisal_mod
@@ -13921,6 +15338,217 @@ class BioCorePlugin(Star):
             _predictive_cycle(self, core)
         except Exception as _predict_exc:
             logger.debug("[biocore] predict cycle skipped: %s", _predict_exc)
+        # task-171: write one read-only diagnosis record (only when the switch is
+        # ON). plugin_data/trace.jsonl keeps the newest 50 turns; never blocks.
+        if (bool(getattr(self, "diag_trace_enabled", False))
+                and isinstance(getattr(self, "_diag_pending", None), dict)):
+            try:
+                try:
+                    from .biocore_model import diag_trace as _diag_mod3
+                except Exception:
+                    from biocore_model import diag_trace as _diag_mod3
+                _diag_pending = self._diag_pending
+                _diag_rows = self._diag_trace_rows(50)
+                _diag_turn = 1
+                if _diag_rows:
+                    try:
+                        _diag_turn = max(
+                            0, int(_diag_rows[-1].get("turn", 0) or 0)) + 1
+                    except Exception:
+                        _diag_turn = len(_diag_rows) + 1
+                _diag_record = _diag_mod3.build(
+                    before=_diag_pending.get("before"),
+                    after=_diag_mod3.state_snapshot(core),
+                    intent=_diag_pending.get("intent"),
+                    metacog=_diag_pending.get("metacog"),
+                    pending_prompts=_diag_pending.get("pending_prompts"),
+                    voice_phrases=_diag_pending.get("voice_phrases"),
+                    length=_diag_pending.get("length"),
+                    hints=_diag_pending.get("hints"),
+                    prompt=_diag_pending.get("prompt"),
+                    session=_diag_pending.get("session"),
+                    ts=_diag_pending.get("ts"),
+                    turn=_diag_turn,
+                    latency_ms=(
+                        time.time() - float(_diag_pending.get("ts") or 0.0)
+                    ) * 1000.0,
+                    text_chars=_diag_pending.get("text_chars"),
+                    switches={
+                        "self_intent_enabled": bool(
+                            getattr(self, "self_intent_enabled", True)),
+                        "prospective_enabled": bool(
+                            getattr(self, "prospective_enabled", True)),
+                        "voice_bank_enabled": bool(
+                            getattr(self, "voice_bank_enabled", True)),
+                        "metacog_enabled": bool(
+                            getattr(self, "metacog_enabled", True)),
+                        "diag_trace_enabled": True,
+                    })
+                self._diag_trace_write(_diag_mod3.append(
+                    _diag_rows, _diag_record, limit=50))
+                self._diag_turns = int(_diag_record.get("turn", 0) or 0)
+                logger.info("[biocore] diag %s",
+                            _diag_mod3.render_text(_diag_record))
+            except Exception as _diag_exc3:
+                logger.warning("[biocore] diag write skipped: %s", _diag_exc3)
+            finally:
+                self._diag_pending = None
+        # task-174 dissonance (default ON): stated stances vs this turn's behaviour.
+        if bool(getattr(self, "dissonance_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import dissonance as _di_mod3
+                except Exception:
+                    from biocore_model import dissonance as _di_mod3
+                _di_stances = []
+                try:
+                    _di_sm = getattr(self, "self_model", None)
+                    if isinstance(_di_sm, dict) and isinstance(
+                            _di_sm.get("stances"), list):
+                        _di_stances = _di_sm.get("stances")
+                except Exception:
+                    _di_stances = []
+                _di_meta = _meta if isinstance(_meta, dict) else {}
+                try:
+                    _di_sal = max(0.0, min(1.0, float(
+                        _di_meta.get("intensity", 0.5) or 0.5)))
+                except Exception:
+                    _di_sal = 0.5
+                core.dissonance = _di_mod3.strength(
+                    _di_stances,
+                    {"kind": str(_di_meta.get("emotion") or "reply"),
+                     "salience": _di_sal, "justification": 0.0},
+                    flags={"enabled": True})
+                _di_value = float(core.dissonance.get("dissonance", 0.0)
+                                  or 0.0)
+                if _di_value > 0.0:
+                    logger.info("[biocore] dissonance=%.2f relief=%s",
+                                _di_value,
+                                core.dissonance.get("relief"))
+            except Exception as _di_exc3:
+                logger.debug("[biocore] dissonance skipped: %s", _di_exc3)
+        # task-174 narrative (default ON): key events -> autobiography + metrics.
+        if bool(getattr(self, "narrative_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import narrative as _na_mod
+                except Exception:
+                    from biocore_model import narrative as _na_mod
+                _na_events = []
+                for _na_ev in self._event_archive(30):
+                    if not isinstance(_na_ev, dict):
+                        continue
+                    _na_events.append({
+                        "id": _na_ev.get("id"),
+                        "ts": _na_ev.get("ts", 0.0),
+                        "text": str(_na_ev.get("title")
+                                    or _na_ev.get("event")
+                                    or _na_ev.get("summary") or "")[:80],
+                        "kind": str(_na_ev.get("kind")
+                                    or _na_ev.get("type") or ""),
+                        "valence": float(_na_ev.get("valence", 0.0) or 0.0),
+                        "importance": float(
+                            _na_ev.get("importance", 0.5) or 0.5),
+                    })
+                core.narrative = _na_mod.summarize(
+                    _na_events, flags={"enabled": True})
+                _na_m = core.narrative.get("metrics") or {}
+                logger.info(
+                    "[biocore] narrative entries=%d consistency=%.2f "
+                    "contradiction=%.2f repair=%.2f",
+                    len(core.narrative.get("entries") or []),
+                    float(_na_m.get("consistency", 0.0) or 0.0),
+                    float(_na_m.get("contradiction", 0.0) or 0.0),
+                    float(_na_m.get("repair", 0.0) or 0.0))
+            except Exception as _na_exc:
+                logger.debug("[biocore] narrative skipped: %s", _na_exc)
+        # task-172 repair_after_boundary (default ON): advance an open flow at the
+        # end of the turn and publish the next-turn reply policy + directive.
+        if bool(getattr(self, "repair_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import repair_after_boundary as _rp_mod3
+                except Exception:
+                    from biocore_model import repair_after_boundary as _rp_mod3
+                _rp_now = time.time()
+                _rp_state = getattr(core, "repair", None)
+                _rp_state = (_rp_state if isinstance(_rp_state, dict) else {})
+                _rp_rel = self._relationship_of(self._user_record(event))
+                _rp_rel = (_rp_rel.get("state")
+                           if isinstance(_rp_rel.get("state"), dict) else _rp_rel)
+                if _rp_state.get("active"):
+                    _rp_delta = max(
+                        0.0, _rp_now - float(
+                            getattr(self, "_repair_last_ts", 0.0) or 0.0))
+                    core.repair = _rp_mod3.advance(
+                        _rp_state, elapsed_delta=_rp_delta,
+                        relationship=_rp_rel, flags={"enabled": True})
+                core.reply_policy = _rp_mod3.reply_policy(
+                    core.repair if isinstance(getattr(core, "repair", None), dict)
+                    else {})
+                _rp_final = getattr(core, "repair", None)
+                if isinstance(_rp_final, dict) and _rp_final.get("active"):
+                    logger.info(
+                        "[biocore] repair stage=%s debt=%.2f hold=%s "
+                        "policy=%s",
+                        _rp_final.get("stage"),
+                        float(_rp_final.get("debt", 0.0) or 0.0),
+                        bool(_rp_final.get("hold")),
+                        str((core.reply_policy or {}).get("mode") or "normal"))
+                self._repair_last_ts = _rp_now
+            except Exception as _rp_exc3:
+                logger.debug("[biocore] repair advance skipped: %s", _rp_exc3)
+        # task-173 affective_labor: one turn of surface acting -> cost -> load.
+        if bool(getattr(self, "affective_labor_enabled", True)):
+            try:
+                try:
+                    from .biocore_model import affective_labor as _al_mod2
+                except Exception:
+                    from biocore_model import affective_labor as _al_mod2
+                _al_snap = {
+                    "v": float(getattr(core, "v", 0.0) or 0.0),
+                    "a": float(getattr(core, "a", 0.4) or 0.0),
+                    "d": float(getattr(core, "d", 0.55) or 0.0),
+                    "social": float(getattr(core, "social", 0.55) or 0.0),
+                    "trust": float(getattr(core, "trust", 0.55) or 0.0),
+                    "stress": float(getattr(core, "stress", 0.2) or 0.0),
+                }
+                _al_felt = getattr(self, "_labor_felt", None)
+                _al_felt = _al_felt if isinstance(_al_felt, dict) else _al_snap
+                _al_expr = str((getattr(core, "labels", {}) or {}).get(
+                    "expression") or "normal")
+                _al_honesty = {"open": 0.85, "normal": 0.5,
+                               "short": 0.3}.get(_al_expr, 0.5)
+                core.affective_labor = _al_mod2.update(
+                    getattr(core, "affective_labor", None),
+                    _al_snap, _al_felt, honesty=_al_honesty, now=time.time())
+                _al_panel = _al_mod2.view(core.affective_labor)
+                core.affective_labor_view = _al_panel
+                logger.info(
+                    "[biocore] affective_labor load=%.2f risk=%.2f "
+                    "cost=%.2f masking=%.2f breakdowns=%d",
+                    float(_al_panel.get("load", 0.0) or 0.0),
+                    float(_al_panel.get("risk", 0.0) or 0.0),
+                    float(_al_panel.get("last_cost", 0.0) or 0.0),
+                    float(_al_panel.get("last_masking", 0.0) or 0.0),
+                    int(_al_panel.get("breakdowns", 0) or 0))
+            except Exception as _al_exc2:
+                logger.debug("[biocore] affective_labor update skipped: %s", _al_exc2)
+        # task-172 exit_or_silence: the request stage decided silence; blank the
+        # visible reply so the host sends nothing (empty chains are skipped).
+        if bool(getattr(self, "_exit_silent_turn", False)):
+            self._exit_silent_turn = False
+            try:
+                response.completion_text = ""
+                _silent_chain = getattr(response, "result_chain", None)
+                if (_silent_chain is not None
+                        and getattr(_silent_chain, "chain", None)):
+                    for _comp in _silent_chain.chain:
+                        if hasattr(_comp, "text"):
+                            _comp.text = ""
+                logger.info("[biocore] exit silent: reply suppressed")
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------- block assembly

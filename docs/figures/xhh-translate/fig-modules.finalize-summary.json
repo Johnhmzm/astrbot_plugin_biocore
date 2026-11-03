@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "finalize",
+  "status": "pass",
+  "type": "architecture",
+  "quality": "standard",
+  "specification": {
+    "path": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\.archify\\modules-flow-20261102-231746\\candidate.json",
+    "sha256": "ca68530a45fe908446b8c25b1f16e458336cab1bacaf28e11aeb83295cade6e6",
+    "bytes": 38701
+  },
+  "artifact": {
+    "path": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\docs\\figures\\xhh-translate\\fig-modules.html",
+    "sha256": "91c9d86be614c1677dfe03a3c97bf0e90c6adf73cde4f879ab920ea9aa98fcbf",
+    "bytes": 849546
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "pass"
+  },
+  "diagnostics": [],
+  "diagnosticSummary": {
+    "total": 0,
+    "shown": 0,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\docs\\figures\\xhh-translate\\fig-modules.finalize.json",
+    "summaryReceipt": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\docs\\figures\\xhh-translate\\fig-modules.finalize-summary.json",
+    "browserCheckReceipt": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\docs\\figures\\xhh-translate\\fig-modules.browser-check.json"
+  },
+  "update": {
+    "status": "update_available",
+    "installedVersion": "3.0.1",
+    "availableVersion": "3.2.0",
+    "releaseNotes": "https://github.com/tt-a1i/archify/releases/tag/v3.2.0",
+    "severity": "normal",
+    "checkedAt": "2026-10-28T07:33:58.483Z",
+    "source": "cache",
+    "noticeRequired": true,
+    "noticeText": "Archify update: 3.0.1 → 3.2.0. A previous check at 2026-10-28T07:33:58.483Z found a newer release. Release notes: https://github.com/tt-a1i/archify/releases/tag/v3.2.0. The installed Skill has not changed; ask to snooze or ignore this reminder.",
+    "eventKey": "archify@sha256:70e210265c59f24dcbdf2a502ff671104b5454e7ee7d3554aecd86bad32384f5"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 3221,
+  "visualReviewRecommendation": {
+    "action": "inspect-route-readability",
+    "signals": {
+      "routesOverSuggestedBends": 1,
+      "routesOverSuggestedStretch": 1
+    },
+    "reason": "Automated gates passed, but crossings or detours still need perceptual review before claiming visual quality.",
+    "affectedRoutes": {
+      "crossings": [],
+      "detours": [
+        {
+          "relationship": {
+            "id": "model-to-x",
+            "from": "flow-model",
+            "to": "x-25",
+            "label": "",
+            "collectionIndex": 4,
+            "artifactIndex": 5
+          },
+          "bends": 4,
+          "stretch": 1.067
+        },
+        {
+          "relationship": {
+            "id": "l5-autonomy",
+            "from": "l5-05",
+            "to": "l2-01",
+            "label": "",
+            "collectionIndex": 9,
+            "artifactIndex": 10
+          },
+          "bends": 2,
+          "stretch": 1.529
+        }
+      ],
+      "truncated": false
+    },
+    "hints": [
+      "flow-model → x-25 needs 4 bends: move node flow-model or x-25 so they share a row or column with matching centers, or sit diagonally with a clear corner.",
+      "l5-05 → l2-01 needs 2 bends: move node l5-05 or l2-01 so they share a row or column with matching centers, or sit diagonally with a clear corner."
+    ],
+    "repair": "Trace these relationships at the desktop viewport. For Architecture, use references/architecture-layout-repair.md: reflow a blocked main path or tangled connected scene, and repair an isolated defect locally only when the surrounding composition is accepted. Preserve all semantic content and user-fixed geometry. Rerun finalize once after the edit."
+  }
+}

@@ -797,6 +797,37 @@ class RoutesMixin:
             "last_cause_trace": [dict(x) for x in (getattr(self, "_last_cause_trace", []) or [])[:8]
                                  if isinstance(x, dict)],
             "last_strategy_hint": str(getattr(self, "_last_strategy_hint", "") or "")[:140],            # task-124: last reply's used-memory receipt (read-only, bounded).
+            # task-148 panel projection: current intents/self_weight/motivation
+            # (read-only; defaults when no turn has run yet).
+            "self_intent": (self._self_intent_status_payload()
+                            if hasattr(self, "_self_intent_status_payload")
+                            else {"enabled": False, "top": "顺着你",
+                                  "top_weight": 0.0, "self_weight": 0.5,
+                                  "motivation": "", "intents": [],
+                                  "pending_prompts": [], "voice_phrases": [],
+                                  "metacog": {}}),
+            # task-174 read-only batch-3 panels.
+            "narrative": (self._narrative_payload()
+                          if hasattr(self, "_narrative_payload")
+                          else {"enabled": False, "metrics": {}, "entries": 0}),
+            "possible_selves": (self._possible_selves_payload()
+                                if hasattr(self, "_possible_selves_payload")
+                                else {"enabled": False, "top": "",
+                                      "sentence": "", "selves": []}),
+            "secrecy": (self._secrecy_payload()
+                        if hasattr(self, "_secrecy_payload")
+                        else {"enabled": False, "pressure": 0.0,
+                              "contained": True, "withholds": 0,
+                              "last_action": ""}),
+            # task-173 read-only second-level emotion label (granularity).
+            "emotion_granularity": (self._granularity_payload()
+                                    if hasattr(self, "_granularity_payload")
+                                    else {"enabled": False, "display": "",
+                                          "line": "", "secondary": []}),
+            # task-171 read-only diagnosis (newest 5 of the 50 kept turns).
+            "diag_trace": (self._diag_trace_payload()
+                           if hasattr(self, "_diag_trace_payload")
+                           else {"enabled": False, "rows": []}),
             "turn_memory": dict(getattr(self, "_last_turn_memory", {}) or {}),
             # task-36 read-only projections are appended ONLY when their opt-in
             # switches are ON (P1-2: default OFF => no new page/status fields).
