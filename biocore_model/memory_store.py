@@ -21,29 +21,54 @@ Compatibility rules (老用户升级不能丢数据):
 - the whole memory/ directory is backed up before the first import;
 - every entry point degrades to JSON mode instead of raising.
 
+Dedupe (task-147, SillyTavern-style):
+- every row carries text_hash = sha1(normalize(text)) (whitespace/punctuation
+  removed, lower-cased); a UNIQUE(session, text_hash) index keeps one row per
+  normalized sentence;
+- a second semantic pass compares same-session vectors (latest 200 rows):
+  cosine >= 0.95 merges as a paraphrase duplicate, 0.90-0.95 only logs;
+- duplicate writes merge into the existing row (earliest ts, higher importance,
+  summed hits/access_count) instead of inserting;
+- existing DBs are migrated once (backup first) with a bounded dedupe pass.
+
 IO lives here on purpose (storage layer); no import of main.
 """
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
 import time
 from pathlib import Path
 
+try:  # AstrBot host logger (offline tests get a null logger)
+    from astrbot.api import logger
+except Exception:  # pragma: no cover
+    class _NullLogger:
+        def _noop(self, *args, **kwargs):
+            return None
+        debug = info = warning = error = exception = critical = _noop
+    logger = _NullLogger()
+
 SQLITE_FILE = "memory.sqlite3"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 EXPORT_SUFFIX = ".export.json"
 EXPORT_NAME = "memory_export.json"
 JSON_SUFFIX = ".json"
+TEXT_HASH_INDEX = "idx_entries_session_hash"
+SEMANTIC_MERGE_THRESHOLD = 0.95
+SEMANTIC_LOG_THRESHOLD = 0.90
+SEMANTIC_SCAN_LIMIT = 200
 
 _ENTRY_COLUMNS = (
     "id", "session", "seq", "text", "role", "ts", "importance", "vector",
     "storage_s", "retrieval_s", "access_count", "hits", "inhibition",
     "suppression_count", "memory_tier", "memory_source", "memory_confidence",
-    "arousal_at_encoding", "hidden", "tags", "raw",
+    "arousal_at_encoding", "hidden", "tags", "text_hash", "raw",
 )
 
 _SCHEMA_SQL = """
@@ -68,6 +93,7 @@ CREATE TABLE IF NOT EXISTS entries(
     arousal_at_encoding REAL,
     hidden INTEGER,
     tags TEXT,
+    text_hash TEXT,
     raw TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_entries_session ON entries(session);
@@ -105,6 +131,55 @@ def _json_load(raw, default=None):
     except Exception:
         return default
     return value if value is not None else default
+
+
+def normalize_text(text):
+    """Dedupe normalization: lower-case + drop whitespace/punctuation."""
+    return "".join(ch for ch in str(text or "").lower() if ch.isalnum())
+
+
+def text_hash(text):
+    """sha1 of the normalized text (stable across whitespace/punctuation)."""
+    return hashlib.sha1(normalize_text(text).encode("utf-8")).hexdigest()
+
+
+def cosine(left, right):
+    """Cosine similarity of two equal-length vectors (0.0 on invalid input)."""
+    if not isinstance(left, (list, tuple)) or not isinstance(right, (list, tuple)):
+        return 0.0
+    if not left or len(left) != len(right):
+        return 0.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for first, second in zip(left, right):
+        value_a = _num(first)
+        value_b = _num(second)
+        dot += value_a * value_b
+        norm_a += value_a * value_a
+        norm_b += value_b * value_b
+    if norm_a <= 0 or norm_b <= 0:
+        return 0.0
+    return dot / math.sqrt(norm_a * norm_b)
+
+
+def bigrams(text):
+    """Character bigram set of the normalized text (cheap cosine prefilter)."""
+    norm = normalize_text(text)
+    if len(norm) < 2:
+        return {norm} if norm else set()
+    return {norm[index:index + 2] for index in range(len(norm) - 1)}
+
+
+def prefilter_ok(left_bigrams, right_bigrams, threshold=0.55):
+    """Jaccard bigram prefilter: only close texts are worth a cosine compare."""
+    if not left_bigrams or not right_bigrams:
+        return False
+    inter = len(left_bigrams & right_bigrams)
+    if not inter:
+        return False
+    union = len(left_bigrams) + len(right_bigrams) - inter
+    return (inter / float(union)) >= threshold
 
 
 def safe_session_name(session_key):
@@ -227,6 +302,9 @@ class MemoryStore:
         self.path = self.memory_dir / SQLITE_FILE
         self._conn = None
         self.recovered = False
+        self.migration_report = {"scanned": 0, "backfilled": 0,
+                                 "merged_pairs": 0, "deleted_rows": 0,
+                                 "backup": "", "ran": False}
         self._open()
 
     # -- connection -----------------------------------------------------
@@ -257,7 +335,168 @@ class MemoryStore:
             self.recovered = True
             self._recover_corrupt()
             self._conn = self._connect()
+        try:
+            self._migrate_dedupe()
+        except Exception as exc:
+            logger.warning("[biocore] memory dedupe migration failed: %s", exc)
         self._set_meta("schema_version", str(SCHEMA_VERSION))
+
+    # -- dedupe schema / one-time migration ---------------------------
+    def _column_names(self):
+        try:
+            return {str(row[1]) for row in self._conn.execute(
+                "PRAGMA table_info(entries)").fetchall()}
+        except Exception:
+            return set()
+
+    def _has_index(self, name):
+        try:
+            return self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                (str(name),)).fetchone() is not None
+        except Exception:
+            return False
+
+    def _migrate_dedupe(self):
+        """Add text_hash + unique(session,text_hash), dedupe existing rows once.
+
+        Backup runs before any merge when the table already has rows; the whole
+        step is idempotent (a second open sees the unique index and returns).
+        """
+        if "text_hash" not in self._column_names():
+            self._conn.execute("ALTER TABLE entries ADD COLUMN text_hash TEXT")
+            self._conn.commit()
+        if self._has_index(TEXT_HASH_INDEX):
+            return
+        try:
+            count = int(self._conn.execute(
+                "SELECT COUNT(*) FROM entries").fetchone()[0] or 0)
+        except Exception:
+            count = 0
+        if count:
+            backup = _backup_memory_dir(self.memory_dir, None,
+                                        label="pre-memory-dedupe")
+            self.migration_report["backup"] = backup.get("dir", "")
+        report = self._dedupe_existing()
+        self.migration_report.update(report)
+        self.migration_report["ran"] = True
+        self._conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS %s ON entries(session, text_hash)"
+            % TEXT_HASH_INDEX)
+        self._conn.commit()
+        self._set_meta("dedupe_migrated", "1")
+        logger.info(
+            "[biocore] memory dedupe migrated: merged=%d deleted=%d "
+            "backfilled=%d backup=%s",
+            int(report.get("merged_pairs", 0)),
+            int(report.get("deleted_rows", 0)),
+            int(report.get("backfilled", 0)),
+            bool(self.migration_report.get("backup")))
+
+    @staticmethod
+    def _merge_views(base_entry, incoming):
+        """Merge one duplicate write/view into the earliest row (SillyTavern-ish)."""
+        merged = dict(base_entry)
+        base_ts = _num(base_entry.get("ts"), 0.0)
+        new_ts = _num(incoming.get("ts"), 0.0)
+        if base_ts <= 0:
+            merged["ts"] = new_ts
+        elif new_ts > 0:
+            merged["ts"] = min(base_ts, new_ts)
+        merged["importance"] = max(_num(base_entry.get("importance"), 0.5),
+                                   _num(incoming.get("importance"), 0.5))
+        merged["hits"] = int(_num(base_entry.get("hits"), 0)) + int(
+            _num(incoming.get("hits"), 0))
+        merged["access_count"] = int(
+            _num(base_entry.get("access_count"), 1)) + int(
+            _num(incoming.get("access_count"), 1))
+        for key, value in incoming.items():
+            if key not in merged or merged.get(key) in (None, "", [], {}):
+                merged[key] = value
+        return merged
+
+    def _dedupe_existing(self):
+        """One-time exact+semantic merge over existing rows (idempotent)."""
+        report = {"scanned": 0, "backfilled": 0, "merged_pairs": 0,
+                  "deleted_rows": 0, "semantic_merged": 0}
+        try:
+            sessions = [str(row[0]) for row in self._conn.execute(
+                "SELECT DISTINCT session FROM entries").fetchall()]
+        except Exception:
+            return report
+        delete_ids = []
+        for session in sessions:
+            try:
+                rows = self._conn.execute(
+                    "SELECT " + ", ".join(_ENTRY_COLUMNS) + " FROM entries "
+                    "WHERE session=? ORDER BY ts ASC, rowid ASC",
+                    (session,)).fetchall()
+            except Exception:
+                continue
+            kept = []
+            by_hash = {}
+            for row in rows:
+                report["scanned"] += 1
+                entry = self._row_entity(row)
+                eid = str(entry.get("id") or "")
+                thash = str(entry.get("text_hash") or "") or text_hash(
+                    entry.get("text"))
+                if thash != str(entry.get("text_hash") or ""):
+                    report["backfilled"] += 1
+                entry["text_hash"] = thash
+                vector = entry.get("vector")
+                grams = bigrams(entry.get("text"))
+                match = by_hash.get(thash)
+                if match is None and vector:
+                    best = 0.0
+                    for candidate in kept:
+                        candidate_vector = candidate.get("vector")
+                        if not candidate_vector:
+                            continue
+                        if not prefilter_ok(grams, candidate.get("_grams")):
+                            continue
+                        score = cosine(vector, candidate_vector)
+                        if score >= SEMANTIC_MERGE_THRESHOLD and score > best:
+                            best = score
+                            match = candidate
+                    if match is not None:
+                        report["semantic_merged"] += 1
+                if match is not None:
+                    merged = self._merge_views(match, entry)
+                    match.clear()
+                    match.update(merged)
+                    delete_ids.append(eid)
+                    report["merged_pairs"] += 1
+                    report["deleted_rows"] += 1
+                    continue
+                entry["_grams"] = grams
+                by_hash.setdefault(thash, entry)
+                kept.append(entry)
+            # write merged/backfilled rows back
+            for entry in kept:
+                try:
+                    self._conn.execute(
+                        "UPDATE entries SET ts=?, importance=?, hits=?, "
+                        "access_count=?, text_hash=?, raw=? WHERE id=?",
+                        (_num(entry.get("ts"), 0.0),
+                         _num(entry.get("importance"), 0.5),
+                         int(_num(entry.get("hits"), 0)),
+                         int(_num(entry.get("access_count"), 1)),
+                         str(entry.get("text_hash") or ""),
+                         _json_dump({k: v for k, v in entry.items()
+                                     if k not in ("vector", "_grams")}),
+                         str(entry.get("id") or "")))
+                except Exception:
+                    continue
+        if delete_ids:
+            try:
+                with self._conn:
+                    self._conn.executemany(
+                        "DELETE FROM entries WHERE id=?",
+                        [(eid,) for eid in delete_ids])
+            except Exception as exc:
+                logger.warning("[biocore] memory dedupe delete failed: %s", exc)
+        return report
 
     def _recover_corrupt(self):
         try:
@@ -355,7 +594,10 @@ class MemoryStore:
             (None if entry.get("memory_confidence") is None
              else _num(entry.get("memory_confidence"), 0.0)),
             _num(entry.get("arousal_at_encoding"), 0.4),
-            hidden, tags_text, _json_dump(raw_entry),
+            hidden, tags_text,
+            str(entry.get("text_hash") or "") or text_hash(
+                entry.get("text") or ""),
+            _json_dump(raw_entry),
         )
 
     def _row_entity(self, row):
@@ -387,6 +629,9 @@ class MemoryStore:
         entry["memory_tier"] = str(raw.get("memory_tier") or "warm")
         entry["memory_source"] = str(raw.get("memory_source") or "direct")
         entry["hidden"] = bool(raw.get("hidden"))
+        # Keep the stored value: the dedupe migration counts/backfills blanks
+        # itself, and fabricated hashes would hide the backfill count.
+        entry["text_hash"] = str(raw.get("text_hash") or "")
         tags = _json_load(raw.get("tags"), None)
         if isinstance(tags, list) and tags:
             entry["tags"] = [str(x) for x in tags]
@@ -396,34 +641,184 @@ class MemoryStore:
 
     def replace_session(self, session, doc):
         """Replace one session's rows + extras in a single transaction."""
+        return self._write_session(session, doc, replace=True)
+
+    def _semantic_candidates(self, session, limit=SEMANTIC_SCAN_LIMIT):
+        """Latest N rows of the session (for the semantic dedupe pass)."""
+        try:
+            rows = self._conn.execute(
+                "SELECT " + ", ".join(_ENTRY_COLUMNS) + " FROM entries "
+                "WHERE session=? ORDER BY ts DESC LIMIT ?",
+                (session, max(1, int(limit)))).fetchall()
+        except Exception:
+            return []
+        return [self._row_entity(row) for row in rows]
+
+    def _write_session(self, session, doc, replace=False):
+        """Write one session's entries with exact + semantic dedupe.
+
+        Duplicate writes merge into the existing row instead of inserting:
+        earliest ts, higher importance, summed hits/access_count. A re-save of
+        the same row id is authoritative (max counters, no inflation).
+        """
         session = safe_session_name(session)
         doc = doc if isinstance(doc, dict) else {}
         entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
         extras = {key: value for key, value in doc.items() if key != "entries"}
         used = self._used_ids()
-        rows = []
-        clean_entries = []
-        for seq, entry in enumerate(entries):
-            if not isinstance(entry, dict):
+        db_by_id = {}
+        db_by_hash = {}
+        if not replace:
+            try:
+                rows = self._conn.execute(
+                    "SELECT " + ", ".join(_ENTRY_COLUMNS) + " FROM entries "
+                    "WHERE session=?", (session,)).fetchall()
+            except Exception:
+                rows = []
+            for row in rows:
+                entry = self._row_entity(row)
+                entry_id = str(entry.get("id") or "")
+                if not entry_id:
+                    continue
+                db_by_id[entry_id] = entry
+                db_by_hash.setdefault(entry.get("text_hash") or text_hash(
+                    entry.get("text")), entry)
+        semantic = self._semantic_candidates(session) if not replace else []
+        final = []
+        final_ids = set()
+        final_by_id = {}
+        doc_hash = {}
+        near = []
+        merged_count = 0
+        semantic_merged = 0
+        for raw_entry in entries:
+            if not isinstance(raw_entry, dict):
                 continue
-            eid = entry_key(entry, session, used)
-            entry = dict(entry)
-            entry["id"] = eid
-            clean_entries.append(entry)
-            rows.append(self._row_values(entry, session, seq, eid))
+            entry = dict(raw_entry)
+            thash = text_hash(entry.get("text"))
+            match = None
+            matched_by = ""
+            if thash in doc_hash:
+                match = doc_hash[thash]
+                matched_by = "doc"
+            elif thash in db_by_hash and str(
+                    db_by_hash[thash].get("id") or "") not in final_ids:
+                match = db_by_hash[thash]
+                matched_by = "db"
+            elif entry.get("vector"):
+                grams = bigrams(entry.get("text"))
+                best = 0.0
+                best_row = None
+                for candidate in semantic:
+                    candidate_id = str(candidate.get("id") or "")
+                    # an entry already appended in this save is the same row:
+                    # compare against its merged view instead of skipping it.
+                    candidate = final_by_id.get(candidate_id, candidate)
+                    if not prefilter_ok(grams, bigrams(candidate.get("text"))):
+                        continue
+                    score = cosine(entry.get("vector"),
+                                   candidate.get("vector"))
+                    if score >= SEMANTIC_MERGE_THRESHOLD and score > best:
+                        best = score
+                        best_row = candidate
+                if best_row is not None:
+                    match = best_row
+                    matched_by = "semantic"
+                    semantic_merged += 1
+                else:
+                    near_score = 0.0
+                    for candidate in semantic:
+                        candidate = final_by_id.get(
+                            str(candidate.get("id") or ""), candidate)
+                        if not prefilter_ok(grams, bigrams(candidate.get("text"))):
+                            continue
+                        score = cosine(entry.get("vector"),
+                                       candidate.get("vector"))
+                        if SEMANTIC_LOG_THRESHOLD <= score < SEMANTIC_MERGE_THRESHOLD:
+                            near_score = max(near_score, score)
+                    if near_score:
+                        near.append({"cosine": round(near_score, 4),
+                                     "text": str(entry.get("text"))[:40],
+                                     "kind": "near_merge"})
+            if match is not None:
+                same_id = (matched_by == "db" and entry.get("id")
+                           and str(entry.get("id")) == str(match.get("id")))
+                if matched_by == "doc":
+                    merged = self._merge_views(match, entry)
+                    match.clear()
+                    match.update(merged)
+                    merged_count += 1
+                    continue
+                if same_id:
+                    merged = dict(match)
+                    merged["ts"] = min(
+                        _num(match.get("ts"), 0.0) or _num(entry.get("ts")),
+                        _num(entry.get("ts"), 0.0) or _num(match.get("ts")))
+                    merged["importance"] = max(
+                        _num(match.get("importance"), 0.5),
+                        _num(entry.get("importance"), 0.5))
+                    merged["hits"] = max(int(_num(match.get("hits"))),
+                                         int(_num(entry.get("hits"))))
+                    merged["access_count"] = max(
+                        int(_num(match.get("access_count"), 1)),
+                        int(_num(entry.get("access_count"), 1)))
+                else:
+                    merged = self._merge_views(match, entry)
+                    merged["id"] = str(match.get("id"))
+                    merged["text_hash"] = (match.get("text_hash")
+                                           or text_hash(match.get("text")))
+                    merged_count += 1
+                merged["text_hash"] = merged.get("text_hash") or thash
+                if matched_by == "semantic" and str(
+                        merged.get("id")) in final_ids:
+                    target = final_by_id.get(str(merged.get("id")))
+                    if target is not None:
+                        target.clear()
+                        target.update(merged)
+                        doc_hash[merged["text_hash"]] = target
+                        continue
+                final.append(merged)
+                final_ids.add(str(merged.get("id")))
+                final_by_id[str(merged.get("id"))] = merged
+                doc_hash[merged["text_hash"]] = merged
+                continue
+            new_entry = dict(entry)
+            new_entry["id"] = entry_key(entry, session, used)
+            new_entry["text_hash"] = thash
+            final.append(new_entry)
+            final_ids.add(new_entry["id"])
+            final_by_id[new_entry["id"]] = new_entry
+            doc_hash[thash] = new_entry
         sql = ("INSERT OR REPLACE INTO entries(" + ", ".join(_ENTRY_COLUMNS)
                + ") VALUES(" + ",".join("?" for _ in _ENTRY_COLUMNS) + ")")
+        rows = [self._row_values(entry, session, seq, entry["id"])
+                for seq, entry in enumerate(final)]
         with self._conn:
-            self._conn.execute("DELETE FROM entries WHERE session=?", (session,))
+            if replace:
+                self._conn.execute("DELETE FROM entries WHERE session=?",
+                                   (session,))
             if rows:
                 self._conn.executemany(sql, rows)
+            if not replace and db_by_id:
+                stale = [eid for eid in db_by_id if eid not in final_ids]
+                if stale:
+                    self._conn.executemany(
+                        "DELETE FROM entries WHERE id=?",
+                        [(eid,) for eid in stale])
             self._conn.execute(
                 "INSERT INTO session_docs(session, doc, updated_at) "
                 "VALUES(?,?,?) ON CONFLICT(session) DO UPDATE SET "
                 "doc=excluded.doc, updated_at=excluded.updated_at",
                 (session, _json_dump(extras), time.time()))
-        doc["entries"] = clean_entries
-        return {"session": session, "entries": len(clean_entries)}
+        doc["entries"] = final
+        for item in near[:5]:
+            logger.info(
+                "[biocore] memory near-merge session=%s cosine=%.3f text=%s",
+                session, float(item.get("cosine", 0.0)),
+                str(item.get("text") or ""))
+        return {"session": session, "entries": len(final),
+                "merged": merged_count, "semantic_merged": semantic_merged,
+                "near_merge": len(near)}
 
     def load_doc(self, session):
         """Doc for one session: entries (raw + vector BLOB) + stored extras."""
@@ -546,9 +941,9 @@ class MemoryStore:
         return count
 
     def save_doc(self, session, doc):
-        """Write one session to SQLite and refresh its JSON mirror."""
+        """Write one session to SQLite (dedupe merge) + refresh JSON mirror."""
         session = safe_session_name(session)
-        result = self.replace_session(session, doc)
+        result = self._write_session(session, doc, replace=False)
         result["json_mirror"] = self.write_json_mirror(session, doc)
         return result
 
@@ -715,6 +1110,13 @@ def ensure_store(memory_dir, backup_root=None, label="pre-migration"):
     try:
         report["recovered"] = bool(store.recovered)
         report["compacted"] = int(store.compact_raw())
+        migration = dict(getattr(store, "migration_report", {}) or {})
+        report["migration"] = migration
+        if migration.get("ran"):
+            report["dedupe_backup"] = str(migration.get("backup") or "")
+            # reflect the merged rows into the JSON mirrors (downgrade-safe)
+            for session, _updated_at, doc in store.all_docs():
+                store.write_json_mirror(session, doc)
         stats = store.stats()
         legacy = _legacy_json_files(memory_dir)
         # Rule 4: when both sides exist the configured backend wins; no

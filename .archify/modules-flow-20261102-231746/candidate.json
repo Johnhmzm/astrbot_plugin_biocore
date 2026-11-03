@@ -1,0 +1,2318 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "BioCore 135 模块总流程：七层分区与五环归属",
+    "locale": "zh-CN",
+    "output": "docs/figures/xhh-translate/fig-modules.html",
+    "quality_profile": "standard",
+    "legend": {
+      "mode": "all",
+      "entries": {
+        "backend": {
+          "label": "L0 身体 (35)"
+        },
+        "database": {
+          "label": "L1 记忆 (11)"
+        },
+        "frontend": {
+          "label": "L2 自我 (20)"
+        },
+        "security": {
+          "label": "L3 解释 (13)"
+        },
+        "cloud": {
+          "label": "L4 表达 + 模型锚点 (11)"
+        },
+        "external": {
+          "label": "L5 交互 + 输入锚点 (15)"
+        },
+        "messagebus": {
+          "label": "X 交叉 (30)"
+        }
+      }
+    }
+  },
+  "components": [
+    {
+      "id": "l5-01",
+      "type": "external",
+      "label": "plugin_routes",
+      "icon": "none",
+      "pos": [
+        100,
+        120
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-02",
+      "type": "external",
+      "label": "autonomy_check",
+      "icon": "none",
+      "pos": [
+        272,
+        120
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-03",
+      "type": "external",
+      "label": "autonomy_mode",
+      "icon": "none",
+      "pos": [
+        444,
+        120
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-04",
+      "type": "external",
+      "label": "autonomy_model",
+      "icon": "none",
+      "pos": [
+        616,
+        120
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-05",
+      "type": "external",
+      "label": "autonomy_loop",
+      "icon": "none",
+      "pos": [
+        788,
+        120
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-06",
+      "type": "external",
+      "label": "autonomy_params",
+      "icon": "none",
+      "pos": [
+        100,
+        184
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-07",
+      "type": "external",
+      "label": "autonomy_reason",
+      "icon": "none",
+      "pos": [
+        272,
+        184
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-08",
+      "type": "external",
+      "label": "core_commands",
+      "icon": "none",
+      "pos": [
+        444,
+        184
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-09",
+      "type": "external",
+      "label": "core_mode",
+      "icon": "none",
+      "pos": [
+        616,
+        184
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-10",
+      "type": "external",
+      "label": "exit_or_silence",
+      "icon": "none",
+      "pos": [
+        788,
+        184
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-11",
+      "type": "external",
+      "label": "autonomy_tick",
+      "icon": "none",
+      "pos": [
+        100,
+        248
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-12",
+      "type": "external",
+      "label": "pipeline_api",
+      "icon": "none",
+      "pos": [
+        272,
+        248
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-13",
+      "type": "external",
+      "label": "provider_fallback",
+      "icon": "none",
+      "pos": [
+        444,
+        248
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-14",
+      "type": "external",
+      "label": "rollback",
+      "icon": "none",
+      "pos": [
+        616,
+        248
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l5-15",
+      "type": "external",
+      "label": "scheduler",
+      "icon": "none",
+      "pos": [
+        788,
+        248
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-01",
+      "type": "security",
+      "label": "attribution",
+      "icon": "none",
+      "pos": [
+        100,
+        390
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-02",
+      "type": "security",
+      "label": "appraisal_action",
+      "icon": "none",
+      "pos": [
+        272,
+        390
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-03",
+      "type": "security",
+      "label": "attributor",
+      "icon": "none",
+      "pos": [
+        444,
+        390
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-04",
+      "type": "security",
+      "label": "emotion_geometry",
+      "icon": "none",
+      "pos": [
+        616,
+        390
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-05",
+      "type": "security",
+      "label": "granularity",
+      "icon": "none",
+      "pos": [
+        788,
+        390
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-06",
+      "type": "security",
+      "label": "intero_style",
+      "icon": "none",
+      "pos": [
+        100,
+        454
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-07",
+      "type": "security",
+      "label": "preset",
+      "icon": "none",
+      "pos": [
+        272,
+        454
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-08",
+      "type": "security",
+      "label": "prompt_rules",
+      "icon": "none",
+      "pos": [
+        444,
+        454
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-09",
+      "type": "security",
+      "label": "render",
+      "icon": "none",
+      "pos": [
+        616,
+        454
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-10",
+      "type": "security",
+      "label": "schema",
+      "icon": "none",
+      "pos": [
+        788,
+        454
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-11",
+      "type": "security",
+      "label": "intent_render",
+      "icon": "none",
+      "pos": [
+        100,
+        518
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-12",
+      "type": "security",
+      "label": "social_repair",
+      "icon": "none",
+      "pos": [
+        272,
+        518
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l3-13",
+      "type": "security",
+      "label": "waiting_sense",
+      "icon": "none",
+      "pos": [
+        444,
+        518
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-01",
+      "type": "cloud",
+      "label": "expr_state",
+      "icon": "none",
+      "pos": [
+        100,
+        660
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-02",
+      "type": "cloud",
+      "label": "boundary_gate",
+      "icon": "none",
+      "pos": [
+        272,
+        660
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-03",
+      "type": "cloud",
+      "label": "expr_guard",
+      "icon": "none",
+      "pos": [
+        444,
+        660
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-04",
+      "type": "cloud",
+      "label": "expr_intent",
+      "icon": "none",
+      "pos": [
+        616,
+        660
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-05",
+      "type": "cloud",
+      "label": "expr_tone",
+      "icon": "none",
+      "pos": [
+        100,
+        724
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-06",
+      "type": "cloud",
+      "label": "reply_limit",
+      "icon": "none",
+      "pos": [
+        272,
+        724
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-07",
+      "type": "cloud",
+      "label": "reply_split",
+      "icon": "none",
+      "pos": [
+        444,
+        724
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-08",
+      "type": "cloud",
+      "label": "sanitize",
+      "icon": "none",
+      "pos": [
+        616,
+        724
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-09",
+      "type": "cloud",
+      "label": "expr_template",
+      "icon": "none",
+      "pos": [
+        100,
+        788
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-10",
+      "type": "cloud",
+      "label": "template_expr",
+      "icon": "none",
+      "pos": [
+        272,
+        788
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l4-11",
+      "type": "cloud",
+      "label": "voice_bank",
+      "icon": "none",
+      "pos": [
+        444,
+        788
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-01",
+      "type": "database",
+      "label": "memory_store",
+      "icon": "none",
+      "pos": [
+        100,
+        930
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-02",
+      "type": "database",
+      "label": "commitment_extractor",
+      "icon": "none",
+      "pos": [
+        272,
+        930
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-03",
+      "type": "database",
+      "label": "entity_graph",
+      "icon": "none",
+      "pos": [
+        444,
+        930
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-04",
+      "type": "database",
+      "label": "entity_resolve",
+      "icon": "none",
+      "pos": [
+        616,
+        930
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-05",
+      "type": "database",
+      "label": "memory_dual",
+      "icon": "none",
+      "pos": [
+        100,
+        994
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-06",
+      "type": "database",
+      "label": "memory_forgetting",
+      "icon": "none",
+      "pos": [
+        272,
+        994
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-07",
+      "type": "database",
+      "label": "narrative",
+      "icon": "none",
+      "pos": [
+        444,
+        994
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-08",
+      "type": "database",
+      "label": "prospective",
+      "icon": "none",
+      "pos": [
+        616,
+        994
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-09",
+      "type": "database",
+      "label": "reconstruction",
+      "icon": "none",
+      "pos": [
+        100,
+        1058
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-10",
+      "type": "database",
+      "label": "source_monitoring",
+      "icon": "none",
+      "pos": [
+        272,
+        1058
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l1-11",
+      "type": "database",
+      "label": "turn_memory",
+      "icon": "none",
+      "pos": [
+        444,
+        1058
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "l2-01",
+      "type": "frontend",
+      "label": "self_interest",
+      "icon": "none",
+      "pos": [
+        1020,
+        120
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-02",
+      "type": "frontend",
+      "label": "affective_labor",
+      "icon": "none",
+      "pos": [
+        1180,
+        120
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-03",
+      "type": "frontend",
+      "label": "attachment_behavior",
+      "icon": "none",
+      "pos": [
+        1340,
+        120
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-04",
+      "type": "frontend",
+      "label": "boundary",
+      "icon": "none",
+      "pos": [
+        1500,
+        120
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-05",
+      "type": "frontend",
+      "label": "defense_mechanisms",
+      "icon": "none",
+      "pos": [
+        1660,
+        120
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-06",
+      "type": "frontend",
+      "label": "dissonance",
+      "icon": "none",
+      "pos": [
+        1820,
+        120
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-07",
+      "type": "frontend",
+      "label": "envy",
+      "icon": "none",
+      "pos": [
+        1020,
+        184
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-08",
+      "type": "frontend",
+      "label": "learning_probe",
+      "icon": "none",
+      "pos": [
+        1180,
+        184
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-09",
+      "type": "frontend",
+      "label": "metacog",
+      "icon": "none",
+      "pos": [
+        1340,
+        184
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-10",
+      "type": "frontend",
+      "label": "policy_learning",
+      "icon": "none",
+      "pos": [
+        1500,
+        184
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-11",
+      "type": "frontend",
+      "label": "possible_selves",
+      "icon": "none",
+      "pos": [
+        1660,
+        184
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-12",
+      "type": "frontend",
+      "label": "regulation_strategies",
+      "icon": "none",
+      "pos": [
+        1820,
+        184
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-13",
+      "type": "frontend",
+      "label": "relation_stage",
+      "icon": "none",
+      "pos": [
+        1020,
+        248
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-14",
+      "type": "frontend",
+      "label": "repair_after_boundary",
+      "icon": "none",
+      "pos": [
+        1180,
+        248
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-15",
+      "type": "frontend",
+      "label": "secrecy",
+      "icon": "none",
+      "pos": [
+        1340,
+        248
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-16",
+      "type": "frontend",
+      "label": "self_verification",
+      "icon": "none",
+      "pos": [
+        1500,
+        248
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-17",
+      "type": "frontend",
+      "label": "social_theory",
+      "icon": "none",
+      "pos": [
+        1660,
+        248
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-18",
+      "type": "frontend",
+      "label": "topic_control",
+      "icon": "none",
+      "pos": [
+        1820,
+        248
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-19",
+      "type": "frontend",
+      "label": "self_intent",
+      "icon": "none",
+      "pos": [
+        1020,
+        312
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l2-20",
+      "type": "frontend",
+      "label": "value_order",
+      "icon": "none",
+      "pos": [
+        1180,
+        312
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-01",
+      "type": "backend",
+      "label": "intero_core",
+      "icon": "none",
+      "pos": [
+        1020,
+        450
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-02",
+      "type": "backend",
+      "label": "attachment_regulation",
+      "icon": "none",
+      "pos": [
+        1180,
+        450
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-03",
+      "type": "backend",
+      "label": "attachment_state",
+      "icon": "none",
+      "pos": [
+        1340,
+        450
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-04",
+      "type": "backend",
+      "label": "autonomic",
+      "icon": "none",
+      "pos": [
+        1500,
+        450
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-05",
+      "type": "backend",
+      "label": "bio_appraisal",
+      "icon": "none",
+      "pos": [
+        1660,
+        450
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-06",
+      "type": "backend",
+      "label": "bio_autonomy_state",
+      "icon": "none",
+      "pos": [
+        1820,
+        450
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-07",
+      "type": "backend",
+      "label": "bio_const",
+      "icon": "none",
+      "pos": [
+        1020,
+        514
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-08",
+      "type": "backend",
+      "label": "bio_daily",
+      "icon": "none",
+      "pos": [
+        1180,
+        514
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-09",
+      "type": "backend",
+      "label": "bio_emotion",
+      "icon": "none",
+      "pos": [
+        1340,
+        514
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-10",
+      "type": "backend",
+      "label": "bio_emotion2",
+      "icon": "none",
+      "pos": [
+        1500,
+        514
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-11",
+      "type": "backend",
+      "label": "bio_goal",
+      "icon": "none",
+      "pos": [
+        1660,
+        514
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-12",
+      "type": "backend",
+      "label": "bio_identity",
+      "icon": "none",
+      "pos": [
+        1820,
+        514
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-13",
+      "type": "backend",
+      "label": "bio_noise",
+      "icon": "none",
+      "pos": [
+        1020,
+        578
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-14",
+      "type": "backend",
+      "label": "bio_physiology2",
+      "icon": "none",
+      "pos": [
+        1180,
+        578
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-15",
+      "type": "backend",
+      "label": "bio_snapshot",
+      "icon": "none",
+      "pos": [
+        1340,
+        578
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-16",
+      "type": "backend",
+      "label": "bio_state",
+      "icon": "none",
+      "pos": [
+        1500,
+        578
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-17",
+      "type": "backend",
+      "label": "bio_util",
+      "icon": "none",
+      "pos": [
+        1660,
+        578
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-18",
+      "type": "backend",
+      "label": "compassion_fatigue",
+      "icon": "none",
+      "pos": [
+        1820,
+        578
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-19",
+      "type": "backend",
+      "label": "connection_bids",
+      "icon": "none",
+      "pos": [
+        1020,
+        642
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-20",
+      "type": "backend",
+      "label": "criticality",
+      "icon": "none",
+      "pos": [
+        1180,
+        642
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-21",
+      "type": "backend",
+      "label": "extreme_scenarios",
+      "icon": "none",
+      "pos": [
+        1340,
+        642
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-22",
+      "type": "backend",
+      "label": "frustration_curve",
+      "icon": "none",
+      "pos": [
+        1500,
+        642
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-23",
+      "type": "backend",
+      "label": "mind_wander",
+      "icon": "none",
+      "pos": [
+        1660,
+        642
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-24",
+      "type": "backend",
+      "label": "mood",
+      "icon": "none",
+      "pos": [
+        1820,
+        642
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-25",
+      "type": "backend",
+      "label": "needs_esteem",
+      "icon": "none",
+      "pos": [
+        1020,
+        706
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-26",
+      "type": "backend",
+      "label": "needs_events",
+      "icon": "none",
+      "pos": [
+        1180,
+        706
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-27",
+      "type": "backend",
+      "label": "needs_sleep",
+      "icon": "none",
+      "pos": [
+        1340,
+        706
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-28",
+      "type": "backend",
+      "label": "noise_bank",
+      "icon": "none",
+      "pos": [
+        1500,
+        706
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-29",
+      "type": "backend",
+      "label": "predictor",
+      "icon": "none",
+      "pos": [
+        1660,
+        706
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-30",
+      "type": "backend",
+      "label": "regulation_loop",
+      "icon": "none",
+      "pos": [
+        1820,
+        706
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-31",
+      "type": "backend",
+      "label": "bio_tick",
+      "icon": "none",
+      "pos": [
+        1020,
+        770
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-32",
+      "type": "backend",
+      "label": "relationship_stage",
+      "icon": "none",
+      "pos": [
+        1180,
+        770
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-33",
+      "type": "backend",
+      "label": "self_esteem",
+      "icon": "none",
+      "pos": [
+        1340,
+        770
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-34",
+      "type": "backend",
+      "label": "sleep_circadian",
+      "icon": "none",
+      "pos": [
+        1500,
+        770
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "l0-35",
+      "type": "backend",
+      "label": "social_pain",
+      "icon": "none",
+      "pos": [
+        1660,
+        770
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-01",
+      "type": "messagebus",
+      "label": "feedback_flow",
+      "icon": "none",
+      "pos": [
+        1020,
+        895
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-02",
+      "type": "messagebus",
+      "label": "appraisal",
+      "icon": "none",
+      "pos": [
+        1180,
+        895
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-03",
+      "type": "messagebus",
+      "label": "archive_queue",
+      "icon": "none",
+      "pos": [
+        1340,
+        895
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-04",
+      "type": "messagebus",
+      "label": "autonomy_affect",
+      "icon": "none",
+      "pos": [
+        1500,
+        895
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-05",
+      "type": "messagebus",
+      "label": "bio_config",
+      "icon": "none",
+      "pos": [
+        1660,
+        895
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-06",
+      "type": "messagebus",
+      "label": "blocks",
+      "icon": "none",
+      "pos": [
+        1820,
+        895
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-07",
+      "type": "messagebus",
+      "label": "core_bridge",
+      "icon": "none",
+      "pos": [
+        1020,
+        959
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-08",
+      "type": "messagebus",
+      "label": "core_client",
+      "icon": "none",
+      "pos": [
+        1180,
+        959
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-09",
+      "type": "messagebus",
+      "label": "delta_budget",
+      "icon": "none",
+      "pos": [
+        1340,
+        959
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-10",
+      "type": "messagebus",
+      "label": "diag_trace",
+      "icon": "none",
+      "pos": [
+        1500,
+        959
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-11",
+      "type": "messagebus",
+      "label": "emotion_probe",
+      "icon": "none",
+      "pos": [
+        1660,
+        959
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-12",
+      "type": "messagebus",
+      "label": "feedback_guard",
+      "icon": "none",
+      "pos": [
+        1820,
+        959
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-13",
+      "type": "messagebus",
+      "label": "feedback_llm",
+      "icon": "none",
+      "pos": [
+        1020,
+        1023
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-14",
+      "type": "messagebus",
+      "label": "feedback_memory",
+      "icon": "none",
+      "pos": [
+        1180,
+        1023
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-15",
+      "type": "messagebus",
+      "label": "feedback_user",
+      "icon": "none",
+      "pos": [
+        1340,
+        1023
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-16",
+      "type": "messagebus",
+      "label": "graph_extract",
+      "icon": "none",
+      "pos": [
+        1500,
+        1023
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-17",
+      "type": "messagebus",
+      "label": "graph_recall",
+      "icon": "none",
+      "pos": [
+        1660,
+        1023
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-18",
+      "type": "messagebus",
+      "label": "layered_memory",
+      "icon": "none",
+      "pos": [
+        1820,
+        1023
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-19",
+      "type": "messagebus",
+      "label": "migrate",
+      "icon": "none",
+      "pos": [
+        1020,
+        1087
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-20",
+      "type": "messagebus",
+      "label": "migrate_store",
+      "icon": "none",
+      "pos": [
+        1180,
+        1087
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-21",
+      "type": "messagebus",
+      "label": "pipeline",
+      "icon": "none",
+      "pos": [
+        1340,
+        1087
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-22",
+      "type": "messagebus",
+      "label": "plugin_config",
+      "icon": "none",
+      "pos": [
+        1500,
+        1087
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-23",
+      "type": "messagebus",
+      "label": "proactive_context",
+      "icon": "none",
+      "pos": [
+        1660,
+        1087
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-24",
+      "type": "messagebus",
+      "label": "runtime",
+      "icon": "none",
+      "pos": [
+        1820,
+        1087
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-25",
+      "type": "messagebus",
+      "label": "x_directives",
+      "icon": "none",
+      "pos": [
+        1020,
+        1151
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-26",
+      "type": "messagebus",
+      "label": "services",
+      "icon": "none",
+      "pos": [
+        1180,
+        1151
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-27",
+      "type": "messagebus",
+      "label": "situation",
+      "icon": "none",
+      "pos": [
+        1340,
+        1151
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-28",
+      "type": "messagebus",
+      "label": "stages",
+      "icon": "none",
+      "pos": [
+        1500,
+        1151
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-29",
+      "type": "messagebus",
+      "label": "state_tag",
+      "icon": "none",
+      "pos": [
+        1660,
+        1151
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "x-30",
+      "type": "messagebus",
+      "label": "ui_settings",
+      "icon": "none",
+      "pos": [
+        1820,
+        1151
+      ],
+      "size": [
+        140,
+        44
+      ]
+    },
+    {
+      "id": "flow-input",
+      "type": "external",
+      "label": "输入",
+      "icon": "none",
+      "pos": [
+        100,
+        20
+      ],
+      "size": [
+        150,
+        44
+      ]
+    },
+    {
+      "id": "flow-model",
+      "type": "cloud",
+      "label": "模型 LLM",
+      "icon": "none",
+      "pos": [
+        400,
+        1160
+      ],
+      "size": [
+        150,
+        44
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "L5 交互 · 15 ← 输入",
+      "wraps": [
+        "l5-01",
+        "l5-02",
+        "l5-03",
+        "l5-04",
+        "l5-05",
+        "l5-06",
+        "l5-07",
+        "l5-08",
+        "l5-09",
+        "l5-10",
+        "l5-11",
+        "l5-12",
+        "l5-13",
+        "l5-14",
+        "l5-15"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "L3 解释 · 13 ← L5/L1 → L4",
+      "wraps": [
+        "l3-01",
+        "l3-02",
+        "l3-03",
+        "l3-04",
+        "l3-05",
+        "l3-06",
+        "l3-07",
+        "l3-08",
+        "l3-09",
+        "l3-10",
+        "l3-11",
+        "l3-12",
+        "l3-13"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "L4 表达 · 11 ← L3/L2 → 模型",
+      "wraps": [
+        "l4-01",
+        "l4-02",
+        "l4-03",
+        "l4-04",
+        "l4-05",
+        "l4-06",
+        "l4-07",
+        "l4-08",
+        "l4-09",
+        "l4-10",
+        "l4-11"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "L1 记忆 · 11 → L3",
+      "wraps": [
+        "l1-01",
+        "l1-02",
+        "l1-03",
+        "l1-04",
+        "l1-05",
+        "l1-06",
+        "l1-07",
+        "l1-08",
+        "l1-09",
+        "l1-10",
+        "l1-11"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "L2 自我 · 20 ← L0/背景 → L4",
+      "wraps": [
+        "l2-01",
+        "l2-02",
+        "l2-03",
+        "l2-04",
+        "l2-05",
+        "l2-06",
+        "l2-07",
+        "l2-08",
+        "l2-09",
+        "l2-10",
+        "l2-11",
+        "l2-12",
+        "l2-13",
+        "l2-14",
+        "l2-15",
+        "l2-16",
+        "l2-17",
+        "l2-18",
+        "l2-19",
+        "l2-20"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "L0 身体 · 35 ← X → L2",
+      "wraps": [
+        "l0-01",
+        "l0-02",
+        "l0-03",
+        "l0-04",
+        "l0-05",
+        "l0-06",
+        "l0-07",
+        "l0-08",
+        "l0-09",
+        "l0-10",
+        "l0-11",
+        "l0-12",
+        "l0-13",
+        "l0-14",
+        "l0-15",
+        "l0-16",
+        "l0-17",
+        "l0-18",
+        "l0-19",
+        "l0-20",
+        "l0-21",
+        "l0-22",
+        "l0-23",
+        "l0-24",
+        "l0-25",
+        "l0-26",
+        "l0-27",
+        "l0-28",
+        "l0-29",
+        "l0-30",
+        "l0-31",
+        "l0-32",
+        "l0-33",
+        "l0-34",
+        "l0-35"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "X 交叉 · 30 ← 模型 → L0",
+      "wraps": [
+        "x-01",
+        "x-02",
+        "x-03",
+        "x-04",
+        "x-05",
+        "x-06",
+        "x-07",
+        "x-08",
+        "x-09",
+        "x-10",
+        "x-11",
+        "x-12",
+        "x-13",
+        "x-14",
+        "x-15",
+        "x-16",
+        "x-17",
+        "x-18",
+        "x-19",
+        "x-20",
+        "x-21",
+        "x-22",
+        "x-23",
+        "x-24",
+        "x-25",
+        "x-26",
+        "x-27",
+        "x-28",
+        "x-29",
+        "x-30"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "input-to-l5",
+      "from": "flow-input",
+      "to": "l5-01",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "l5-to-l3",
+      "from": "l5-11",
+      "to": "l3-01",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "l3-to-l4",
+      "from": "l3-11",
+      "to": "l4-01",
+      "variant": "emphasis",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "l4-to-model",
+      "from": "l4-09",
+      "to": "flow-model",
+      "variant": "emphasis",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          62,
+          810
+        ],
+        [
+          62,
+          1182
+        ]
+      ]
+    },
+    {
+      "id": "model-to-x",
+      "from": "flow-model",
+      "to": "x-25",
+      "variant": "dashed",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "x-to-l0",
+      "from": "x-01",
+      "to": "l0-31",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "l0-to-l2",
+      "from": "l0-01",
+      "to": "l2-19",
+      "variant": "default",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "l2-to-l4",
+      "from": "l2-01",
+      "to": "l4-04",
+      "variant": "default",
+      "fromSide": "left",
+      "toSide": "right",
+      "via": [
+        [
+          979,
+          142
+        ],
+        [
+          979,
+          682
+        ]
+      ]
+    },
+    {
+      "id": "l1-to-l3",
+      "from": "l1-01",
+      "to": "l3-01",
+      "variant": "default",
+      "fromSide": "left",
+      "toSide": "left",
+      "via": [
+        [
+          40,
+          952
+        ],
+        [
+          40,
+          412
+        ]
+      ]
+    },
+    {
+      "id": "l5-autonomy",
+      "from": "l5-05",
+      "to": "l2-01",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "top",
+      "via": [
+        [
+          863,
+          60
+        ],
+        [
+          1090,
+          60
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "环1 身体（秒级）",
+      "items": [
+        "23 个模块",
+        "自主神经 / 时钟 / 内感受"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "环2 应答（分钟级）",
+      "items": [
+        "72 个模块",
+        "事件评价 / 表达 / 反馈"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "环3 需求（小时—天）",
+      "items": [
+        "34 个模块",
+        "需求缺口 / 自主 / 记忆巩固"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "环4 叙事（周—月）",
+      "items": [
+        "15 个模块",
+        "关系阶段 / 自我叙事"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "环5 元（横跨）",
+      "items": [
+        "6 个模块"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "主流程（10 条箭头）",
+      "items": [
+        "输入 → L5 交互 → L3 解释 → L4 表达 → 模型",
+        "模型 → X 交叉 → L0 身体 → L2 自我 → L4 表达",
+        "L1 记忆 → L3 解释",
+        "L5 背景自主 → L2 自我"
+      ]
+    },
+    {
+      "dot": "slate",
+      "title": "读图",
+      "items": [
+        "135 个模块 = 清单 134 条 + topic_control（归 L2）",
+        "环归属可重叠：23+72+34+15+6 = 150",
+        "16 个模块不在任何环；topic_control 同样未入环",
+        "两个锚点（输入 / 模型）不是模块"
+      ]
+    }
+  ]
+}

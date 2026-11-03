@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "f987ac29-9217-4a88-bc28-0135e48f192d",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\.archify\\modules-flow-20261102-231746\\candidate.json",
+  "output": "C:\\Users\\Administrator\\Desktop\\deepseek\\astrbot_plugin_biocore_standalone\\docs\\figures\\xhh-translate\\fig-modules.html",
+  "specification": {
+    "sha256": "ca68530a45fe908446b8c25b1f16e458336cab1bacaf28e11aeb83295cade6e6",
+    "bytes": 38701
+  },
+  "artifact": {
+    "sha256": "91c9d86be614c1677dfe03a3c97bf0e90c6adf73cde4f879ab920ea9aa98fcbf",
+    "bytes": 849546
+  }
+}

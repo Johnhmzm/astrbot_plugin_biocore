@@ -1,0 +1,1143 @@
+# BioCore 模块清单（机器可读）
+# 仓库: astrbot_plugin_biocore_standalone
+# 快照: 2026-11-02 22:55 +08:00, git HEAD 4faf941（工作区有并发新增，见 ARCHITECTURE-MAP.md §9.5）
+# 生成: 静态分析（import 解析 + 模块名引用扫描，排除 tests/ 与 backups/ 与 _* 临时脚本）; 不改任何 .py
+# layer: L0 身体 / L1 记忆 / L2 自我 / L3 解释 / L4 表达 / L5 交互 / X 交叉层
+# status: 在用 / 待接线 / 疑似废弃（附 note 说明理由）
+# loops: 1 身体(秒) / 2 应答(分钟) / 3 需求(小时-天) / 4 叙事(周-月) / 5 元(横跨)；[] = 不属于任何环
+meta:
+  snapshot: "2026-11-02T22:55:00+08:00"
+  repo: "astrbot_plugin_biocore_standalone"
+  module_count: 134
+  layer_counts:
+    L0: 35
+    L1: 11
+    L2: 19
+    L3: 13
+    L4: 11
+    L5: 15
+    X: 30
+  status_counts:
+    "在用": 90
+    "待接线": 32
+    "疑似废弃": 12
+  x_count: 30
+  no_loop_count: 16
+modules:
+  - name: attachment_regulation
+    layer: L0
+    role: "依恋激活 + 情绪调节 + 心情基线（GAP-G 包装）"
+    inputs: "威胁、时间、情绪"
+    outputs: "激活值、调节策略、心情"
+    calls: []
+    loops: [1, 2]
+    status: 疑似废弃
+    note: "依恋/心情已迁入 core（docs/INVENTORY.md「重复实现」）；本模块只被自己引用，它 import 的 mood/attachment_state 一并悬空"
+  - name: attachment_state
+    layer: L0
+    role: "依恋激活（BIO-4）"
+    inputs: "威胁、时间"
+    outputs: "依恋激活/模式"
+    calls: ["attachment_regulation.py"]
+    loops: [1, 2]
+    status: 在用
+  - name: autonomic
+    layer: L0
+    role: "自主神经振荡 0.1–0.3 Hz"
+    inputs: "时间、种子"
+    outputs: "振荡值/阈值"
+    calls: ["main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_appraisal
+    layer: L0
+    role: "L0 评价 + 情绪分化：七维 appraisal 单源计算（ARCH-1）"
+    inputs: "刺激/事件特征"
+    outputs: "appraisal 七维、情绪分化"
+    calls: ["appraisal_action.py"]
+    loops: [2]
+    status: 在用
+  - name: bio_autonomy_state
+    layer: L0
+    role: "自主就绪 mixin：确定性噪声→autonomy_state()"
+    inputs: "状态快照"
+    outputs: "autonomy_state 字典"
+    calls: ["blocks.py", "main.py"]
+    loops: [3]
+    status: 在用
+  - name: bio_const
+    layer: L0
+    role: "生物层常量：昼夜曲线等"
+    inputs: "时间"
+    outputs: "常量曲线值"
+    calls: ["bio_autonomy_state.py", "bio_daily.py", "bio_emotion.py", "bio_emotion2.py", "bio_noise.py", "bio_physiology2.py", "bio_snapshot.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_daily
+    layer: L0
+    role: "日常 mixin：日报摘要、回复一致性、调节"
+    inputs: "当日状态序列"
+    outputs: "daily digest 数值"
+    calls: ["blocks.py", "main.py"]
+    loops: [1, 3]
+    status: 在用
+  - name: bio_emotion
+    layer: L0
+    role: "情绪 mixin：v/a/d/social/stress 等叶节点动力学"
+    inputs: "刺激、衰减参数"
+    outputs: "情绪维度新值"
+    calls: ["blocks.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_emotion2
+    layer: L0
+    role: "情绪 mixin#2：标签推断、模型输出应用、调节"
+    inputs: "维度值、模型标签"
+    outputs: "标签、调节后维度"
+    calls: ["blocks.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_goal
+    layer: L0
+    role: "目标 mixin：目标签名 / 证据 / 冲突"
+    inputs: "目标事件、进展"
+    outputs: "goals / goal_focus / goal_conflict"
+    calls: ["blocks.py", "main.py"]
+    loops: [3]
+    status: 在用
+  - name: bio_identity
+    layer: L0
+    role: "身份 mixin：身份威胁、用户反馈、信任种子"
+    inputs: "用户反馈事件"
+    outputs: "identity_threat、trust 种子"
+    calls: ["blocks.py", "main.py"]
+    loops: [4]
+    status: 在用
+  - name: bio_noise
+    layer: L0
+    role: "噪声 mixin：离散噪声 tick 与先验混合"
+    inputs: "seed、tick"
+    outputs: "noise 场"
+    calls: ["blocks.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_physiology2
+    layer: L0
+    role: "生理 mixin：昼夜/休息、异稳态负荷、反思树"
+    inputs: "时钟、负荷事件"
+    outputs: "昼夜警觉、allostatic_load"
+    calls: ["blocks.py", "main.py"]
+    loops: [1, 3]
+    status: 在用
+  - name: bio_snapshot
+    layer: L0
+    role: "快照 mixin：load_state + snapshot()，状态唯一出口"
+    inputs: "持久化状态字典"
+    outputs: "snapshot() 数值快照"
+    calls: ["blocks.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_state
+    layer: L0
+    role: "状态 mixin：关系上下文 / appraisal 意图 / 记忆痕迹 / 拒绝姿态"
+    inputs: "快照、关系状态、记忆痕迹"
+    outputs: "BioCore 实例属性"
+    calls: ["blocks.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: bio_tick
+    layer: L0
+    role: "生命维护 tick：纯状态演化，无模型调用、无 IO"
+    inputs: "snapshot + 时长"
+    outputs: "推进后的 snapshot"
+    calls: ["main.py"]
+    loops: [1, 3]
+    status: 在用
+  - name: bio_util
+    layer: L0
+    role: "纯工具 mixin：文本 / 向量 / 数值小工具"
+    inputs: "原始值"
+    outputs: "归一化值、文本片段"
+    calls: ["bio_autonomy_state.py", "bio_daily.py", "bio_emotion.py", "bio_emotion2.py", "bio_identity.py", "bio_noise.py", "bio_physiology2.py", "bio_snapshot.py", "bio_state.py", "blocks.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: compassion_fatigue
+    layer: L0
+    role: "共情疲劳容量：连续安慰的代价与恢复"
+    inputs: "连续安慰数、负性密度、空闲时长"
+    outputs: "fatigue / empathy、档位建议"
+    calls: []
+    loops: [3]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: connection_bids
+    layer: L0
+    role: "Gottman bid / 响应性 / 信任三层"
+    inputs: "交互事件"
+    outputs: "bid 记录、信任值"
+    calls: []
+    loops: [2, 3]
+    status: 疑似废弃
+    note: "与 core.relationship_dynamics 的信任三层重复（docs/INVENTORY.md「信任 | 合并」），非测试 0 引用"
+  - name: criticality
+    layer: L0
+    role: "临界性雪崩：重尾内部事件"
+    inputs: "seed、tick"
+    outputs: "事件尺寸/突发"
+    calls: ["main.py"]
+    loops: [1]
+    status: 在用
+  - name: extreme_scenarios
+    layer: L0
+    role: "P2-2 极端场景守卫：八种极端情境的有界报告（测试用纯函数）"
+    inputs: "状态字典"
+    outputs: "有界报告"
+    calls: []
+    loops: []
+    status: 疑似废弃
+    note: "docstring 明说只为 scenario tests 提供纯函数，非测试代码 0 引用"
+  - name: frustration_curve
+    layer: L0
+    role: "Amsel 挫折曲线 + 变比强化"
+    inputs: "奖励历史、期待"
+    outputs: "挫折倍率、下次间隔"
+    calls: []
+    loops: [3]
+    status: 待接线
+    note: "Amsel 挫折曲线未接线（非测试 0 引用）"
+  - name: intero_core
+    layer: L0
+    role: "内感受四通道（[0,1] 身体维度）"
+    inputs: "生理量、快照"
+    outputs: "四通道内感受值"
+    calls: ["bio_tick.py", "regulation_loop.py", "main.py"]
+    loops: [1]
+    status: 在用
+  - name: mind_wander
+    layer: L0
+    role: "空闲心智游走采样（open loop / 反刍）"
+    inputs: "未决事项、种子"
+    outputs: "游走目标"
+    calls: ["main.py"]
+    loops: [5]
+    status: 在用
+  - name: mood
+    layer: L0
+    role: "慢变量心情（BIO-4）"
+    inputs: "情绪均值、时间"
+    outputs: "mood{valence,arousal}"
+    calls: ["attachment_regulation.py"]
+    loops: [1]
+    status: 在用
+  - name: needs_esteem
+    layer: L0
+    role: "自尊 + 四需求（GAP-C）"
+    inputs: "被忽视/被回应事件"
+    outputs: "自尊、需求值"
+    calls: []
+    loops: [3]
+    status: 疑似废弃
+    note: "四需求已由 needs_sleep 实现并被 bio_tick 使用；本模块 import needs_sleep，自身非测试 0 引用"
+  - name: needs_events
+    layer: L0
+    role: "需求事件钩子：事件推动需求、需求偏置行为"
+    inputs: "交互/沉默事件"
+    outputs: "需求增量、行为偏置"
+    calls: ["main.py"]
+    loops: [3]
+    status: 在用
+  - name: needs_sleep
+    layer: L0
+    role: "四需求 + 睡眠债（Williams 2007 / Borbély 1982）"
+    inputs: "事件、时间"
+    outputs: "需求值、睡眠债"
+    calls: ["bio_tick.py", "needs_esteem.py"]
+    loops: [3]
+    status: 在用
+  - name: noise_bank
+    layer: L0
+    role: "噪声库：可复现事件爆发抽样"
+    inputs: "seed/tick/salt"
+    outputs: "噪声抽样"
+    calls: ["main.py"]
+    loops: [1]
+    status: 在用
+  - name: predictor
+    layer: L0
+    role: "预测编码：预测下一轮状态、算惊讶度"
+    inputs: "上轮状态 + 本轮输入"
+    outputs: "预测值、surprise"
+    calls: ["main.py"]
+    loops: [1, 2]
+    status: 在用
+  - name: regulation_loop
+    layer: L0
+    role: "内感受→调节动作选择 + 效能学习"
+    inputs: "内感受值、上下文"
+    outputs: "调节动作、效能增益"
+    calls: ["bio_tick.py"]
+    loops: [1]
+    status: 在用
+  - name: relationship_stage
+    layer: L0
+    role: "关系阶段 / 接触频率 / 习惯化（脚本校准用）"
+    inputs: "交互统计、时间"
+    outputs: "阶段、模板权重"
+    calls: ["scripts/autonomy-calibrate.py"]
+    loops: [4]
+    status: 在用
+  - name: self_esteem
+    layer: L0
+    role: "状态自尊纯函数（BIO-1）"
+    inputs: "旧自尊、反馈"
+    outputs: "新自尊"
+    calls: []
+    loops: [3]
+    status: 待接线
+    note: "BIO-1 纯函数模块；bio_state 已有 self_esteem 字段但未调用本模块"
+  - name: sleep_circadian
+    layer: L0
+    role: "Borbély 双过程昼夜 + 睡眠耦合"
+    inputs: "本地时间、睡眠记录"
+    outputs: "circadian、睡眠状态"
+    calls: ["bio_tick.py"]
+    loops: [3]
+    status: 在用
+  - name: social_pain
+    layer: L0
+    role: "关系性社交疼痛（Eisenberger）"
+    inputs: "排斥/忽视事件"
+    outputs: "social_pain 值"
+    calls: ["stages.py"]
+    loops: [2]
+    status: 在用
+  - name: commitment_extractor
+    layer: L1
+    role: "承诺抽取器：把一句话解析成 prospective 记忆行（规则式，无 LLM）"
+    inputs: "一句话 + now"
+    outputs: "prospective 条目（her_promise/his_event + 时间）"
+    calls: []
+    loops: [3]
+    status: 待接线
+    note: "2026-11-02 新增，仅被自身测试引用，接线进行中"
+  - name: entity_graph
+    layer: L1
+    role: "实体图记忆：节点 + 带类型时间边"
+    inputs: "实体/关系写入、查询"
+    outputs: "图结构、邻居"
+    calls: ["graph_extract.py", "graph_recall.py", "migrate.py"]
+    loops: [2, 4]
+    status: 在用
+  - name: entity_resolve
+    layer: L1
+    role: "实体消歧：规范化 / 相似度 / 别名合并（纯函数）"
+    inputs: "实体名、候选集"
+    outputs: "规范实体、匹配分"
+    calls: ["entity_graph.py", "graph_extract.py", "state_tag.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: memory_dual
+    layer: L1
+    role: "双强度记忆模型：只算强度 / 衰减，不存储"
+    inputs: "记忆条目、上下文匹配"
+    outputs: "强度、衰减"
+    calls: ["bio_tick.py", "main.py"]
+    loops: [2, 3]
+    status: 在用
+  - name: memory_forgetting
+    layer: L1
+    role: "艾宾浩斯遗忘 + 再巩固 + 反刍内容"
+    inputs: "记忆强度、时间"
+    outputs: "保留强度、可注入项"
+    calls: ["feedback_memory.py"]
+    loops: [2, 3]
+    status: 在用
+  - name: memory_store
+    layer: L1
+    role: "记忆条目 SQLite 存储：写入 / 检索 / 去重 / 衰减"
+    inputs: "记忆条目、查询"
+    outputs: "检索结果、统计"
+    calls: ["migrate.py", "main.py"]
+    loops: [2, 3, 4]
+    status: 在用
+  - name: narrative
+    layer: L1
+    role: "自传叙事：关键事件→章节化条目 + 一致性检查"
+    inputs: "关键事件流"
+    outputs: "叙事条目、一致性"
+    calls: []
+    loops: [4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: prospective
+    layer: L1
+    role: "前瞻记忆：她说要问的事与提醒时点"
+    inputs: "承诺/用户事件"
+    outputs: "待触发条目、到期列表"
+    calls: ["main.py"]
+    loops: [3]
+    status: 在用
+  - name: reconstruction
+    layer: L1
+    role: "记忆重构：每次召回给记忆加少量漂移"
+    inputs: "条目、当前心情"
+    outputs: "漂移量/方向"
+    calls: []
+    loops: [2, 4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: source_monitoring
+    layer: L1
+    role: "来源监控 + 心情一致性回忆：记忆来自亲历/被告知/推断，及低心情更易召回负性记忆"
+    inputs: "记忆条目、元数据、当前心情"
+    outputs: "相信的来源、置信度、误归因概率、召回偏置"
+    calls: []
+    loops: [2, 4]
+    status: 待接线
+    note: "2026-11-02 新增，仅被自身测试引用，接线进行中"
+  - name: turn_memory
+    layer: L1
+    role: "每轮「用了哪些记忆」回执（纯函数、无 IO）"
+    inputs: "检索 trace"
+    outputs: "可读回执行"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: affective_labor
+    layer: L2
+    role: "表层扮演：说的和感到的不一致所耗的能量"
+    inputs: "表达意图、真实状态、诚实度"
+    outputs: "labor 成本、负荷"
+    calls: []
+    loops: [2, 3]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: attachment_behavior
+    layer: L2
+    role: "依恋风格→行为参数（主动/寻求/退缩 + 语气）"
+    inputs: "风格权重"
+    outputs: "行为参数、语气提示"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: boundary
+    layer: L2
+    role: "她自己的底线（区别于内容安全闸）"
+    inputs: "关系、越界事件"
+    outputs: "severity、阈值、动作"
+    calls: ["repair_after_boundary.py"]
+    loops: [2, 4]
+    status: 在用
+  - name: defense_mechanisms
+    layer: L2
+    role: "防御机制：否认/合理化/投射/置换（Vaillant 阶梯）"
+    inputs: "负性事件、状态、自我概念"
+    outputs: "机制、强度、代价、自我解释"
+    calls: []
+    loops: [2, 5]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: dissonance
+    layer: L2
+    role: "认知失调：说到做不到的张力与缓解方式"
+    inputs: "立场、行为"
+    outputs: "张力、缓解策略"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: envy
+    layer: L2
+    role: "嫉妒/社会比较：三级强度 + 行为倾向（探问/收敛/挑刺/压下）"
+    inputs: "关系阶段、公平感、第三人、自我评价"
+    outputs: "等级、强度、行为倾向、一句理由"
+    calls: []
+    loops: [2, 4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: learning_probe
+    layer: L2
+    role: "学习回路验证辅助：反馈是否真的改变后续行为（测试用纯函数）"
+    inputs: "反馈序列、动作序列"
+    outputs: "重复奖励/递减 delta/响应比"
+    calls: []
+    loops: [5]
+    status: 疑似废弃
+    note: "docstring 明说用于 *test* 学习回路，仅 tests 引用"
+  - name: metacog
+    layer: L2
+    role: "元认知：有多确定、要不要补救"
+    inputs: "证据、guard 命中"
+    outputs: "置信档、动作建议"
+    calls: ["main.py"]
+    loops: [5]
+    status: 在用
+  - name: policy_learning
+    layer: L2
+    role: "上下文 bandit 策略学习（纯函数）"
+    inputs: "上下文、奖励"
+    outputs: "动作选择、状态"
+    calls: ["learning_probe.py", "main.py"]
+    loops: [2, 3]
+    status: 在用
+  - name: possible_selves
+    layer: L2
+    role: "可能自我：她还想成为谁，差距即拉力"
+    inputs: "价值维度现状、目标"
+    outputs: "拉力、一句日志"
+    calls: []
+    loops: [4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: regulation_strategies
+    layer: L2
+    role: "Gross 情绪调节五族策略：按效果/成本比选策略"
+    inputs: "状态、事件、关系"
+    outputs: "策略、成本、效果"
+    calls: []
+    loops: [1, 2]
+    status: 待接线
+    note: "仅被临时脚本 _tmp_sanity_reg.py import（扫描排除 _* 前缀），尚未接入 main.py/管线"
+  - name: relation_stage
+    layer: L2
+    role: "关系阶段：陌生→稳定及匹配动作"
+    inputs: "互动量、自披露、修复、认识时长"
+    outputs: "阶段、动作"
+    calls: []
+    loops: [4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: repair_after_boundary
+    layer: L2
+    role: "越界后的修复序列（冷→明说→记账→翻页）"
+    inputs: "越界事件、道歉质量、时间"
+    outputs: "阶段推进、debt"
+    calls: []
+    loops: [2, 3]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: secrecy
+    layer: L2
+    role: "保守秘密：敏感度 × 关系深度 × 场合→说/瞒/软化"
+    inputs: "秘密条目、关系、场景"
+    outputs: "tell/withhold/reframe、压力"
+    calls: []
+    loops: [2, 4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: self_intent
+    layer: L2
+    role: "自我层：这一轮「她想要什么」的取舍"
+    inputs: "身体状态、需求、关系"
+    outputs: "意图/驱动、满足度"
+    calls: ["main.py"]
+    loops: [2, 3]
+    status: 在用
+  - name: self_interest
+    layer: L2
+    role: "P1 self-interest accounting (task-147 core): every option has a her-si"
+    inputs: "（快照后新增，未分类）"
+    outputs: "（快照后新增，未分类）"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "快照后新增文件，尚未人工分层"
+  - name: self_verification
+    layer: L2
+    role: "自我验证：被误读时想纠正的冲动"
+    inputs: "被误读程度、关系清晰度"
+    outputs: "纠正强度"
+    calls: []
+    loops: [2, 4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: social_theory
+    layer: L2
+    role: "自披露 / 反问 / 心智理论（GAP-E）"
+    inputs: "关系阶段、话题"
+    outputs: "分享/提问概率"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "GAP-E 社交行为规则未接线（非测试 0 引用）"
+  - name: value_order
+    layer: L2
+    role: "价值排序：两件好事冲突时先保哪个（Schwartz 十值）"
+    inputs: "情境、价值权重"
+    outputs: "取舍结果、沉没成本"
+    calls: []
+    loops: [2, 4]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: appraisal_action
+    layer: L3
+    role: "Lazarus/Scherer 评价→动作倾向 + 好奇缺口"
+    inputs: "appraisal 七维"
+    outputs: "动作倾向、prompt_line"
+    calls: []
+    loops: [2]
+    status: 疑似废弃
+    note: "bio_appraisal 明确声明为评价单源（ARCH-1）；本模块反过来 import bio_appraisal，非测试 0 引用"
+  - name: attribution
+    layer: L3
+    role: "Weiner 因果归因：维度推断 + 情绪提示（纯函数）"
+    inputs: "事件文本"
+    outputs: "locus/stability/controllability"
+    calls: ["stages.py"]
+    loops: [2]
+    status: 在用
+  - name: attributor
+    layer: L3
+    role: "归因层：三维归因→情绪与「谁该负责」"
+    inputs: "事件、维度"
+    outputs: "情绪、责任分配"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: emotion_geometry
+    layer: L3
+    role: "情绪连续空间：标签是只读描述"
+    inputs: "六维向量"
+    outputs: "标签概率、熵"
+    calls: ["granularity.py", "stages.py", "main.py"]
+    loops: [1, 2]
+    status: 在用
+  - name: granularity
+    layer: L3
+    role: "情绪粒度：六原型→二级标签"
+    inputs: "原型分数、上下文"
+    outputs: "二级标签"
+    calls: []
+    loops: [1, 2]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: intent_render
+    layer: L3
+    role: "意图渲染：感受→倾向约束（无数字/情绪词）"
+    inputs: "动作/感受"
+    outputs: "一句倾向约束"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: intero_style
+    layer: L3
+    role: "内感受→表达风格（长度/语气/主动性）"
+    inputs: "四通道值"
+    outputs: "长度因子、语气"
+    calls: ["main.py"]
+    loops: [1]
+    status: 在用
+  - name: preset
+    layer: L3
+    role: "SillyTavern 式注入块：id/role/position/条件"
+    inputs: "状态快照"
+    outputs: "注入块记录"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: prompt_rules
+    layer: L3
+    role: "系统提示词行为规则（由 affect 渲染）"
+    inputs: "affect、关系"
+    outputs: "规则文本"
+    calls: ["runtime.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: render
+    layer: L3
+    role: "确定性渲染：telemetry/[BC]/解释三种模式的提示词文本"
+    inputs: "snapshot、上下文"
+    outputs: "注入文本"
+    calls: ["interpretation.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: schema
+    layer: L3
+    role: "数值字段单一真相源：文档与提示词图例"
+    inputs: "字段定义"
+    outputs: "图例文本、markdown 表"
+    calls: ["runtime.py", "stages.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: social_repair
+    layer: L3
+    role: "感恩 / 边界 / 共情通道 / 对话修复 / 时间感"
+    inputs: "事件、关系"
+    outputs: "修复话术片段"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "GAP 感恩/边界/修复话术未接线（非测试 0 引用）"
+  - name: waiting_sense
+    layer: L3
+    role: "等待感：把测量到的消息间隔翻成四类感受（平静/惦记/不安/赌气）+ 一句想法"
+    inputs: "间隔时长、亲密度、时段、心情、期待"
+    outputs: "waiting 值、feeling 标签、一句话"
+    calls: []
+    loops: [2, 3]
+    status: 待接线
+    note: "2026-11-02 新增，仅被自身测试引用，接线进行中"
+  - name: boundary_gate
+    layer: L4
+    role: "表达层安全闸（默认关闭，用户可开）"
+    inputs: "回复文本、开关"
+    outputs: "拦截/改写"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: expr_guard
+    layer: L4
+    role: "表达守卫（纯函数，不写状态）"
+    inputs: "待发文本"
+    outputs: "放行/拦截"
+    calls: []
+    loops: [2]
+    status: 疑似废弃
+    note: "回复校验已由 sanitize + boundary_gate 覆盖，本模块非测试 0 引用"
+  - name: expr_intent
+    layer: L4
+    role: "本轮想说什么：意图选择"
+    inputs: "状态、动作倾向"
+    outputs: "intent"
+    calls: ["stages.py"]
+    loops: [2]
+    status: 在用
+  - name: expr_state
+    layer: L4
+    role: "把整体生物状态渲染成中文（无 IO、不写状态）"
+    inputs: "snapshot"
+    outputs: "状态描述文本"
+    calls: ["runtime.py", "stages.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: expr_template
+    layer: L4
+    role: "确定性提示词装配（build_reply / build_proactive）"
+    inputs: "上下文、模板"
+    outputs: "提示词文本"
+    calls: ["runtime.py", "stages.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: expr_tone
+    layer: L4
+    role: "由动作倾向派生语气指令"
+    inputs: "动作倾向概率"
+    outputs: "语气块"
+    calls: ["stages.py"]
+    loops: [2]
+    status: 在用
+  - name: reply_limit
+    layer: L4
+    role: "回复长度 max_tokens 读写与配置同步"
+    inputs: "配置"
+    outputs: "长度限制"
+    calls: ["plugin_routes.py", "reply_split.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: reply_split
+    layer: L4
+    role: "回复切分（不碰 AstrBot segmented_reply）"
+    inputs: "回复文本"
+    outputs: "分段列表"
+    calls: ["plugin_routes.py", "stages.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: sanitize
+    layer: L4
+    role: "回复呈现守卫：清理 / 去重 / 保护字面量"
+    inputs: "原始回复"
+    outputs: "清洗后回复"
+    calls: ["stages.py", "interpretation.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: template_expr
+    layer: L4
+    role: "安全模板引擎（条件/循环只读半边）"
+    inputs: "模板 + 变量"
+    outputs: "渲染文本"
+    calls: ["expr_template.py", "preset.py"]
+    loops: [2]
+    status: 在用
+  - name: voice_bank
+    layer: L4
+    role: "她的口头禅库：按状态挑选 + 冷却"
+    inputs: "状态、条目库"
+    outputs: "一句口头禅"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: autonomy_check
+    layer: L5
+    role: "自主就绪只读诊断（绝不发送）"
+    inputs: "状态快照"
+    outputs: "诊断报告"
+    calls: ["plugin_routes.py", "main.py"]
+    loops: [3]
+    status: 在用
+  - name: autonomy_loop
+    layer: L5
+    role: "感知→决定→行动→反馈→学习闭环"
+    inputs: "bid 结果、回应"
+    outputs: "回应率、学习"
+    calls: []
+    loops: [3]
+    status: 疑似废弃
+    note: "bid 闭环已并入 autonomy_model / autonomy_tick（main.py:4391 只 import autonomy_tick），本模块非测试 0 引用"
+  - name: autonomy_mode
+    layer: L5
+    role: "自主设置校验与持久化"
+    inputs: "面板/配置输入"
+    outputs: "规范化配置"
+    calls: ["plugin_routes.py", "main.py"]
+    loops: [3]
+    status: 在用
+  - name: autonomy_model
+    layer: L5
+    role: "自主驱动 + 期望效用门：drive / gate / 权重"
+    inputs: "social_gap、lonely、成本"
+    outputs: "drive、gate 决定"
+    calls: ["autonomy_tick.py", "main.py", "scripts/autonomy-calibrate.py"]
+    loops: [3]
+    status: 在用
+  - name: autonomy_params
+    layer: L5
+    role: "人格派生自主节律参数"
+    inputs: "人格 profile、关系"
+    outputs: "theta/冷却参数"
+    calls: ["main.py"]
+    loops: [3]
+    status: 在用
+  - name: autonomy_reason
+    layer: L5
+    role: "想联系的原因提取 + 提示/兜底文案"
+    inputs: "状态、事件"
+    outputs: "原因、prompt"
+    calls: ["main.py"]
+    loops: [3]
+    status: 在用
+  - name: autonomy_tick
+    layer: L5
+    role: "自主 tick（交互层）：窗口 / 静默 / 动机 / 决定 / 记账"
+    inputs: "状态快照、配置"
+    outputs: "决定、待发文本"
+    calls: ["runtime.py", "main.py"]
+    loops: [3]
+    status: 在用
+  - name: core_commands
+    layer: L5
+    role: "核心模式聊天命令（解析 + 权限 + 回复）"
+    inputs: "聊天命令"
+    outputs: "命令回复"
+    calls: []
+    loops: []
+    status: 待接线
+    note: "命令实现齐全，但 main.py 直接调 core_mode（10095 行），命令入口未接"
+  - name: core_mode
+    layer: L5
+    role: "核心模式开关（off/shadow/primary）+ 一键回滚"
+    inputs: "模式请求、权限"
+    outputs: "模式配置"
+    calls: ["core_commands.py", "plugin_routes.py", "main.py"]
+    loops: []
+    status: 在用
+  - name: exit_or_silence
+    layer: L5
+    role: "回不回、延不延、要不要结束话题的四选一"
+    inputs: "状态、关系、话题强度"
+    outputs: "respond/delay/silent/end_topic"
+    calls: []
+    loops: [2]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
+  - name: pipeline_api
+    layer: L5
+    role: "只读管线 API：面板状态 / 开关 / dry-run"
+    inputs: "请求"
+    outputs: "状态与开关"
+    calls: ["plugin_routes.py", "main.py"]
+    loops: []
+    status: 在用
+  - name: plugin_routes
+    layer: L5
+    role: "BioCorePlugin 的 35 个 page_* 路由"
+    inputs: "HTTP 请求"
+    outputs: "页面 JSON"
+    calls: ["blocks.py"]
+    loops: []
+    status: 在用
+  - name: provider_fallback
+    layer: L5
+    role: "provider 故障转移顺序 + 冷却"
+    inputs: "provider 状态"
+    outputs: "候选顺序"
+    calls: ["main.py"]
+    loops: []
+    status: 在用
+  - name: rollback
+    layer: L5
+    role: "单轮回滚：快照/恢复/有界环形缓冲"
+    inputs: "状态快照"
+    outputs: "回滚后状态"
+    calls: ["main.py"]
+    loops: []
+    status: 在用
+  - name: scheduler
+    layer: L5
+    role: "多维调度器：时间 × 实体 × 通道，惰性衰减"
+    inputs: "候选、时间"
+    outputs: "到期候选"
+    calls: ["main.py"]
+    loops: [3]
+    status: 在用
+  - name: appraisal
+    layer: X
+    role: "解释→身体：模型评价七维→有界状态增量"
+    inputs: "LLM 文本/七维评分"
+    outputs: "状态增量（经预算闸）"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: archive_queue
+    layer: X
+    role: "后台归档批：队列持久化 + 每批一次 LLM 调用"
+    inputs: "会话事件"
+    outputs: "归档文件"
+    calls: []
+    loops: []
+    status: 待接线
+    note: "归档批队列设计完成但无调用方，未接入事件归档链路"
+  - name: autonomy_affect
+    layer: X
+    role: "自主决策→核心情绪增量（按 ts 去重）"
+    inputs: "自主事件"
+    outputs: "状态增量"
+    calls: []
+    loops: [3]
+    status: 疑似废弃
+    note: "自主→情绪增量已由 feedback_flow/feedback_guard 统一写回，本模块非测试 0 引用"
+  - name: bio_config
+    layer: X
+    role: "配置 / 人格 / api-config mixin（复刻自 main.py）"
+    inputs: "宿主配置/文件"
+    outputs: "配置属性"
+    calls: ["blocks.py"]
+    loops: []
+    status: 在用
+  - name: blocks
+    layer: X
+    role: "装配层：mixin 清单 + 反馈注册 + 管线装配"
+    inputs: "main.py 装配调用"
+    outputs: "已装配插件类"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: core_bridge
+    layer: X
+    role: "宿主插件→核心服务桥（默认关闭）"
+    inputs: "宿主调用"
+    outputs: "核心 RPC 结果"
+    calls: []
+    loops: []
+    status: 待接线
+    note: "核心服务桥（Phase-A 骨架，默认关闭）；被 core_client 反向引用，main.py 未接线"
+  - name: core_client
+    layer: X
+    role: "AstrBot→biocore-svc 的 JSON-lines 客户端"
+    inputs: "服务调用"
+    outputs: "RPC 响应"
+    calls: ["core_bridge.py"]
+    loops: []
+    status: 待接线
+    note: "biocore-svc 客户端（task-26 默认关闭），只被 core_bridge import，宿主未接线"
+  - name: delta_budget
+    layer: X
+    role: "校验→身体：单条消息的状态变更预算"
+    inputs: "delta 字典"
+    outputs: "夹紧后的 delta"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: diag_trace
+    layer: X
+    role: "只读每轮诊断：state_delta / intent / metacog / 长度约束 / prompt 差异"
+    inputs: "本轮已算出的各层数值"
+    outputs: "一条有界诊断记录（调用方写 jsonl）"
+    calls: ["main.py"]
+    loops: [2, 5]
+    status: 在用
+    note: "快照后新增文件，尚未人工分层"
+  - name: emotion_probe
+    layer: X
+    role: "解释→身体：让模型选反馈增量并写回"
+    inputs: "LLM 输出 payload"
+    outputs: "状态增量"
+    calls: []
+    loops: [2]
+    status: 疑似废弃
+    note: "main.py 已内联实现同一能力（13191–14148 行 _emotion_probe_*，14114 行改走 feedback_flow），模块本身在非测试代码中 0 引用"
+  - name: feedback_flow
+    layer: X
+    role: "三通道（LLM/用户/记忆）汇入 feedback_guard 的唯一写者"
+    inputs: "三路反馈"
+    outputs: "写回后的状态"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: feedback_guard
+    layer: X
+    role: "所有反馈增量的单一闸门（限幅 / 去重 / 应用）"
+    inputs: "增量候选"
+    outputs: "确认后的增量"
+    calls: ["blocks.py", "feedback_flow.py", "stages.py"]
+    loops: [2]
+    status: 在用
+  - name: feedback_llm
+    layer: X
+    role: "LLM 结构化 payload→有界增量"
+    inputs: "LLM payload"
+    outputs: "delta"
+    calls: ["blocks.py", "feedback_flow.py"]
+    loops: [2]
+    status: 在用
+  - name: feedback_memory
+    layer: X
+    role: "记忆再巩固 / 衰减→状态与提示选择"
+    inputs: "记忆条目"
+    outputs: "状态增量、可注入记忆"
+    calls: ["blocks.py", "feedback_flow.py", "stages.py"]
+    loops: [2, 3]
+    status: 在用
+  - name: feedback_user
+    layer: X
+    role: "用户行为（消息 / 沉默）→有界增量"
+    inputs: "用户事件"
+    outputs: "delta"
+    calls: ["blocks.py", "feedback_flow.py"]
+    loops: [2]
+    status: 在用
+  - name: graph_extract
+    layer: X
+    role: "回复内联标签的图字段→图写入"
+    inputs: "回复标签 JSON"
+    outputs: "图写入指令"
+    calls: ["graph_recall.py", "main.py"]
+    loops: [2, 4]
+    status: 在用
+  - name: graph_recall
+    layer: X
+    role: "图记忆→「你知道的」提示块 + 面板数据（只读）"
+    inputs: "实体匹配"
+    outputs: "图提示块"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: layered_memory
+    layer: X
+    role: "记忆三层投影→提示词块（常驻 / 检索 / 近期）"
+    inputs: "记忆条目、查询"
+    outputs: "提示词记忆块"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: migrate
+    layer: X
+    role: "1.3.4→1.4.0 数据迁移（设置 / 累加器 / 旧记忆）"
+    inputs: "旧数据文件"
+    outputs: "新 schema 数据"
+    calls: ["main.py"]
+    loops: []
+    status: 在用
+  - name: migrate_store
+    layer: X
+    role: "AstrBot 记忆库→核心 store 只读迁移映射"
+    inputs: "旧 store 文件"
+    outputs: "核心 schema 条目（dry-run）"
+    calls: []
+    loops: []
+    status: 待接线
+    note: "AstrBot→核心迁移映射（task-27，默认 dry-run），仅 tests 引用，迁移入口未接"
+  - name: pipeline
+    layer: X
+    role: "主管线骨架：可插拔 / 可禁 / 隔离 / 可观测 stage"
+    inputs: "ctx 字典"
+    outputs: "stage 结果"
+    calls: ["runtime.py", "stages.py"]
+    loops: [2]
+    status: 在用
+  - name: plugin_config
+    layer: X
+    role: "插件自身配置文件的原子持久化"
+    inputs: "更新字典"
+    outputs: "配置文件写入"
+    calls: []
+    loops: []
+    status: 疑似废弃
+    note: "配置持久化权威已是 ui_settings（6 处 import），本模块非测试 0 引用"
+  - name: proactive_context
+    layer: X
+    role: "主动消息上下文：状态块/关系/间隔/事件→提示词"
+    inputs: "状态、关系、事件"
+    outputs: "主动提示词"
+    calls: []
+    loops: [3]
+    status: 疑似废弃
+    note: "主动消息提示词已由 autonomy_reason + situation + layered_memory 承担，本模块非测试 0 引用"
+  - name: runtime
+    layer: X
+    role: "运行时：装配默认回复管线并暴露 run_reply"
+    inputs: "宿主请求"
+    outputs: "管线结果/回复"
+    calls: ["blocks.py", "pipeline_api.py", "main.py"]
+    loops: [2]
+    status: 在用
+  - name: services
+    layer: X
+    role: "外部长时服务网关（LLM/TTS/VLM 调用形状）"
+    inputs: "服务请求"
+    outputs: "调用结果/统计"
+    calls: ["main.py"]
+    loops: []
+    status: 在用
+  - name: situation
+    layer: X
+    role: "状态 + 近几轮→三行「局面」摘要供提示词"
+    inputs: "状态、近轮对话"
+    outputs: "情境摘要文本"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: stages
+    layer: X
+    role: "把各层模块包装成管线 stage（跨层适配）"
+    inputs: "ctx"
+    outputs: "stage 输出"
+    calls: ["runtime.py"]
+    loops: [2]
+    status: 在用
+  - name: state_tag
+    layer: X
+    role: "表达→身体：回复内联 JSON 标签→状态"
+    inputs: "回复文本中的标签"
+    outputs: "状态增量"
+    calls: ["main.py"]
+    loops: [2]
+    status: 在用
+  - name: ui_settings
+    layer: X
+    role: "UI 设置权威：plugin_data 单一存储，各层读取"
+    inputs: "各层读写请求"
+    outputs: "配置字典"
+    calls: ["blocks.py", "migrate.py", "pipeline_api.py", "plugin_routes.py", "runtime.py", "main.py"]
+    loops: []
+    status: 在用
+  - name: x_directives
+    layer: X
+    role: "跨层指令总线：各层 hints 合并成唯一 canonical 形状"
+    inputs: "metacog/attributor/self_intent 等 hint"
+    outputs: "directive（length_scale/tone/initiative）"
+    calls: []
+    loops: [2, 5]
+    status: 待接线
+    note: "2026-11-02 新增模块，仅被自身测试引用，接线进行中"
