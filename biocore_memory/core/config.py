@@ -88,6 +88,8 @@ FLAGS = {
     "bm25_multi": False,
     "ppr": False,
     "mmr": False,
+    "mood_recall": False,
+    "affect_encoding": False,
     "complexity": False,
     "constraints": False,
     "tiering": False,
