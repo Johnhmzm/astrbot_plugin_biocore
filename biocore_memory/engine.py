@@ -43,6 +43,34 @@ _EMPTY_INDEX = ("entities", "place", "time_coarse", "event_name", "id")
 _SUMMARY_SOURCES = ("consolidate", "ti_mem", "reflection")
 
 
+def _affect_pair(source):
+    if isinstance(source, dict):
+        v = source.get("v", source.get("valence", 0.0))
+        a = source.get("a", source.get("arousal", 0.5))
+    else:
+        v = getattr(source, "v", getattr(source, "valence", 0.0))
+        a = getattr(source, "a", getattr(source, "arousal", 0.5))
+    try:
+        v = max(-1.0, min(1.0, float(v)))
+    except Exception:
+        v = 0.0
+    try:
+        a = max(0.0, min(1.0, float(a)))
+    except Exception:
+        a = 0.5
+    return v, a
+
+
+def _affect_cosine(left, right):
+    lv, la = left
+    rv, ra = right
+    ln = (lv * lv + la * la) ** 0.5
+    rn = (rv * rv + ra * ra) ** 0.5
+    if not ln or not rn:
+        return 0.0
+    return (lv * rv + la * ra) / (ln * rn)
+
+
 def is_memory_point(value, importance, self_relevance):
     """Memory-point gate (OR semantics, literature-backed).
 
@@ -990,6 +1018,25 @@ class MemoryEngine:
                 self._write_snapshot_safe()
                 self.touch(now=stamp)
                 return existing
+        _base_importance = explicit_importance if explicit_importance is not None else value_of(ev)
+        _encode_on = self._flag("affect_encoding") or str(os.environ.get("BIOCORE_AFFECT_ENCODING") or "").strip().lower() in ("1", "true", "on", "yes")
+        if _encode_on and explicit_importance is None:
+            _affect_source = getattr(self, "affect", None)
+            if _affect_source is not None:
+                _ev, _ea = _affect_pair(_affect_source)
+                try:
+                    _wa = float(os.environ.get("BIOCORE_AFFECT_ENCODE_A") or 0.15)
+                except Exception:
+                    _wa = 0.15
+                try:
+                    _wb = float(os.environ.get("BIOCORE_AFFECT_ENCODE_B") or 0.10)
+                except Exception:
+                    _wb = 0.10
+                try:
+                    _base_importance = float(_base_importance)
+                except Exception:
+                    _base_importance = 0.5
+                _base_importance = max(0.0, min(1.0, _base_importance + _wa * _ea + _wb * abs(_ev)))
         entry = {
             "id": (str(getattr(ev, "id", "") or "") or sha12(text + str(stamp))),
             "text": text,
@@ -999,8 +1046,7 @@ class MemoryEngine:
             "valid_at": stamp,
             "vector": vector,
             "hits": 1,
-            "importance": (explicit_importance if explicit_importance is not None
-                           else value_of(ev)),
+            "importance": _base_importance,
             "self_relevance": (explicit_self if explicit_self is not None
                                else clamp01(getattr(ev, "self_relevance", 0.0))),
             "memory_source": "direct",
@@ -1011,6 +1057,9 @@ class MemoryEngine:
             "scope": entry_scope,
         }
         entry.update({k: v for k, v in meta.items() if k not in entry})
+        _affect_source = meta.get("affect") if isinstance(meta.get("affect"), dict) else getattr(self, "affect", None)
+        _mv, _ma = _affect_pair(_affect_source)
+        entry["affect"] = {"valence": round(_mv, 4), "arousal": round(_ma, 4)}
         try:
             memory_value = float(value_of(ev))
         except Exception:
@@ -1153,6 +1202,26 @@ class MemoryEngine:
                 rows.sort(key=lambda item: item.get("score") or 0.0, reverse=True)
             except Exception:
                 pass
+        _mood_on = self._flag("mood_recall") or str(os.environ.get("BIOCORE_MOOD_RECALL") or "").strip().lower() in ("1", "true", "on", "yes")
+        if _mood_on:
+            try:
+                _lam = float(os.environ.get("BIOCORE_MOOD_LAMBDA") or 0.25)
+            except Exception:
+                _lam = 0.25
+            _current = _affect_pair(getattr(self, "affect", None))
+            for row in rows:
+                entry = row.get("entry") or {}
+                stored = entry.get("affect") if isinstance(entry.get("affect"), dict) else None
+                pair = _affect_pair(stored) if stored else (0.0, 0.5)
+                cos = _affect_cosine(pair, _current)
+                try:
+                    imp = max(0.0, min(1.0, float(entry.get("importance", 0.5) or 0.5)))
+                except Exception:
+                    imp = 0.5
+                boost = (0.5 + 0.5 * imp) * (1.0 + _lam * cos)
+                row["mood_cos"] = round(cos, 4)
+                row["score"] = round(float(row.get("score") or 0.0) * boost, 6)
+            rows.sort(key=lambda item: item.get("score") or 0.0, reverse=True)
         rows = self._apply_entity_boost(rows, query)
         if self._flag("ppr"):
             self._apply_ppr(rows, entries)

@@ -12,7 +12,7 @@
 
 - 插件名：`astrbot_plugin_biocore`
 - 插件 ID：`Johnhmzm/astrbot_plugin_biocore`（`metadata.author/name`）
-- 当前版本：以 `metadata.yaml` 为准（当前 `1.4.16`）
+- 当前版本：以 `metadata.yaml` 为准（当前 `1.4.17`）
 - 作者：`Johnhmzm`
 - GitHub：<https://github.com/Johnhmzm/astrbot_plugin_biocore>
 - Gitee 镜像：<https://gitee.com/johnhim/astrbot_plugin_biocore>
