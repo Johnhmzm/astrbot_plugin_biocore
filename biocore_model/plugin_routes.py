@@ -847,6 +847,21 @@ class RoutesMixin:
                        if isinstance(_ev, dict)],
             "insights": self._insights(5),
         }
+        # task-193/198: local embedding is opt-in (default off). The boolean is
+        # always projected; the status/detail fields appear only when enabled.
+        try:
+            _data["embedding_local_fallback_enabled"] = self._local_embedding_enabled()
+            _local_emb = self._local_embedding_health()
+            if isinstance(_local_emb, dict):
+                _data.update(_local_emb)
+        except Exception:
+            pass
+        # task-211: always project the resolved backend (auto probe result).
+        try:
+            _data.update(_embedding_mode_projection(
+                getattr(self, "config", None)))
+        except Exception:
+            pass
         # P1-2: default-OFF telemetry/token/consistency add no keys at all.
         if getattr(self, "llm_telemetry_enabled", False):
             _data["llm_telemetry"] = {
@@ -1042,7 +1057,8 @@ class RoutesMixin:
                        "hybrid_retrieval", "safety_enabled", "boundary_enabled",
                        "crisis_safety_enabled", "llm_memory_candidates",
                        "llm_only_reply_summary", "persona_id",
-                       "insight_auto_enabled"):
+                       "insight_auto_enabled",
+                       "embedding_local_fallback_enabled"):
             return {"status": "error", "message": "unknown setting"}
         if key in ("boundary_enabled", "crisis_safety_enabled"):
             setattr(self, key, bool(data.get("value")))

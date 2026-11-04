@@ -1579,6 +1579,12 @@ input[type=range]{width:180px;accent-color:var(--accent)}
         </div>
         <p class="api-note" id="memoryBackendStatus">当前后端：--</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
+        <div class="setting-row" id="localEmbeddingRow">
+          <div><b>本地向量兜底</b><small>默认关=纯远程；开启后仅远程失败/超时/没 key 才用本地 CPU int8（可选组件约 23MB，需先准备模型；不新增 LLM 调用、不改召回阈值）。</small></div>
+          <label class="switch"><input type="checkbox" id="swLocalEmbedding"><span></span></label>
+        </div>
+        <p class="api-note" id="localEmbeddingState">本地向量：关（纯远程）</p>
+        <p class="api-note" id="localEmbeddingDetail">已关闭：不加载本地模型，也不探测。</p>
         <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
         <div class="insight-card">
           <div class="insight-card-head">
@@ -4782,6 +4788,8 @@ if($("swVisualAdvanced")){
   bindBehaviorToggle("swSafetyEnabled","safety_enabled");
   bindBehaviorToggle("swHybridRetrieval","hybrid_retrieval");
   bindBehaviorToggle("swLlmCandidates","llm_memory_candidates");
+  bindBehaviorToggle("swLocalEmbedding","embedding_local_fallback_enabled");
+  if($("swLocalEmbedding")) $("swLocalEmbedding").addEventListener("change",()=>{ setTimeout(()=>{ try{ load(); }catch(e){} },500); });
   const personaSel=$("personaSelect");
   if(personaSel) personaSel.addEventListener("change",async e=>{
     const val=String(e.target.value||"");
@@ -4893,6 +4901,7 @@ if($("swVisualAdvanced")){
       ms.textContent = "本地记忆：" + Number(m.entries || 0) + " 条 / " + Number(m.sessions || 0) + " 会话";
     }
     try { renderMemoryBackend(); } catch (e) {}
+    try { renderLocalEmbedding(); } catch (e) {}
     const top = $("apiSaveStateTop");
     if (top && !top.dataset.touched) {
       if (!bridge) {
@@ -4902,6 +4911,31 @@ if($("swVisualAdvanced")){
           ? "已读取 AstrBot 默认，确认后保存"
           : "未检测到 AstrBot provider，可填自定义 API";
       }
+    }
+  }
+  // task-193/198: opt-in local int8 fallback switch + read-only status row.
+  function renderLocalEmbedding(){
+    const sw=$("swLocalEmbedding"), state=$("localEmbeddingState"), detail=$("localEmbeddingDetail");
+    if(!sw && !state && !detail) return;
+    const payload=data||{};
+    const status=typeof payload.local_embedding==="string"?payload.local_embedding:"";
+    const enabled=payload.embedding_local_fallback_enabled===true||status!=="";
+    if(sw && document.activeElement!==sw) sw.checked=!!enabled;
+    const meta=(payload.local_embedding_detail&&typeof payload.local_embedding_detail==="object")?payload.local_embedding_detail:{};
+    const path=String(meta.model_path||payload.local_embedding_model_path||"");
+    const reason=String(meta.reason||"");
+    if(state){
+      if(!enabled) state.textContent="本地向量：关（纯远程）";
+      else if(status==="ok") state.textContent="本地向量：正常"+(path?" · "+path:"")+(meta.threads?" · 线程 "+meta.threads:"");
+      else if(status==="failed") state.textContent="本地向量：失败"+(path?" · "+path:"")+(reason?" · "+reason:"");
+      else if(status==="missing") state.textContent="本地向量：未配置模型路径";
+      else state.textContent="本地向量：已开启";
+    }
+    if(detail){
+      if(!enabled) detail.textContent="已关闭：纯远程；不加载本地模型，也不探测。需要时打开开关并准备约 23MB 的 models/bge-small-zh-int8 模型。";
+      else if(status==="missing") detail.textContent="未配置模型路径：请在插件配置填写 embedding_local_model_path（models/bge-small-zh-int8/model.onnx，约 23MB）。";
+      else if(status==="failed") detail.textContent="本地模型不可用：检查路径与 onnxruntime；远程路径仍可用。";
+      else detail.textContent="开启后仅远程失败/超时/没 key 时才使用本地 int8；不新增 LLM 调用。";
     }
   }
   // task-146: 记忆存储后端（JSON / SQLite / 自动）下拉；切换走 page/memory_backend。

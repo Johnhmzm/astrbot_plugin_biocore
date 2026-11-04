@@ -1566,6 +1566,132 @@ class _AutonomySendTarget:
         return await self._plugin.context.send_message(self.unified_msg_origin, chain)
 
 
+# ---------------------------------------------------------------- task-193
+# Read-only local int8 embedding health projection for /health + the panel.
+# Never imports onnxruntime, never creates a session, never loads the model.
+def _local_embedding_switch(config):
+    """False only when the fallback switch is explicitly off."""
+    try:
+        if isinstance(config, dict):
+            value = config.get("embedding_local_fallback_enabled", False)
+        else:
+            getter = getattr(config, "get", None)
+            value = getter("embedding_local_fallback_enabled", False) if callable(getter) else False
+    except Exception:
+        return True
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in ("0", "false", "no", "off")
+
+
+def _local_embedding_value(config, key, default=None):
+    try:
+        if isinstance(config, dict):
+            return config.get(key, default)
+        getter = getattr(config, "get", None)
+        return getter(key, default) if callable(getter) else default
+    except Exception:
+        return default
+
+
+def _probe_local_embedding(model_path, tokenizer_path=None):
+    """Read-only readiness probe: status + reason, no model/runtime loading."""
+    import importlib.util
+    from pathlib import Path
+
+    path = str(model_path or "").strip()
+    if not path:
+        return "missing", "未配置模型路径"
+    try:
+        target = Path(path)
+        if target.is_dir():
+            target = target / "model.onnx"
+        if not target.is_file():
+            return "failed", "local embedding model not found: " + str(target)
+        candidates = []
+        token = str(tokenizer_path or "").strip()
+        if token:
+            base = Path(token)
+            candidates.extend([base, base / "tokenizer.json", base / "vocab.txt"])
+        candidates.extend([
+            target.parent / "tokenizer.json",
+            target.parent / "vocab.txt",
+            target.parent / "tokenizer" / "tokenizer.json",
+            target.parent.parent / "bge-small-zh" / "tokenizer.json",
+            target.parent.parent / "bge-small-zh" / "vocab.txt",
+        ])
+        if not any(item.is_file() for item in candidates):
+            return "failed", "tokenizer not found for local embedding model"
+        import sys
+        if "onnxruntime" in sys.modules and sys.modules.get("onnxruntime") is None:
+            return "failed", "onnxruntime import is disabled"
+        if importlib.util.find_spec("onnxruntime") is None:
+            return "failed", "onnxruntime is not installed"
+        return "ok", ""
+    except Exception as exc:
+        return "failed", "local embedding probe error: %s" % exc
+
+
+def _local_embedding_payload(config):
+    """Read-only /health projection; None when the feature switch is off."""
+    if not _local_embedding_switch(config):
+        return None
+    path = str(_local_embedding_value(
+        config, "embedding_local_model_path", "") or "").strip()
+    tokenizer_path = str(_local_embedding_value(
+        config, "embedding_local_tokenizer_path", "") or "").strip()
+    try:
+        threads = int(float(_local_embedding_value(
+            config, "embedding_local_threads", 2) or 2))
+    except Exception:
+        threads = 2
+    try:
+        timeout_s = float(_local_embedding_value(
+            config, "embedding_timeout_s", 8) or 8)
+    except Exception:
+        timeout_s = 8.0
+    status, reason = _probe_local_embedding(path, tokenizer_path)
+    return {
+        "local_embedding": status,
+        "local_embedding_model_path": path,
+        "local_embedding_threads": threads,
+        "local_embedding_timeout_s": timeout_s,
+        "local_embedding_detail": {
+            "status": status,
+            "model_path": path,
+            "threads": threads,
+            "timeout_s": timeout_s,
+            "reason": reason,
+        },
+    }
+
+
+def _embedding_mode_projection(config):
+    """task-211: read-only resolved embedding backend (auto probe, no model load)."""
+    try:
+        from biocore_memory.embedding_mode import resolve_mode as _resolve_mode
+    except Exception:  # pragma: no cover - plugin loaded without its package dir
+        try:
+            from .biocore_memory.embedding_mode import resolve_mode as _resolve_mode
+        except Exception:
+            return {}
+    try:
+        info = _resolve_mode(config)
+    except Exception:
+        return {}
+    return {
+        "embedding_mode": str(info.get("mode") or "legacy")[:16],
+        "embedding_mode_requested": str(info.get("requested") or "legacy")[:24],
+        "embedding_mode_source": str(info.get("source") or "")[:16],
+        "embedding_mode_reason": str(info.get("reason") or "")[:120],
+        "embedding_mode_remote_ready": bool(info.get("remote_ready")),
+        "embedding_mode_local_ready": bool(info.get("local_model_exists")),
+        "embedding_mode_onnxruntime": bool(info.get("onnxruntime_available")),
+    }
+
+
 @register("astrbot_plugin_biocore", "Johnhmzm", "拟态生物情绪核心：注入表达意图，不生成回复", "1.4.16")
 class BioCorePlugin(Star):
     def __init__(self, context: Context, config=None):
@@ -1579,6 +1705,29 @@ class BioCorePlugin(Star):
         self._api_config_path = API_CONFIG_PATH
         super().__init__(context)
         self.config = config or {}
+        # em edition: the bundled local embedding model is referenced by a
+        # RELATIVE path in data/em_defaults.json. Resolve it against the plugin
+        # directory once at startup so the memory engine can use it as-is.
+        try:
+            _em_plugin_dir = Path(__file__).resolve().parent
+            for _em_key in ("embedding_local_model_path",
+                            "embedding_local_tokenizer_path"):
+                _em_value = str(self.config.get(_em_key) or "").strip()
+                if _em_value and not Path(_em_value).is_absolute():
+                    self.config[_em_key] = str(
+                        (_em_plugin_dir / _em_value).resolve())
+        except Exception:
+            pass
+        # task-211: read-only embedding mode probe (never loads the model).
+        try:
+            self.embedding_mode_info = _embedding_mode_projection(self.config)
+            logger.info(
+                "[biocore] embedding mode requested=%s -> %s (%s)",
+                self.embedding_mode_info.get("embedding_mode_requested"),
+                self.embedding_mode_info.get("embedding_mode"),
+                self.embedding_mode_info.get("embedding_mode_reason"))
+        except Exception:
+            self.embedding_mode_info = {}
         self.enabled = bool(self.config.get("enabled", True))
         # emotion probe concurrency guard: busy -> drop (never queue).
         self._probe_inflight = 0
@@ -8650,6 +8799,8 @@ class BioCorePlugin(Star):
                          self.page_core_mode, ["POST"], "BioCore core mode switch")
                 register("/astrbot_plugin_biocore/page/download",
                          self.page_download_info, ["GET"], "BioCore backup download info")
+                register("/astrbot_plugin_biocore/health", self.page_health,
+                         ["GET"], "BioCore minimal health (local embedding)")
         except Exception as exc:
             logger.warning("[biocore] page api register failed: %s", exc)
 
@@ -9726,6 +9877,73 @@ class BioCorePlugin(Star):
         except Exception:
             return _default
 
+    def _local_embedding_enabled(self):
+        """True only when the user opted into the local int8 fallback."""
+        try:
+            return bool(_local_embedding_switch(getattr(self, "config", None)))
+        except Exception:
+            return False
+
+    def _local_embedding_health(self):
+        """Read-only local int8 health for /health and the panel.
+
+        Reads an already-created memory engine's cached health first; otherwise
+        does a file/package readiness probe. Never loads the model.
+        Returns None when the feature switch is explicitly off.
+        """
+        try:
+            if not self._local_embedding_enabled():
+                return None
+            try:
+                engines = getattr(self, "_memory_module_engines", None)
+            except Exception:
+                engines = None
+            if isinstance(engines, dict):
+                for engine in list(engines.values()):
+                    try:
+                        health = engine.health()
+                    except Exception:
+                        continue
+                    if not isinstance(health, dict):
+                        continue
+                    status = health.get("local_embedding")
+                    if status not in ("ok", "failed"):
+                        continue
+                    detail = health.get("embedding")
+                    detail = detail if isinstance(detail, dict) else {}
+                    return {
+                        "local_embedding": status,
+                        "local_embedding_model_path": str(
+                            detail.get("local_model_path") or ""),
+                        "local_embedding_threads": int(
+                            detail.get("local_threads") or 0),
+                        "local_embedding_timeout_s": float(
+                            detail.get("timeout_s") or 0.0),
+                        "local_embedding_detail": dict(detail),
+                    }
+            return _local_embedding_payload(getattr(self, "config", None))
+        except Exception:
+            return None
+
+    async def page_health(self):
+        """Minimal read-only health endpoint (local embedding projection)."""
+        payload = {"status": "ok",
+                   "plugin": "astrbot_plugin_biocore",
+                   "enabled": bool(getattr(self, "enabled", False)),
+                   "embedding_local_fallback_enabled": self._local_embedding_enabled()}
+        try:
+            local = self._local_embedding_health()
+            if isinstance(local, dict):
+                payload.update(local)
+        except Exception:
+            pass
+        try:
+            payload.update(_embedding_mode_projection(
+                getattr(self, "config", None)))
+        except Exception:
+            pass
+        return payload
+
     async def page_status(self):
         try:
             self._ensure_life_task()
@@ -9871,6 +10089,21 @@ class BioCorePlugin(Star):
                        if isinstance(_ev, dict)],
             "insights": self._insights(5),
         }
+        # task-193/198: local embedding is opt-in (default off). The boolean is
+        # always projected; the status/detail fields appear only when enabled.
+        try:
+            _data["embedding_local_fallback_enabled"] = self._local_embedding_enabled()
+            _local_emb = self._local_embedding_health()
+            if isinstance(_local_emb, dict):
+                _data.update(_local_emb)
+        except Exception:
+            pass
+        # task-211: always project the resolved backend (auto probe result).
+        try:
+            _data.update(_embedding_mode_projection(
+                getattr(self, "config", None)))
+        except Exception:
+            pass
         # P1-2: default-OFF telemetry/token/consistency add no keys at all.
         if getattr(self, "llm_telemetry_enabled", False):
             _data["llm_telemetry"] = {

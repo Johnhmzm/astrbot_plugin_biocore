@@ -517,6 +517,73 @@
     "type": "int",
     "default": 1500
   },
+  "embedding_mode": {
+    "description": "向量后端模式（默认 auto 自动探测）",
+    "hint": "auto=启动时只读探测：远程配置齐全（base_url + model + key 非空）→ remote；否则本地模型文件存在且 onnxruntime 可导入 → local（首次真正 embed 才加载模型）；都没有 → off（纯词法/强度，不报错）。显式 off/remote/local/remote_with_local_fallback 仍然有效；未写本键的旧配置沿用旧规则。实际选中模式与原因会写日志、/health 和面板。",
+    "type": "string",
+    "default": "auto",
+    "options": [
+      "auto",
+      "off",
+      "remote",
+      "local",
+      "remote_with_local_fallback"
+    ]
+  },
+  "embedding_base_url": {
+    "description": "远程 embedding 基址（OpenAI 兼容，默认空）",
+    "hint": "例如 https://api.example.com/v1；代码会 POST {base_url}/embeddings。仅 embedding_mode=remote/remote_with_local_fallback 时使用；也兼容旧 base_url/api_base/url。",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_model": {
+    "description": "远程 embedding 模型名（默认空）",
+    "hint": "任意 OpenAI 兼容 embeddings 接口的 model 字段；不绑死厂商。仅 remote 模式使用；也兼容旧 model 键。",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_api_key": {
+    "description": "远程 embedding API Key（默认空）",
+    "hint": "留空则不发送 Authorization 头（适合本地网关）；非空时按 Bearer <key> 发送。仅 remote 模式使用，不写日志。",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_dim": {
+    "description": "期望向量维度（0=不校验，默认 0）",
+    "hint": "远程/本地返回向量维度与配置不一致时判定失败：remote 模式降级为无向量（召回退回词法/强度），remote_with_local_fallback 模式改走本地，local 模式同样校验本地输出。0=不校验（照实接收）。",
+    "type": "int",
+    "default": 0
+  },
+  "embedding_local_fallback_enabled": {
+    "description": "本地 int8 向量兜底（默认关）",
+    "hint": "默认关=纯远程；没有远程 key 时不走向量（召回退化为词法/强度），不报错。开启需要在面板「设置 → 记忆 → 本地向量」打开，并准备约 23MB 的本地 int8 模型（models/bge-small-zh-int8，路径见下方 embedding_local_model_path）；开启后仅远程失败/超时/没 key 才用本地 CPU int8，不新增 LLM 调用、不改召回结构与阈值。关闭时完全不加载本地模型、不探测、不 warning。",
+    "type": "bool",
+    "default": false
+  },
+  "embedding_local_model_path": {
+    "description": "本地模型路径（空=纯远程）",
+    "hint": "可选组件 models/bge-small-zh-int8/model.onnx 的绝对路径；留空则完全不启用本地兜底。组件目录通常用其 install.ps1 自动写入。",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_local_tokenizer_path": {
+    "description": "本地 tokenizer 目录（可选）",
+    "hint": "含 tokenizer.json 的目录；留空自动找模型同目录或同级 bge-small-zh。仅在启用本地模型时需要。",
+    "type": "string",
+    "default": ""
+  },
+  "embedding_local_threads": {
+    "description": "本地 int8 线程数（默认 2）",
+    "hint": "onnxruntime CPU intra-op 线程，范围 1–8，默认 2；越大越快但会占更多 CPU。",
+    "type": "int",
+    "default": 2
+  },
+  "embedding_timeout_s": {
+    "description": "远程 embedding 超时（秒，默认 8）",
+    "hint": "启用本地兜底时远程调用的超时；超时后走本地 int8。范围 0.1–60，默认 8。",
+    "type": "float",
+    "default": 8
+  },
   "refusal_brevity_enabled": {
     "description": "拒绝姿态缩短回复（默认关）",
     "hint": "默认关=旧行为。开启后当 L1 refusal 姿态为 negotiate/decline 时：① 对最终回复做句界内真实截断（上限见 refusal_brevity_max_chars，同步 completion_text/result_chain）；② [BC] 策略提示按 brevity=medium/short 缩短；③ 主动发送门槛收紧。不改变是否回复的判定。",

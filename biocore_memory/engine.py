@@ -2093,6 +2093,34 @@ class MemoryEngine:
         return {"edges": edges[:limit], "nodes": len(nodes),
                 "entries": len(by_id), "total_edges": len(edges)}
 
+    def _local_embedding_status(self):
+        """Health string for the optional CPU embedding fallback."""
+        try:
+            from .recall.embedding import local_embedding_status
+            return str(local_embedding_status(self.embedder) or "missing")
+        except Exception:
+            return "missing"
+
+    def health(self):
+        """Compact health snapshot; additive (main.py may expose it as /health).
+
+        local_embedding is one of ok | missing | failed:
+          ok       local int8 model loaded (fallback or local-only)
+          missing  no local model configured (pure remote by design)
+          failed   configured but failed to load (no retry until restart)
+        """
+        try:
+            from .recall.embedding import embedding_health
+            embedding = embedding_health(self.embedder)
+        except Exception:
+            embedding = {"local_embedding": "missing"}
+        return {
+            "ok": True,
+            "local_embedding": embedding.get("local_embedding", "missing"),
+            "embedding": embedding,
+            "entries": len(self.store.entries),
+        }
+
     def _stats_snapshot(self, candidates=None):
         counts = self.store.stats()
         order = candidates if candidates is not None else self._eviction_rows()
@@ -2100,6 +2128,7 @@ class MemoryEngine:
                   if isinstance(t, dict) and t.get("status") == "active"]
         return {
             "entries": len(self.store.entries),
+            "local_embedding": self._local_embedding_status(),
             "pinned": sum(1 for x in self.store.entries
                           if isinstance(x, dict) and x.get("pin")),
             "tombstones": len(self.store.tombstones),
