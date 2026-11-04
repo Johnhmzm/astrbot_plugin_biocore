@@ -612,6 +612,12 @@
         </div>
         <p class="api-note" id="memoryBackendStatus">当前后端：--</p>
         <p class="api-note" id="memoryMetaStats">记忆来源/置信度/层级等元数据明细在 活动会话 → 记忆元数据。</p>
+        <div class="setting-row" id="localEmbeddingRow">
+          <div><b>本地向量兜底</b><small>默认关=纯远程；开启后仅远程失败/超时/没 key 才用本地 CPU int8（可选组件约 23MB，需先准备模型；不新增 LLM 调用、不改召回阈值）。</small></div>
+          <label class="switch"><input type="checkbox" id="swLocalEmbedding"><span></span></label>
+        </div>
+        <p class="api-note" id="localEmbeddingState">本地向量：关（纯远程）</p>
+        <p class="api-note" id="localEmbeddingDetail">已关闭：不加载本地模型，也不探测。</p>
         <div class="api-actions"><button type="button" class="btn" id="compressNowBtn">立即压缩</button><span id="compressState"></span></div>
         <div class="insight-card">
           <div class="insight-card-head">

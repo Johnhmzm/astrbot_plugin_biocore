@@ -83,6 +83,20 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 - Python 依赖：无第三方包；使用 AstrBot 提供的模块和 Python 标准库
 - 可选：本地图片识别需要自行配置 `llama-server` 和 VLM 模型路径（见下方配置），留空则不启用
 
+## 发行版与构建
+
+单一发行版：`astrbot_plugin_biocore_standalone-<version>.zip`，**不含模型**（约 1.6 MB；已清理 `__pycache__` 与 `*.pyc`），不打包 `data/`、`memory/`、`states/` 等用户数据。
+
+```powershell
+cd C:\Users\Administrator\Desktop\deepseek
+& scripts\build_biocore.ps1                          # 只出 zip
+& scripts\build_biocore.ps1 -Deploy -Restart         # 可选：部署到本地实例并重启
+```
+
+产物在 `dist/`，文件名带 `metadata.yaml` 里的版本号。
+
+向量后端可选：`embedding_mode` 默认 `auto`，启动时只读探测——远程配置齐全→remote；否则本地模型存在且 onnxruntime 可导入→local（首次真正 embed 才加载模型）；都没有→off（纯词法/强度，不报错）。需要 local 时自行准备模型文件并 `pip install onnxruntime`（模型与运行时都不随包分发）。
+
 ## 更新
 
 市场安装或 GitHub 仓库安装时，优先使用 AstrBot 的更新按钮；ZIP 上传安装的更新按钮可能不可用，需要先切换/绑定市场源或覆盖安装一次。
@@ -104,6 +118,8 @@ AstrBot/data/plugins/astrbot_plugin_biocore_standalone/
 | `summary_max_chars` | `0` | 默认不设硬上限；异常/安全场景可设置上限 |
 | `image_llama_server` / `image_llama_model` / `image_llama_mmproj` | 空 | 可选本地 VLM 路径；仅本地图片识别模式，使用通用多模态 API 时留空 |
 | `image_service_port` | `0` | 本地 llama-server 端口；0=不启用，仅本地 VLM 模式，不是通用 API 地址 |
+| `embedding_mode` | `auto` | 向量后端：auto 启动时只读探测（远程 base_url+model+key 齐全→remote；否则本地模型存在且 onnxruntime 可导入→local；否则 off 纯词法）；也可显式 off/remote/local/remote_with_local_fallback |
+| `embedding_local_model_path` / `embedding_local_tokenizer_path` | 空 | 可选本地 int8 模型路径；auto 探测到本地模型且 onnxruntime 可导入时选 local，模型在首次真正 embed 时才加载 |
 
 Dashboard 设置页还提供 BioCore 专用 API 覆盖、记忆压缩、可视化图层、版本检查和备份。
 

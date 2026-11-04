@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -17,12 +18,44 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import List, Optional, Protocol, runtime_checkable
+
+try:  # package import (plugin runtime)
+    from ..embedding_mode import resolve_mode
+except Exception:  # pragma: no cover - top-level/standalone tests
+    from embedding_mode import resolve_mode  # type: ignore
+
 EMBED_CACHE_MAX = 512
 EMBED_TEXT_MAX_CHARS = 2000
 DEFAULT_TIMEOUT, MIN_TIMEOUT, MAX_TIMEOUT = 5.0, 0.1, 60.0
 ENV_BASE_URL = "BIOCORE_EMBEDDING_BASE_URL"
 ENV_API_KEY, ENV_MODEL = "BIOCORE_EMBEDDING_KEY", "BIOCORE_EMBEDDING_MODEL"
 ENV_TIMEOUT = "BIOCORE_EMBEDDING_TIMEOUT"
+ENV_LOCAL_MODEL = "BIOCORE_EMBEDDING_LOCAL_MODEL"
+ENV_LOCAL_FALLBACK = "BIOCORE_EMBEDDING_LOCAL_FALLBACK"
+ENV_LOCAL_TOKENIZER = "BIOCORE_EMBEDDING_LOCAL_TOKENIZER"
+ENV_LOCAL_THREADS = "BIOCORE_EMBEDDING_LOCAL_THREADS"
+ENV_MODE = "BIOCORE_EMBEDDING_MODE"
+ENV_DIM = "BIOCORE_EMBEDDING_DIM"
+EMBEDDING_MODES = ("off", "remote", "local", "remote_with_local_fallback")
+MODE_ALIASES = {
+    "remote_generic": "remote",
+    "remote_openai": "remote",
+    "local_onnx": "local",
+    "onnx": "local",
+    "fallback": "remote_with_local_fallback",
+    "remote_local_fallback": "remote_with_local_fallback",
+    "remote_with_fallback": "remote_with_local_fallback",
+    "disabled": "off",
+    "none": "off",
+}
+LOCAL_FALLBACK_DEFAULT_ENABLED = False
+LOCAL_TIMEOUT_DEFAULT_S = 8.0
+LOCAL_THREADS_DEFAULT = 2
+LOCAL_THREADS_MAX = 8
+LOCAL_DIM_DEFAULT = 512
+LOCAL_STATUSES = ("ok", "missing", "failed")
+_LOCAL_WARNED = set()
+logger = logging.getLogger("biocore_memory.embedding")
 
 
 @runtime_checkable
@@ -92,15 +125,221 @@ def _cache_put(cache, key, vector) -> None:
         return
 
 
+# ---------------------------------------------------- local int8 fallback
+def _as_bool(value, default=True):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off"):
+        return False
+    return bool(default)
+
+
+def _warn_once(key, message):
+    """One warning per reason/path for the whole process (no log spam)."""
+    if key in _LOCAL_WARNED:
+        return
+    _LOCAL_WARNED.add(key)
+    try:
+        logger.warning("[biocore-memory] %s", message)
+    except Exception:
+        pass
+
+
+def local_config(config=None):
+    """Parse the local-fallback knobs from a flat or nested config dict."""
+    cfg = _provider_config(config)
+    enabled = _as_bool(
+        cfg.get("embedding_local_fallback_enabled",
+                os.environ.get(ENV_LOCAL_FALLBACK, "0")),
+        LOCAL_FALLBACK_DEFAULT_ENABLED)
+    model_path = str(cfg.get("embedding_local_model_path")
+                     or os.environ.get(ENV_LOCAL_MODEL) or "").strip()
+    tokenizer_path = str(cfg.get("embedding_local_tokenizer_path")
+                         or os.environ.get(ENV_LOCAL_TOKENIZER) or "").strip()
+    threads = int(_as_float(
+        cfg.get("embedding_local_threads",
+                os.environ.get(ENV_LOCAL_THREADS, LOCAL_THREADS_DEFAULT)),
+        LOCAL_THREADS_DEFAULT))
+    threads = max(1, min(LOCAL_THREADS_MAX, threads))
+    timeout_s = _as_float(
+        cfg.get("embedding_timeout_s",
+                os.environ.get(ENV_TIMEOUT, LOCAL_TIMEOUT_DEFAULT_S)),
+        LOCAL_TIMEOUT_DEFAULT_S)
+    timeout_s = max(MIN_TIMEOUT, min(MAX_TIMEOUT, timeout_s))
+    raw_dim = cfg.get("embedding_dim")
+    if raw_dim is None:
+        raw_dim = os.environ.get(ENV_DIM)
+    try:
+        dim = int(_as_float(raw_dim, 0))
+    except Exception:
+        dim = 0
+    if dim < 0 or dim > 8192:
+        dim = 0
+    return {"enabled": enabled, "model_path": model_path,
+            "tokenizer_path": tokenizer_path, "threads": threads,
+            "timeout_s": timeout_s, "dim": dim}
+
+
+def _load_local_embedder(cfg):
+    """Build + load the CPU int8 embedder once; False when unusable."""
+    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+        return False
+    if not cfg.get("model_path"):
+        return False
+    try:
+        from ..embedding_local import LocalEmbedder
+    except Exception as exc:
+        _warn_once("import:" + str(cfg.get("model_path")),
+                   "local embedding component unavailable (%s); staying on "
+                   "remote" % exc)
+        return False
+    try:
+        dimension = int(cfg.get("dim") or LOCAL_DIM_DEFAULT)
+        embedder = LocalEmbedder(
+            cfg.get("model_path"), dim=dimension,
+            tokenizer_path=cfg.get("tokenizer_path") or None,
+            threads=cfg.get("threads", LOCAL_THREADS_DEFAULT))
+        embedder.load()
+        embedder.warmup()
+        return embedder
+    except Exception as exc:
+        _warn_once("load:" + str(cfg.get("model_path")),
+                   "local embedding model configured but failed to load "
+                   "(%s); remote only until restart" % exc)
+        return False
+
+
+def preload_local_fallback(provider):
+    """Startup probe: ok | missing | failed (never raises)."""
+    cfg = getattr(provider, "fallback_config", None)
+    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+        try:
+            provider.local_status = "missing"
+        except Exception:
+            pass
+        return "missing"
+    if not cfg.get("model_path"):
+        try:
+            provider.local_status = "missing"
+        except Exception:
+            pass
+        return "missing"
+    embedder = _load_local_embedder(cfg)
+    try:
+        provider.local_embedder = embedder
+        provider.local_status = "ok" if embedder else "failed"
+        return provider.local_status
+    except Exception:
+        return "failed"
+
+
+def local_embedding_status(provider=None):
+    """Health string: ok | missing | failed."""
+    if provider is None:
+        return "missing"
+    if getattr(provider, "local_only", False):
+        return ("ok" if getattr(provider, "local_embedder", None)
+                not in (None, False) else "failed")
+    status = getattr(provider, "local_status", None)
+    if status in LOCAL_STATUSES:
+        return status
+    cfg = getattr(provider, "fallback_config", None)
+    if (not isinstance(cfg, dict) or not cfg.get("enabled")
+            or not cfg.get("model_path")):
+        return "missing"
+    return "missing"
+
+
+def embedding_health(provider=None):
+    """Read-only embedding health for /health and the panel."""
+    cfg = getattr(provider, "fallback_config", None)
+    cfg = cfg if isinstance(cfg, dict) else {}
+    return {
+        "local_embedding": local_embedding_status(provider),
+        "embedding_mode": str(getattr(provider, "embedding_mode", "") or ""),
+        "embedding_mode_requested": str(
+            getattr(provider, "embedding_mode_requested", "") or ""),
+        "embedding_mode_source": str(
+            getattr(provider, "embedding_mode_source", "") or ""),
+        "embedding_mode_reason": str(
+            getattr(provider, "embedding_mode_reason", "") or ""),
+        "embedding_mode_onnxruntime": bool(
+            getattr(provider, "embedding_mode_onnxruntime", False)),
+        "remote_configured": bool(provider is not None
+                                  and not getattr(provider, "local_only",
+                                                  False)),
+        "local_only": bool(getattr(provider, "local_only", False)),
+        "local_model_path": str(cfg.get("model_path") or ""),
+        "local_threads": int(cfg.get("threads") or 0),
+        "timeout_s": float(cfg.get("timeout_s") or 0.0),
+    }
+
+
+def _fallback_embed(provider, text):
+    """Remote failed/timed out -> one local int8 vector, or None."""
+    if provider is None or getattr(provider, "local_only", False):
+        return None
+    cfg = getattr(provider, "fallback_config", None)
+    if not isinstance(cfg, dict) or not cfg.get("enabled"):
+        return None
+    embedder = getattr(provider, "local_embedder", None)
+    if embedder is False:
+        return None
+    if embedder is None:
+        embedder = _load_local_embedder(cfg)
+        try:
+            provider.local_embedder = embedder
+            provider.local_status = "ok" if embedder else "failed"
+        except Exception:
+            pass
+    if not embedder:
+        return None
+    try:
+        vectors = embedder.encode([text])
+    except Exception as exc:
+        _warn_once("encode:" + str(cfg.get("model_path")),
+                   "local embedding inference failed (%s); no vector" % exc)
+        try:
+            provider.local_embedder = False
+            provider.local_status = "failed"
+        except Exception:
+            pass
+        return None
+    if not vectors:
+        return None
+    vector = _validate_vector(vectors[0])
+    if vector is None:
+        return None
+    try:
+        expected = int(getattr(embedder, "dim", LOCAL_DIM_DEFAULT))
+    except Exception:
+        expected = LOCAL_DIM_DEFAULT
+    if expected > 0 and len(vector) != expected:
+        return None
+    return vector
+
+
 class OpenAICompatibleProvider:
     """POST {base_url}/embeddings with the OpenAI-compatible JSON shape."""
 
-    def __init__(self, base_url, model, api_key="", timeout=DEFAULT_TIMEOUT):
+    mode = "remote"
+
+    def __init__(self, base_url, model, api_key="", timeout=DEFAULT_TIMEOUT,
+                 dim=0):
         self.base_url = str(base_url or "").strip().rstrip("/")
         self.model = str(model or "").strip()
         self.api_key = str(api_key or "").strip()
         self.timeout = max(MIN_TIMEOUT, min(MAX_TIMEOUT,
                                            _as_float(timeout, DEFAULT_TIMEOUT)))
+        try:
+            self.dim = max(0, min(8192, int(dim or 0)))
+        except Exception:
+            self.dim = 0
 
     @property
     def endpoint(self) -> str:
@@ -127,10 +366,54 @@ class OpenAICompatibleProvider:
         checked = _validate_vector(body["data"][0]["embedding"])
         if checked is None:
             raise ValueError("invalid embedding payload")
+        if self.dim > 0 and len(checked) != self.dim:
+            raise ValueError(
+                "embedding dimension mismatch: expected %d, got %d"
+                % (self.dim, len(checked)))
         return checked
 
 
 OpenAIProvider = OpenAICompatibleProvider
+
+
+class LocalOnlyEmbeddingProvider:
+    """No remote configured: serve embeddings from the local CPU int8 model."""
+
+    local_only = True
+    mode = "local_only"
+
+    def __init__(self, embedder, timeout=LOCAL_TIMEOUT_DEFAULT_S, dim=0,
+                 mode_name="local_only"):
+        self.local_embedder = embedder
+        self.local_status = "ok" if embedder else "failed"
+        self.mode = str(mode_name or "local_only")
+        try:
+            self.dim = max(0, int(dim or getattr(embedder, "dim", 0) or 0))
+        except Exception:
+            self.dim = 0
+        self.timeout = max(MIN_TIMEOUT, min(MAX_TIMEOUT,
+                                           _as_float(timeout,
+                                                      LOCAL_TIMEOUT_DEFAULT_S)))
+        self.fallback_config = {
+            "enabled": True,
+            "model_path": str(getattr(embedder, "model_path", "") or ""),
+            "tokenizer_path": str(getattr(embedder, "tokenizer_path", "") or ""),
+            "threads": int(getattr(embedder, "threads", LOCAL_THREADS_DEFAULT)),
+            "timeout_s": self.timeout,
+        }
+
+    def embed_text(self, text: str) -> List[float]:
+        vectors = self.local_embedder.encode([normalize_text(text)])
+        if not vectors:
+            raise ValueError("empty local embedding")
+        vector = _validate_vector(vectors[0])
+        if vector is None:
+            raise ValueError("invalid local embedding")
+        if self.dim > 0 and len(vector) != self.dim:
+            raise ValueError(
+                "local embedding dimension mismatch: expected %d, got %d"
+                % (self.dim, len(vector)))
+        return vector
 
 
 def _provider_config(config) -> dict:
@@ -144,15 +427,256 @@ def _provider_config(config) -> dict:
     return merged
 
 
-def load_provider(config=None):
-    """Build a provider from dict/env; None when not configured.
+def embedding_mode(config=None):
+    """Resolved mode: "", off, remote, local, remote_with_local_fallback.
 
-    Keys (flat or under "embedding"): base_url/api_base/url, api_key/key,
-    model/embedding_model, timeout. Env: BIOCORE_EMBEDDING_BASE_URL/_KEY/_MODEL.
+    An empty string means the config has no embedding_mode key, so legacy
+    auto-selection is kept for old configs. Unknown values behave like off
+    (no network, no local model load).
+    """
+    cfg = _provider_config(config)
+    raw = cfg.get("embedding_mode")
+    if raw is None:
+        raw = os.environ.get(ENV_MODE)
+    text = str(raw or "").strip().lower()
+    if not text:
+        return ""
+    return MODE_ALIASES.get(text, text)
+
+
+def embedding_dim(config=None):
+    """Configured expected embedding dimension, or 0 when not enforced."""
+    cfg = _provider_config(config)
+    raw = cfg.get("embedding_dim")
+    if raw is None:
+        raw = os.environ.get(ENV_DIM)
+    try:
+        dim = int(_as_float(raw, 0))
+    except Exception:
+        dim = 0
+    return dim if 0 < dim <= 8192 else 0
+
+
+def _remote_settings(cfg):
+    """One OpenAI-compatible remote endpoint (new keys first, old keys after)."""
+    base_url = (cfg.get("embedding_base_url") or cfg.get("base_url")
+                or cfg.get("api_base") or cfg.get("url")
+                or cfg.get("embedding_api_base")
+                or os.environ.get(ENV_BASE_URL) or "")
+    model = (cfg.get("embedding_model") or cfg.get("model")
+             or os.environ.get(ENV_MODEL) or "")
+    api_key = (cfg.get("embedding_api_key") or cfg.get("api_key")
+               or cfg.get("key") or os.environ.get(ENV_API_KEY) or "")
+    timeout = cfg.get("timeout")
+    if timeout is None:
+        seconds = cfg.get("embedding_timeout_s")
+        if seconds is None:
+            millis = cfg.get("embedding_timeout_ms")
+            if millis is not None:
+                seconds = _as_float(millis, DEFAULT_TIMEOUT * 1000.0) / 1000.0
+        timeout = seconds if seconds is not None else (
+            os.environ.get(ENV_TIMEOUT) or DEFAULT_TIMEOUT)
+    return {"base_url": str(base_url or "").strip(),
+            "model": str(model or "").strip(),
+            "api_key": str(api_key or "").strip(),
+            "timeout": _as_float(timeout, DEFAULT_TIMEOUT),
+            "dim": embedding_dim(cfg)}
+
+
+def _disabled_fallback_config(timeout):
+    return {"enabled": False, "model_path": "", "tokenizer_path": "",
+            "threads": LOCAL_THREADS_DEFAULT,
+            "timeout_s": _as_float(timeout, LOCAL_TIMEOUT_DEFAULT_S),
+            "dim": 0}
+
+
+def _remote_provider(cfg):
+    remote = _remote_settings(cfg)
+    if not remote["base_url"] or not remote["model"]:
+        return None
+    provider = OpenAICompatibleProvider(
+        remote["base_url"], remote["model"], remote["api_key"],
+        remote["timeout"], dim=remote["dim"])
+    provider.mode = "remote"
+    provider.fallback_config = _disabled_fallback_config(remote["timeout"])
+    provider.local_embedder = None
+    provider.local_status = "missing"
+    return provider
+
+
+class _LazyLocalEmbedder:
+    """Local int8 embedder proxy: loads the model on the first real encode.
+
+    task-211: the auto probe is read-only, so startup must not load onnxruntime
+    or the model. This proxy exposes the same metadata and defers load().
+    """
+
+    def __init__(self, local_cfg):
+        self._cfg = dict(local_cfg or {})
+        self._impl = None
+        self._failed = None
+
+    @property
+    def model_path(self):
+        return str(self._cfg.get("model_path") or "")
+
+    @property
+    def tokenizer_path(self):
+        return str(self._cfg.get("tokenizer_path") or "")
+
+    @property
+    def threads(self):
+        try:
+            return int(self._cfg.get("threads") or LOCAL_THREADS_DEFAULT)
+        except Exception:
+            return LOCAL_THREADS_DEFAULT
+
+    @property
+    def dim(self):
+        try:
+            return int(self._cfg.get("dim") or 0) or LOCAL_DIM_DEFAULT
+        except Exception:
+            return LOCAL_DIM_DEFAULT
+
+    def _ensure(self):
+        if self._impl is False:
+            return False
+        if self._impl is not None:
+            return self._impl
+        if self._failed is not None:
+            raise self._failed
+        try:
+            embedder = _load_local_embedder(self._cfg)
+        except Exception as exc:  # pragma: no cover - defensive
+            embedder = False
+            self._failed = RuntimeError(
+                "local embedding unavailable: %s" % exc)
+        if not embedder:
+            self._impl = False
+            if self._failed is None:
+                self._failed = RuntimeError("local embedding unavailable")
+            raise self._failed
+        self._impl = embedder
+        return embedder
+
+    def encode(self, texts):
+        embedder = self._ensure()
+        if not embedder:
+            raise RuntimeError("local embedding unavailable")
+        return embedder.encode(texts)
+
+
+def _with_mode(provider, resolved):
+    """Attach the resolved mode/reason to a provider for /health and the panel."""
+    if provider is None or not isinstance(resolved, dict):
+        return provider
+    try:
+        provider.embedding_mode = str(resolved.get("mode") or "")
+        provider.embedding_mode_requested = str(resolved.get("requested") or "")
+        provider.embedding_mode_source = str(resolved.get("source") or "")
+        provider.embedding_mode_reason = str(resolved.get("reason") or "")
+        provider.embedding_mode_onnxruntime = bool(
+            resolved.get("onnxruntime_available"))
+    except Exception:
+        pass
+    return provider
+
+
+def _lazy_local_provider(cfg):
+    """Local provider whose model/onnxruntime load at the first embed call."""
+    local_cfg = dict(cfg)
+    local_cfg["embedding_local_fallback_enabled"] = True
+    local = local_config(local_cfg)
+    if not local.get("model_path"):
+        return None
+    proxy = _LazyLocalEmbedder(local)
+    expected = int(local.get("dim") or 0) or LOCAL_DIM_DEFAULT
+    return LocalOnlyEmbeddingProvider(
+        proxy, local.get("timeout_s"), dim=expected, mode_name="local")
+
+
+def _local_provider(cfg):
+    local_cfg = dict(cfg)
+    local_cfg["embedding_local_fallback_enabled"] = True
+    local = local_config(local_cfg)
+    if not local.get("model_path"):
+        return None
+    embedder = _load_local_embedder(local)
+    if not embedder:
+        return None
+    expected = int(local.get("dim") or 0) or int(
+        getattr(embedder, "dim", 0) or LOCAL_DIM_DEFAULT)
+    return LocalOnlyEmbeddingProvider(
+        embedder, local.get("timeout_s"), dim=expected, mode_name="local")
+
+
+def _fallback_provider(cfg):
+    remote = _remote_settings(cfg)
+    local_cfg = dict(cfg)
+    local_cfg["embedding_local_fallback_enabled"] = True
+    local = local_config(local_cfg)
+    if not (remote["base_url"] and remote["model"]):
+        return _local_provider(cfg) if local.get("model_path") else None
+    provider = OpenAICompatibleProvider(
+        remote["base_url"], remote["model"], remote["api_key"],
+        remote["timeout"], dim=remote["dim"])
+    provider.mode = "remote_with_local_fallback"
+    if local.get("model_path"):
+        local["enabled"] = True
+    else:
+        local["enabled"] = False
+    provider.fallback_config = local
+    provider.local_embedder = None
+    provider.local_status = "missing"
+    if local["enabled"]:
+        provider.timeout = local["timeout_s"]
+        preload_local_fallback(provider)
+    return provider
+
+
+def load_provider(config=None):
+    """Build a provider from dict/env; None when nothing is configured.
+
+    embedding_mode selects one backend (new, default off in _conf_schema.json):
+      off                           no vector at all (no network, no local load)
+      remote                        any OpenAI-compatible {base_url}/embeddings
+      local                         local bge-small-zh-int8 ONNX (embedding_local_*)
+      remote_with_local_fallback    remote first, local on failure/timeout/dim
+
+    Old configs without embedding_mode keep the legacy auto behaviour
+    (remote when base_url/model exist, else local-only when the old local
+    fallback switch and model path are set).
+
+    Remote keys (flat or under "embedding"): embedding_base_url, embedding_model,
+    embedding_api_key, embedding_dim; old aliases base_url/api_base/url,
+    model, api_key/key and env BIOCORE_EMBEDDING_BASE_URL/_KEY/_MODEL still work.
+    Timeout: embedding_timeout_s (or embedding_timeout_ms) / timeout / env.
     """
     cfg = _provider_config(config)
     if cfg.get("enabled") is False:
         return None
+    mode = embedding_mode(cfg)
+    resolved = resolve_mode(cfg)
+    if mode == "auto":
+        # task-211: read-only probe already ran; local mode stays lazy.
+        if resolved.get("mode") == "remote":
+            return _with_mode(_remote_provider(cfg), resolved)
+        if resolved.get("mode") == "local":
+            return _with_mode(_lazy_local_provider(cfg), resolved)
+        return None
+    if mode == "off":
+        return None
+    if mode == "remote":
+        return _with_mode(_remote_provider(cfg), resolved)
+    if mode == "local":
+        return _with_mode(_local_provider(cfg), resolved)
+    if mode == "remote_with_local_fallback":
+        return _with_mode(_fallback_provider(cfg), resolved)
+    if mode:
+        # Unknown mode value: same as off (no network, no local model load).
+        return None
+
+    # ---- legacy auto mode (no embedding_mode key) ---------------------
     base_url = (cfg.get("base_url") or cfg.get("api_base") or cfg.get("url")
                 or os.environ.get(ENV_BASE_URL) or "")
     model = (cfg.get("model") or cfg.get("embedding_model")
@@ -160,9 +684,25 @@ def load_provider(config=None):
     api_key = (cfg.get("api_key") or cfg.get("key")
                or os.environ.get(ENV_API_KEY) or "")
     timeout = cfg.get("timeout", os.environ.get(ENV_TIMEOUT) or DEFAULT_TIMEOUT)
-    if not str(base_url).strip() or not str(model).strip():
-        return None
-    return OpenAICompatibleProvider(base_url, model, api_key, timeout)
+    local = local_config(cfg)
+    if str(base_url).strip() and str(model).strip():
+        provider = OpenAICompatibleProvider(base_url, model, api_key, timeout)
+        provider.fallback_config = local
+        provider.local_embedder = None
+        provider.local_status = "missing"
+        if local["enabled"]:
+            # remote timeout is configurable (default 8s) whenever the local
+            # fallback is armed; then probe the optional component at startup.
+            provider.timeout = local["timeout_s"]
+            preload_local_fallback(provider)
+        return _with_mode(provider, resolved)
+    if local["enabled"] and local["model_path"]:
+        embedder = _load_local_embedder(local)
+        if embedder:
+            return _with_mode(
+                LocalOnlyEmbeddingProvider(embedder, local["timeout_s"]),
+                resolved)
+    return None
 
 
 def _call_provider(provider, text, timeout):
@@ -194,7 +734,12 @@ def embed(text, provider, cache=None, timeout=None):
         return cached
     checked = _validate_vector(
         _call_provider(provider, normalized, _timeout_for(provider, timeout)))
-    if checked is None:
+    if checked is not None:
+        _cache_put(cache, key, checked)
+        return checked
+    # Remote failed / timed out / missing key: try the local CPU int8 model.
+    local = _fallback_embed(provider, normalized)
+    if local is None:
         return None
-    _cache_put(cache, key, checked)
-    return checked
+    _cache_put(cache, key, local)
+    return local
