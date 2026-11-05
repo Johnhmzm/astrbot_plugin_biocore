@@ -1882,6 +1882,44 @@ def dispatch(action, payload=None):
                 "trace": trace,
                 "trace_file": trace_file,
             }
+        if action == "stats":
+            # task-221: embedding cache/provider counters + learning switches.
+            try:
+                from biocore_memory.recall.embedding import embed_stats as _embed_stats
+                embed = _embed_stats()
+            except Exception:
+                embed = {}
+            env_names = {
+                "mood_recall": "BIOCORE_MOOD_RECALL",
+                "affect_encoding": "BIOCORE_AFFECT_ENCODING",
+                "memory_feedback": "BIOCORE_MEMORY_FEEDBACK",
+                "preference_drift": "BIOCORE_PREFERENCE_DRIFT",
+                "growth_report": "BIOCORE_GROWTH_REPORT",
+            }
+            file_flags = {}
+            try:
+                root = str(store)
+                for flag_path in (os.path.join(root, "flags.json"),
+                                  os.path.join(os.path.dirname(root), "flags.json")):
+                    if os.path.isfile(flag_path):
+                        with open(flag_path, "r", encoding="utf-8") as fh:
+                            loaded = json.load(fh)
+                        if isinstance(loaded, dict):
+                            file_flags = loaded
+                            break
+            except Exception:
+                file_flags = {}
+            switches = {}
+            for name, env_name in env_names.items():
+                raw = str(os.environ.get(env_name) or "").strip().lower()
+                if name in file_flags:
+                    switches[name] = {"enabled": bool(file_flags.get(name)), "source": "flags.json"}
+                elif raw in ("1", "true", "on", "yes"):
+                    switches[name] = {"enabled": True, "source": "env"}
+                else:
+                    switches[name] = {"enabled": False, "source": "default"}
+            return {"ok": True, "embed": embed, "switches": switches,
+                    "store": str(store)}
         if action == "state":
             session_id = str(data.get("session_id") or "").strip()
             if not session_id:

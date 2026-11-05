@@ -58,6 +58,13 @@ COOC_MAX_ENTRIES = 400
 # after-turn auto consolidation: every N successful remember() calls
 CONSOLIDATE_AUTO_TURNS = 10
 
+# recall -> affect feedback (task-218): a recalled memory nudges the live
+# affect a little. Engine owns the state; recall/feedback.py owns the guards.
+FEEDBACK_MAX_STEP = 0.02    # per-turn cap on |delta valence| and |delta arousal|
+FEEDBACK_GAIN = 0.50        # share of (recalled - current) that flows back
+FEEDBACK_COOLDOWN = 1800.0  # same entry: no second feedback inside 30 minutes
+FEEDBACK_NEG_FLOOR = -0.40  # at/below this valence a further negative pull is dropped
+
 
 # Per-mechanism flags: safety/read-path filters default ON; every optional
 # mechanism defaults OFF and must keep the old code path when disabled.
@@ -90,6 +97,8 @@ FLAGS = {
     "mmr": False,
     "mood_recall": False,
     "affect_encoding": False,
+    "memory_feedback": False,  # task-218: recalled affect nudges the live affect
+    "preference_drift": False,  # task-219: repeated topics drift value_order weights
     "complexity": False,
     "constraints": False,
     "tiering": False,

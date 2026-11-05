@@ -155,6 +155,8 @@ class MemoryEngine:
         self._last_retrieval = None
         self._last_ledger = None
         self._last_constraint_hint = None
+        self._last_memory_feedback = None
+        self._feedback_last = {}
         self._audit = None
         self._rate_limiters = {}
         self._cooc = {}
@@ -1273,11 +1275,117 @@ class MemoryEngine:
             self._mark_inhibition(entries, selected)
         if self._flag("compress"):
             self._compress_entries(entries)
+        # task-218: recalled affect feeds back into the live affect (default OFF).
+        self._apply_memory_feedback(rows, budget)
         self._bump("recall_count")
         self._audit_write("recall", "", "recall",
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
         self._flush_stats()
         return rows
+
+    # -- recall -> affect feedback (task-218) ------------------------------
+    def _memory_feedback_on(self):
+        """Flag or env switch; both default OFF (old code path)."""
+        try:
+            from .recall import feedback as _feedback_mod
+            return _feedback_mod.enabled(self.flags, os.environ)
+        except Exception:
+            return False
+
+    def _write_affect(self, valence, arousal):
+        """Write (v, a) back to self.affect, dict or object; never raises."""
+        target = getattr(self, "affect", None)
+        if target is None:
+            return False
+        try:
+            value_v = round(max(-1.0, min(1.0, float(valence))), 4)
+            value_a = round(max(0.0, min(1.0, float(arousal))), 4)
+        except Exception:
+            return False
+        try:
+            if isinstance(target, dict):
+                key_v = ("v" if ("v" in target or "valence" not in target)
+                         else "valence")
+                key_a = ("a" if ("a" in target or "arousal" not in target)
+                         else "arousal")
+                target[key_v] = value_v
+                target[key_a] = value_a
+                return True
+            setattr(target, "v", value_v)
+            setattr(target, "a", value_a)
+            return True
+        except Exception:
+            return False
+
+    def _memory_feedback_regulation(self, report):
+        """Reuse biocore_model.regulation_strategies; None when unavailable."""
+        try:
+            from biocore_model import regulation_strategies as _reg
+        except Exception:
+            try:
+                from ..biocore_model import regulation_strategies as _reg
+            except Exception:
+                return None
+        try:
+            before = report.get("before") or [0.0, 0.5]
+            target = report.get("target") or before
+            before_v, before_a = float(before[0]), float(before[1])
+            pull = abs(float(target[0]) - before_v)
+        except Exception:
+            return None
+        try:
+            result = _reg.evaluate(
+                state={"valence": before_v, "arousal": before_a},
+                event={"kind": "memory_recall", "intensity": pull,
+                       "controllable": 0.3, "when": "after"},
+                flags={"enabled": True})
+        except Exception:
+            return None
+        if not isinstance(result, dict):
+            return None
+        return {
+            "strategy": str(result.get("strategy") or "none"),
+            "label": str(result.get("label") or ""),
+            "cost": round(float(result.get("cost") or 0.0), 3),
+            "effect": round(float(result.get("effect") or 0.0), 3),
+            "coping_tier": str(result.get("coping_tier") or ""),
+            "self_talk": str(result.get("self_talk") or ""),
+        }
+
+    def _apply_memory_feedback(self, rows, budget):
+        """Feed the injected top-k memories' stored affect into the state."""
+        if not self._memory_feedback_on():
+            self._last_memory_feedback = None
+            return None
+        if getattr(self, "affect", None) is None:
+            self._last_memory_feedback = {"enabled": True, "applied": [],
+                                          "delta": [0.0, 0.0],
+                                          "reason": "no_affect_state"}
+            return None
+        try:
+            from .recall import feedback as _feedback_mod
+            limit = max(1, int(budget))
+            report = _feedback_mod.plan(
+                list(rows or [])[:limit], self.affect, self._feedback_last,
+                now=float(self.now()))
+        except Exception:
+            self._last_memory_feedback = None
+            return None
+        if report.get("blocked_negative"):
+            report["regulation"] = self._memory_feedback_regulation(report)
+        if report.get("applied"):
+            after = report.get("after") or [0.0, 0.5]
+            if self._write_affect(after[0], after[1]):
+                stamp = float(self.now())
+                for key in report["applied"]:
+                    self._feedback_last[str(key)] = stamp
+            else:
+                report["applied"] = []
+                report["delta"] = [0.0, 0.0]
+                report["after"] = list(report.get("before") or [0.0, 0.5])
+                report["reason"] = "affect_not_writable"
+        self._last_memory_feedback = report
+        return report
 
     def _apply_ppr(self, rows, entries):
         try:
