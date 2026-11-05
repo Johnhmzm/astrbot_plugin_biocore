@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-TIERING_ENABLED = False
+TIERING_ENABLED = True
 HOT_BUDGET = 80
 WARM_BUDGET = 200
 TIER_UNLIMITED = 10 ** 9
@@ -12,6 +12,7 @@ HOT_AGE_SECONDS = 24 * 3600
 WARM_AGE_SECONDS = 30 * 86400
 HOT_IMPORTANCE = 0.80
 HOT_HITS = 5
+HOT_EXIT_HITS = 3  # hysteresis: a hot entry leaves only below this
 
 
 def _num(entry, keys, default=0.0):
@@ -33,8 +34,12 @@ def _age(entry, now):
     return max(0.0, float(now) - last)
 
 
-def tier_of(entry, now=None):
-    """Return 'hot' | 'warm' | 'cold'; disabled tiering is neutral ('warm')."""
+def tier_of(entry, now=None, previous=None):
+    """Return 'hot' | 'warm' | 'cold'; disabled tiering is neutral ('warm').
+
+    Hysteresis (task-36): a hot entry stays hot until hits drop below
+    HOT_EXIT_HITS, so a value hovering at the boundary cannot flicker.
+    """
     if not TIERING_ENABLED or not isinstance(entry, dict):
         return "warm"
     try:
@@ -42,6 +47,12 @@ def tier_of(entry, now=None):
         age = _age(entry, stamp)
         importance = _num(entry, ("importance",), 0.5)
         hits = _num(entry, ("hits", "visits", "visit_count"), 0.0)
+        if previous == "hot":
+            if hits >= HOT_EXIT_HITS:
+                return "hot"
+            if age <= WARM_AGE_SECONDS or hits >= 2:
+                return "warm"
+            return "cold"
         if age <= HOT_AGE_SECONDS or importance >= HOT_IMPORTANCE or hits >= HOT_HITS:
             return "hot"
         if age <= WARM_AGE_SECONDS or hits >= 2:
