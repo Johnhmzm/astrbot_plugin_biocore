@@ -25,6 +25,17 @@ except Exception:  # pragma: no cover - top-level/standalone tests
     from embedding_mode import resolve_mode  # type: ignore
 
 EMBED_CACHE_MAX = 512
+
+# task-221: observable cache/provider counters (process-local, never raises).
+EMBED_STATS = {"hit": 0, "disk_hit": 0, "miss": 0, "remote": 0, "local": 0, "fail": 0}
+
+
+def embed_stats(reset=False):
+    data = dict(EMBED_STATS)
+    if reset:
+        for key in EMBED_STATS:
+            EMBED_STATS[key] = 0
+    return data
 EMBED_TEXT_MAX_CHARS = 2000
 DEFAULT_TIMEOUT, MIN_TIMEOUT, MAX_TIMEOUT = 5.0, 0.1, 60.0
 ENV_BASE_URL = "BIOCORE_EMBEDDING_BASE_URL"
@@ -103,6 +114,60 @@ def _validate_vector(value) -> Optional[List[float]]:
             return None
         out.append(number)
     return out
+
+
+CACHE_FILE_ENV = "BIOCORE_EMBEDDING_CACHE_FILE"
+
+
+def _cache_file():
+    path = os.environ.get(CACHE_FILE_ENV) or ""
+    if not path:
+        return None
+    try:
+        os.makedirs(path, exist_ok=True)
+        return os.path.join(path, "embedding-cache.jsonl")
+    except Exception:
+        return None
+
+
+def _disk_lookup(file_path, key):
+    if not file_path or not os.path.isfile(file_path):
+        return None
+    try:
+        with open(file_path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if row.get("k") == key:
+                    return _validate_vector(row.get("v"))
+    except Exception:
+        return None
+    return None
+
+
+def _disk_put(file_path, key, vector, keep=512):
+    if not file_path:
+        return
+    try:
+        rows = []
+        if os.path.isfile(file_path):
+            with open(file_path, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        rows.append(json.loads(line))
+                    except Exception:
+                        continue
+        rows = [r for r in rows if r.get("k") != key]
+        rows.append({"k": key, "v": list(vector)})
+        rows = rows[-keep:]
+        with open(file_path + ".tmp", "w", encoding="utf-8") as fh:
+            for row in rows:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        os.replace(file_path + ".tmp", file_path)
+    except Exception:
+        return
 
 
 def _cache_get(cache, key):
@@ -727,19 +792,32 @@ def embed(text, provider, cache=None, timeout=None):
     key = cache_key(normalized)
     cached = _cache_get(cache, key)
     if cached is not None:
+        EMBED_STATS["hit"] += 1
         try:  # true LRU when the caller passes an OrderedDict
             cache.move_to_end(key)
         except Exception:
             pass
         return cached
+    disk = _cache_file()
+    from_disk = _disk_lookup(disk, key) if disk else None
+    if from_disk is not None:
+        EMBED_STATS["disk_hit"] += 1
+        _cache_put(cache, key, from_disk)
+        return from_disk
+    EMBED_STATS["miss"] += 1
     checked = _validate_vector(
         _call_provider(provider, normalized, _timeout_for(provider, timeout)))
     if checked is not None:
+        EMBED_STATS["remote"] += 1
         _cache_put(cache, key, checked)
+        _disk_put(disk, key, checked)
         return checked
     # Remote failed / timed out / missing key: try the local CPU int8 model.
     local = _fallback_embed(provider, normalized)
     if local is None:
+        EMBED_STATS["fail"] += 1
         return None
+    EMBED_STATS["local"] += 1
     _cache_put(cache, key, local)
+    _disk_put(disk, key, local)
     return local

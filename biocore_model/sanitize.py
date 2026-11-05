@@ -24,6 +24,11 @@ class ReplySanitizer:
     CONTROL_TAG_PATTERNS = [
         re.compile(r"<\s*(?:bc|biocore)\b[^>]*>.*?</\s*(?:bc|biocore)\s*>", re.I | re.S),
         re.compile(r"<\s*(?:bc|biocore)\b[^>]*>[^\n]*", re.I),
+    # Reminder tags are instructions for the model, never user-visible text.
+    re.compile(r"<\s*(?:system_reminder|reminder|system)\b[^>]*>.*?</\s*(?:system_reminder|reminder|system)\s*>", re.I | re.S),
+    re.compile(r"<\s*(?:system_reminder|reminder|system)\b[^>]*>[^\n]*", re.I),
+    # Models sometimes echo the instruction header verbatim.
+    re.compile(r"^\s*【[^】]*】\s*$", re.M),
         re.compile(r"<\s*(?:thinking|think|thought|reasoning|analysis)\b[^>]*>.*?</\s*(?:thinking|think|thought|reasoning|analysis)\s*>", re.I | re.S),
         re.compile(r"<\s*(?:thinking|think|thought|reasoning|analysis)\b[^>]*>[^\n]*", re.I),
         re.compile(r"<\s*(?:思考|分析|推理|内心独白)\s*>.*?</\s*(?:思考|分析|推理|内心独白)\s*>", re.S),
