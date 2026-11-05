@@ -113,6 +113,26 @@ def _normalize(signals):
     }
 
 
+def _components(norm):
+    """Every signal behind the intensity, each on its own line.
+
+    intensity is kept as a display readout; the components are the evidence,
+    so "comparison" and "self-threat" are never fused into one number.
+    """
+    norm = norm if isinstance(norm, dict) else {}
+    closeness = _clamp01(norm.get("closeness", 0.5), 0.5)
+    fairness = _clamp01(norm.get("fairness", 0.5), 0.5)
+    third = _clamp01(norm.get("third_party", 0.0), 0.0)
+    self_eval = _clamp01(norm.get("self_evaluation", 0.5), 0.5)
+    return {
+        "comparison": round(third, 4),
+        "relative_deprivation": round(1.0 - fairness, 4),
+        "self_threat": round(1.0 - self_eval, 4),
+        "closeness": round(closeness, 4),
+        "presence": round(third * (0.5 + 0.5 * closeness), 4),
+    }
+
+
 def intensity_of(signals):
     """0..1 comparison intensity; the single number behind the three levels."""
     norm = _normalize(signals)
@@ -163,6 +183,7 @@ def assess(signals, config=None):
         "behavior": "",
         "reason": REASONS[""],
         "signals": norm,
+        "components": _components(norm),
     }
     if not out["enabled"]:
         out["reason"] = REASONS["disabled"]

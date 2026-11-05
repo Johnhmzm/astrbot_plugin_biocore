@@ -26,8 +26,15 @@ import re
 
 DIMS = ("goal", "blame", "control", "certainty", "novelty", "involve", "hit")
 OUTPUTS = ("v", "a", "d", "social", "trust", "stress", "self_esteem")
+# [engineering] per-turn output caps, hand-tuned.
 CAPS = {"v": 0.15, "a": 0.15, "d": 0.10, "social": 0.05,
         "trust": 0.05, "stress": 0.10, "self_esteem": 0.05}
+# appraisal_v2 (default ON): v is goal + an explicit valence signal only.
+# blame goes to trust/conflict, hit to stress/self_esteem, and control /
+# certainty / novelty / involve each keep their own output line. The old 7x7
+# mapping stays reachable with BIOCORE_APPRAISAL_V2=0 or flags["appraisal_v2"].
+SWITCH_KEY = "appraisal_v2"
+ENV_KEY = "BIOCORE_APPRAISAL_V2"
 PROBE_MIN_CONFIDENCE = 0.4
 WHY_MAX = 40
 INVOLVE_GAIN = 0.5
@@ -37,7 +44,9 @@ INVOLVE_GAIN = 0.5
 FACT_MAX_CHARS = 20
 SITUATION_KEYS = ("challenge", "praise", "hurt")
 
-# 7 x 7 W matrix: WEIGHTS[dimension][output] = weight.
+# 7 x 7 W matrix: WEIGHTS[dimension][output] = weight. [engineering] the
+# dimension names follow Scherer 2001 / OCC, but no row below is fitted or
+# transcribed from a paper (see PAPER-MAP.md).
 # goal: -1 blocked .. +1 achieved -> better valence/trust, less stress.
 # blame: 0 self .. 1 other -> conflict, lower self-esteem/trust, more stress.
 # control: 0 powerless .. 1 in control -> dominance/self-esteem, less stress.
@@ -64,6 +73,38 @@ WEIGHTS = {
 }
 DEFAULT_WEIGHTS = {"%s.%s" % (dim, out): weight
                    for dim, row in WEIGHTS.items() for out, weight in row.items()}
+
+# v2 destination table. Every dimension has exactly one home (goal and the
+# explicit valence signal own v); nothing is folded into v a second time.
+V2_WEIGHTS = {
+    "v": {"goal": 0.60, "valence": 0.40},
+    "a": {"novelty": 0.25, "involve": 0.10, "hit": 0.20},
+    "d": {"control": 0.45, "goal": 0.20},
+    "social": {"involve": 0.20, "hit": -0.30},
+    "trust": {"goal": 0.15, "blame": -0.30},
+    "conflict": {"blame": 0.35, "hit": 0.10},
+    "stress": {"blame": 0.15, "hit": 0.30},
+    "self_esteem": {"goal": 0.20, "hit": -0.30},
+}
+V2_OUTPUTS = ("v", "a", "d", "social", "trust", "conflict", "stress",
+              "self_esteem")
+V2_CAPS = dict(CAPS, conflict=0.15)
+
+
+def enabled(flags=None, env=None):
+    """appraisal_v2: explicit flag > nested switches > env > default ON."""
+    import os
+    data = flags if isinstance(flags, dict) else {}
+    if isinstance(data.get(SWITCH_KEY), bool):
+        return data[SWITCH_KEY]
+    switches = data.get("switches") if isinstance(data.get("switches"), dict) else {}
+    if isinstance(switches.get(SWITCH_KEY), bool):
+        return switches[SWITCH_KEY]
+    environ = env if hasattr(env, "get") else os.environ
+    raw = str(environ.get(ENV_KEY) or "").strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    return True
 _FEEDBACK_FIELDS = {"v": "valence_delta", "a": "arousal_delta",
                     "d": "dominance_delta", "social": "social_delta",
                     "trust": "trust_delta", "stress": "stress_delta",
@@ -182,8 +223,62 @@ async def probe(text, context, llm_call, timeout=None, core=None, now=None):
         return {}
 
 
-def appraise(dims, confidence=0.5, weights=None):
-    """W·x scaled by confidence, bounded by per-output caps."""
+def _v2_values(dims):
+    """Inputs for the v2 table: the 7 dims plus an optional explicit valence."""
+    dims = dims if isinstance(dims, dict) else {}
+    values = {}
+    for name in DIMS:
+        low = -1.0 if name == "goal" else 0.0
+        values[name] = _clamp(dims.get(name, 0.0), low, 1.0)
+    values["valence"] = _clamp(dims.get("valence", 0.0), -1.0, 1.0)
+    return values
+
+
+def _appraise_v2(dims, confidence=0.5, weights=None):
+    """v2 mapping: (deltas, components). Nothing is added into v twice."""
+    conf = _clamp(confidence, 0.0, 1.0)
+    values = _v2_values(dims)
+    table = {out: dict(row) for out, row in V2_WEIGHTS.items()}
+    if isinstance(weights, dict):
+        for key, value in weights.items():
+            if "." not in key:
+                continue
+            dim, output = key.split(".", 1)
+            number = _num(value)
+            if dim in values and output in table and number is not None:
+                table[output][dim] = number
+    deltas = {}
+    components = {}
+    for output in V2_OUTPUTS:
+        rows = {}
+        total = 0.0
+        for name, weight in (table.get(output) or {}).items():
+            part = float(weight) * values.get(name, 0.0) * conf
+            if abs(part) > 1e-9:
+                rows[name] = round(part, 6)
+            total += part
+        cap = float(V2_CAPS.get(output, 0.2))
+        capped = max(-cap, min(cap, total))
+        components[output] = {"rows": rows, "total": round(total, 6),
+                              "capped": round(capped, 6),
+                              "dropped": round(total - capped, 6)}
+        if abs(capped) > 1e-9:
+            deltas[output] = round(capped, 4)
+    return deltas, components
+
+
+def appraise(dims, confidence=0.5, weights=None, v2=None):
+    """W·x scaled by confidence, bounded by per-output caps.
+
+    v2 (default ON) uses V2_WEIGHTS: v = goal + explicit valence only, blame
+    and hit go to their own outputs. v2=False is the old 7x7 mapping, byte for
+    byte.
+    """
+    if v2 is None:
+        v2 = enabled()
+    if v2:
+        deltas, _components = _appraise_v2(dims, confidence, weights)
+        return deltas
     dims = dims if isinstance(dims, dict) else {}
     conf = _clamp(confidence, 0.0, 1.0)
     w = {dim: dict(row) for dim, row in WEIGHTS.items()}
@@ -212,6 +307,80 @@ def appraise(dims, confidence=0.5, weights=None):
         if abs(total) > 1e-9:
             out[output] = round(total, 4)
     return out
+
+
+def appraise_detail(dims, confidence=0.5, weights=None, v2=None):
+    """Same numbers as appraise(), plus where each one came from.
+
+    components[output][dim] is that dim's own contribution, so v/a are visible
+    derived readouts instead of a black box that quietly folds blame/hit in.
+    Nothing is merged: the caller can show every source line.
+    """
+    if v2 is None:
+        v2 = enabled()
+    if v2:
+        deltas, components = _appraise_v2(dims, confidence, weights)
+        return {"deltas": deltas, "components": components,
+                "mapping": "v2",
+                "derived": {"v": True, "a": False}}
+    dims = dims if isinstance(dims, dict) else {}
+    conf = _clamp(confidence, 0.0, 1.0)
+    w = {dim: dict(row) for dim, row in WEIGHTS.items()}
+    if isinstance(weights, dict):
+        for key, value in weights.items():
+            if "." not in key:
+                continue
+            dim, output = key.split(".", 1)
+            number = _num(value)
+            if dim in w and output in w[dim] and number is not None:
+                w[dim][output] = number
+    values = {}
+    for name in DIMS:
+        low = -1.0 if name == "goal" else 0.0
+        values[name] = _clamp(dims.get(name, 0.0), low, 1.0)
+    gain = 1.0 + INVOLVE_GAIN * values["involve"]
+    components = {}
+    deltas = {}
+    for output in OUTPUTS:
+        rows = {}
+        total = 0.0
+        for name in DIMS:
+            part = float(w[name].get(output, 0.0)) * values[name] * gain * conf
+            if abs(part) > 1e-9:
+                rows[name] = round(part, 6)
+            total += part
+        cap = float(CAPS[output])
+        capped = max(-cap, min(cap, total))
+        components[output] = {"rows": rows,
+                              "total": round(total, 6),
+                              "capped": round(capped, 6),
+                              "dropped": round(total - capped, 6)}
+        if abs(capped) > 1e-9:
+            deltas[output] = round(capped, 4)
+    return {"deltas": deltas, "components": components,
+            "mapping": "v1", "derived": {key: True for key in ("v", "a")}}
+
+
+def legacy_v(dims, confidence=0.5, weights=None):
+    """The old 7x7 v (v1), kept for comparison only -- never written back."""
+    out = appraise(dims, confidence=confidence, weights=weights, v2=False)
+    return out.get("v")
+
+
+def appraise_with_legacy(dims, confidence=0.5, weights=None, v2=None):
+    """{deltas, v, v_legacy, mapping} for /state.appraisal.
+
+    With v2 on, v_legacy is what the old mapping would have produced, so the
+    two can be compared without changing anything. With v2 off there is no
+    second mapping and v_legacy is None.
+    """
+    if v2 is None:
+        v2 = enabled()
+    deltas = appraise(dims, confidence=confidence, weights=weights, v2=v2)
+    return {"deltas": deltas,
+            "v": deltas.get("v", 0.0),
+            "v_legacy": legacy_v(dims, confidence, weights) if v2 else None,
+            "mapping": "v2" if v2 else "v1"}
 
 
 def appraise_dims(dims, weights=None):

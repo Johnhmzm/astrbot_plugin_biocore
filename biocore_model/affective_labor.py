@@ -26,7 +26,7 @@ DIM_WEIGHTS = {
     "trust": 0.10,
     "stress": 0.10,
 }
-MASK_COST = 0.22
+MASK_COST = 0.22  # [engineering] energy cost of surface acting, hand-tuned
 LOAD_DECAY_PER_HOUR = 0.03
 BREAKDOWN_THRESHOLD = 0.85
 
@@ -121,6 +121,12 @@ def update(labor_state, expressed, felt, honesty=0.0, now=0.0,
     load = _clamp01(load + cost)
     data["load"] = round(load, 4)
     data["last_cost"] = cost
+    # Three components stay separate: a single "cost" hid which one moved.
+    data["components"] = {
+        "emotional_exhaustion": round(load, 4),
+        "depersonalization": round(mask, 4),
+        "personal_accomplishment": round(max(0.0, 1.0 - mask), 4),
+    }
     data["last_masking"] = mask
     data["turns"] = int(data.get("turns", 0) or 0) + 1
     if load >= BREAKDOWN_THRESHOLD and before < BREAKDOWN_THRESHOLD:
@@ -157,6 +163,13 @@ def view(labor_state):
         "collapsed": collapsed(data),
         "last_cost": round(_clamp01(data.get("last_cost", 0.0)), 4),
         "last_masking": round(_clamp01(data.get("last_masking", 0.0)), 4),
+        "components": {
+            "emotional_exhaustion": round(_clamp01(data.get("load", 0.0)), 4),
+            "depersonalization": round(
+                _clamp01(data.get("last_masking", 0.0)), 4),
+            "personal_accomplishment": round(
+                max(0.0, 1.0 - _clamp01(data.get("last_masking", 0.0))), 4),
+        },
         "turns": int(data.get("turns", 0) or 0),
         "breakdowns": int(data.get("breakdowns", 0) or 0),
     }

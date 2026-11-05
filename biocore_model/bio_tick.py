@@ -10,7 +10,8 @@ Literature
   Craig 2009 (insula interoception), Barrett 2017 (constructed emotion),
   Seth 2013 (interoceptive prediction), Garfinkel 2015 (three dimensions),
   Sterling 2012 (allostasis), Carver & Scheier 1998 (cybernetic control),
-  Powers 1973 (perceptual control), Gross 1998 (regulation strategies).
+  Powers 1973 (perceptual control), Gross 1998 (regulation strategies),
+  Anderson & Schooler 1991 (power-law forgetting, ACT-R activation).
 
 Hard constraints: pure functions, stdlib only, no main import, no network, no
 model call; the clock is injected (now / dt_hours); repeated calls with the same
@@ -32,9 +33,12 @@ DT_CAP_HOURS = 6.0
 DISCOMFORT_TRIGGER = 0.35
 LOG_EVERY = 10
 LOG_ENV = "BIOCORE_BIO_TICK_LOG"
-DEFAULT_VALENCE_DECAY_MINUTES = 120.0
-DEFAULT_AROUSAL_DECAY_MINUTES = 30.0
-DEFAULT_SOCIAL_DECAY_MINUTES = 180.0
+DEFAULT_VALENCE_DECAY_MINUTES = 120.0   # [engineering] hand-tuned
+DEFAULT_AROUSAL_DECAY_MINUTES = 30.0    # [engineering] hand-tuned
+DEFAULT_SOCIAL_DECAY_MINUTES = 180.0    # [engineering] hand-tuned
+# Anderson & Schooler 1991, Psychological Science 2:396-408 (ACT-R activation):
+# forgetting follows a power law, not an exponential; d ~= 0.5 in their fits.
+POWER_LAW_EXPONENT = 0.5
 
 
 def _num(value, default=0.0):
@@ -78,12 +82,36 @@ def _snapshot(core):
     return {}
 
 
-def _half_life_factor(minutes, half_life):
+def _power_law_factor(minutes, half_life, exponent=None):
+    """Anderson & Schooler 1991 power law of forgetting: (1 + t / tau) ** -d.
+
+    tau is solved from the configured half-life (tau = half_life / (2**(1/d)-1))
+    so a caller's half-life still means a half-life, while the tail decays like
+    an activation trace instead of dropping geometrically. d is configurable
+    per core through the decay_exponent attribute.
+    """
     try:
         hl = max(1.0, float(half_life))
     except Exception:
         hl = 120.0
-    return 0.5 ** (max(0.0, float(minutes)) / hl)
+    try:
+        power = POWER_LAW_EXPONENT if exponent is None else float(exponent)
+    except Exception:
+        power = POWER_LAW_EXPONENT
+    d = max(0.05, min(2.0, power))
+    try:
+        span = max(1e-6, 2.0 ** (1.0 / d) - 1.0)
+    except Exception:
+        span = 3.0
+    tau = hl / span
+    try:
+        minutes = max(0.0, float(minutes))
+    except Exception:
+        minutes = 0.0
+    return (1.0 + minutes / tau) ** (-d)
+
+
+_half_life_factor = _power_law_factor   # older callers keep working
 
 
 def _derive(core):
@@ -147,13 +175,15 @@ def _decay(core, dt_hours):
     v_rec = recovery if v < 0 else 1.0
     a_rec = recovery if a > 0.40 else 1.0
     s_rec = recovery if soc < 0.55 else 1.0
-    _put(core, "v", _clip(v * _half_life_factor(minutes, v_hl * emo_factor / v_rec), -1, 1))
-    _put(core, "a", _clip(0.40 + (a - 0.40) * _half_life_factor(
-        minutes, a_hl * max(0.5, emo_factor) / a_rec), 0, 1))
-    _put(core, "d", _clip(0.55 + (d - 0.55) * _half_life_factor(
-        minutes, v_hl * emo_factor), -1, 1))
-    _put(core, "social", _clip(0.55 + (soc - 0.55) * _half_life_factor(
-        minutes, s_hl * emo_factor / s_rec), 0, 1))
+    power = _get(core, "decay_exponent", POWER_LAW_EXPONENT)
+    _put(core, "v", _clip(v * _power_law_factor(
+        minutes, v_hl * emo_factor / v_rec, power), -1, 1))
+    _put(core, "a", _clip(0.40 + (a - 0.40) * _power_law_factor(
+        minutes, a_hl * max(0.5, emo_factor) / a_rec, power), 0, 1))
+    _put(core, "d", _clip(0.55 + (d - 0.55) * _power_law_factor(
+        minutes, v_hl * emo_factor, power), -1, 1))
+    _put(core, "social", _clip(0.55 + (soc - 0.55) * _power_law_factor(
+        minutes, s_hl * emo_factor / s_rec, power), 0, 1))
     _derive(core)
     return True
 

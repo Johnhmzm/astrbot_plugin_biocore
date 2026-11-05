@@ -54,18 +54,22 @@ class DecayTest(unittest.TestCase):
     def test_valence_decays_to_zero(self):
         core = FakeCore(v=-0.5)
         out = bt.bio_tick(core, now=1000.0, dt_hours=1.0)
-        self.assertAlmostEqual(core.v, -0.5 * 0.5 ** 0.5, places=4)
+        expected = -0.5 * bt._power_law_factor(60.0, 120.0)
+        self.assertAlmostEqual(core.v, expected, places=4)
         self.assertTrue(out["changed"])
 
-    def test_arousal_regresses_to_baseline(self):
+    def test_arousal_moves_toward_baseline(self):
         core = FakeCore(a=0.8)
         bt.bio_tick(core, now=1000.0, dt_hours=1.0)
-        self.assertAlmostEqual(core.a, 0.50, places=4)
+        expected = 0.40 + (0.8 - 0.40) * bt._power_law_factor(60.0, 30.0)
+        self.assertAlmostEqual(core.a, expected, places=4)
+        self.assertLess(core.a, 0.8)
+        self.assertGreater(core.a, 0.50)   # a power law keeps a longer tail
 
     def test_social_regresses_to_baseline(self):
         core = FakeCore(social=0.2)
         bt.bio_tick(core, now=1000.0, dt_hours=1.0)
-        expected = 0.55 + (0.2 - 0.55) * (0.5 ** (60.0 / 180.0))
+        expected = 0.55 + (0.2 - 0.55) * bt._power_law_factor(60.0, 180.0)
         self.assertAlmostEqual(core.social, expected, places=4)
 
     def test_stress_re_derived_from_affect(self):
@@ -79,7 +83,48 @@ class DecayTest(unittest.TestCase):
         core = FakeCore(v=-1.0)
         out = bt.bio_tick(core, now=1000.0, dt_hours=100.0)
         self.assertEqual(out["dt_hours"], 6.0)
-        self.assertAlmostEqual(core.v, -1.0 * 0.5 ** (360.0 / 120.0), places=4)
+        self.assertAlmostEqual(core.v, -1.0 * bt._power_law_factor(360.0, 120.0),
+                               places=4)
+
+
+class PowerLawDecayTest(unittest.TestCase):
+    """Anderson & Schooler 1991: forgetting is a power law, not exponential."""
+
+    def test_half_life_is_still_a_half_life(self):
+        for half_life in (30.0, 120.0, 180.0):
+            self.assertAlmostEqual(
+                bt._power_law_factor(half_life, half_life), 0.5, places=6)
+
+    def test_no_elapsed_time_means_no_decay(self):
+        self.assertAlmostEqual(bt._power_law_factor(0.0, 120.0), 1.0, places=9)
+
+    def test_same_access_count_longer_gap_decays_more(self):
+        factors = [bt._power_law_factor(minutes, 120.0)
+                   for minutes in (0.0, 15.0, 60.0, 240.0)]
+        self.assertEqual(factors, sorted(factors, reverse=True))
+        self.assertLess(factors[-1], factors[-2])
+
+    def test_long_tail_is_slower_than_the_old_exponential(self):
+        tail = bt._power_law_factor(4 * 120.0, 120.0)
+        self.assertGreater(tail, 0.5 ** 4)
+        self.assertAlmostEqual(bt._power_law_factor(120.0, 120.0), 0.5, places=6)
+
+    def test_exponent_is_configurable_per_core(self):
+        slow = FakeCore(v=-0.8, decay_exponent=0.5)
+        sharp = FakeCore(v=-0.8, decay_exponent=1.0)
+        bt.bio_tick(slow, now=1000.0, dt_hours=1.0)
+        bt.bio_tick(sharp, now=1000.0, dt_hours=1.0)
+        self.assertLess(sharp.v, slow.v)   # d=1.0 falls further in one hour
+        self.assertAlmostEqual(slow.v,
+                               -0.8 * bt._power_law_factor(60.0, 120.0, 0.5),
+                               places=4)
+
+    def test_decay_uses_the_core_half_life(self):
+        short = FakeCore(v=-0.8, valence_decay_minutes=30.0)
+        long = FakeCore(v=-0.8, valence_decay_minutes=240.0)
+        bt.bio_tick(short, now=1000.0, dt_hours=1.0)
+        bt.bio_tick(long, now=1000.0, dt_hours=1.0)
+        self.assertGreater(short.v, long.v)   # a short half-life recovers sooner
 
 
 class InteroNeedsTest(unittest.TestCase):

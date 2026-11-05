@@ -14,6 +14,7 @@ BOOST = 0.25
 CORE_AFTER = 5
 D = 0.5
 TAU_HOURS = 24.0
+COOLDOWN_SECONDS = 3600.0   # [engineering] one boost per memory per hour
 
 
 def _num(value, default=0.0):
@@ -48,6 +49,58 @@ def touch(entries, event_id, now, kind="recall"):
                       "reason": str(kind)})
         return {"entries": items, "deltas": deltas, "audit": audit, "idempotent": False}
     return {"entries": items, "deltas": {}, "audit": [], "idempotent": False}
+
+
+def touch_batch(entries, event_ids, now, kind="recall", limit=None):
+    """Touch several recalled memories: one row per entry, never one aggregate.
+
+    Each entry keeps its own old/new/boost row; an entry already touched at or
+    after `now` is skipped (cooldown), and `limit` caps how many may move in
+    one turn. Returns {"entries", "rows", "deltas", "skipped"}.
+    """
+    items = [dict(entry or {}) for entry in (entries or [])]
+    wanted = [str(item) for item in (event_ids or []) if str(item or "")]
+    if limit is None:
+        limit = len(wanted) or 0
+    rows = []
+    skipped = []
+    moved = 0
+    for target in wanted:
+        if moved >= max(0, int(limit)):
+            skipped.append({"id": target, "reason": "turn_cap"})
+            continue
+        found = None
+        for entry in items:
+            if str(entry.get("id")) == target:
+                found = entry
+                break
+        if found is None:
+            skipped.append({"id": target, "reason": "not_found"})
+            continue
+        last_touch = float(found.get("last_touch_ts", 0.0) or 0.0)
+        if last_touch > 0 and float(now) - last_touch < COOLDOWN_SECONDS:
+            skipped.append({"id": target, "reason": "cooldown"})
+            continue
+        old = _num(found.get("strength"), 1.0)
+        found["strength"] = round(min(1.0, old + BOOST), 4)
+        found["recall_count"] = int(found.get("recall_count", 0) or 0) + 1
+        found["last_touched"] = float(now)
+        found["last_decay_ts"] = float(now)
+        found["last_touch_ts"] = float(now)
+        found["last_touch_kind"] = str(kind)
+        if found["recall_count"] > CORE_AFTER:
+            found["core_memory"] = True
+        rows.append({"id": target, "old": round(old, 4),
+                     "new": found["strength"],
+                     "boost": round(found["strength"] - old, 4),
+                     "recall_count": found["recall_count"],
+                     "source": "feedback_memory", "reason": str(kind)})
+        moved += 1
+    deltas = {row["id"]: {"strength": row["new"],
+                          "recall_count": row["recall_count"]}
+              for row in rows}
+    return {"entries": items, "rows": rows, "deltas": deltas,
+            "skipped": skipped, "idempotent": not rows}
 
 
 def decay_all(entries, now, d=D, tau_hours=TAU_HOURS):

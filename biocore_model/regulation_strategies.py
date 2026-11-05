@@ -228,6 +228,11 @@ def profile(strategy, state=None, event=None, relationship=None):
         "cost": round(cost, 3),
         "effect": round(effect, 3),
         "score": round(score, 3),
+        # never a ratio: effect and cost keep their own numbers, the score is
+        # only the display order the caller sorts by
+        "score_parts": {"fit": round(fit, 3), "effect": round(effect, 3),
+                        "cost": round(cost, 3)},
+        "score_is_display": True,
         "coping_tier": TIER_OF[strategy],
         "reason": REASONS[strategy],
         "self_talk": SELF_TALK[strategy],

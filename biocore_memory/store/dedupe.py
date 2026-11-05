@@ -18,6 +18,7 @@ import unicodedata
 from ..core.util import clamp01
 from ..index.entities import cues
 
+# [engineering] the four-level rules and these thresholds are hand-set.
 L1_MERGE = 0.90
 L1_FLAG = 0.75
 L3_WINDOW_SECONDS = 60.0

@@ -46,6 +46,8 @@ try:
 except Exception:  # pragma: no cover
     _sanitize = None
 
+# [engineering] every cadence/limit below is a product decision (see
+# PAPER-MAP.md); there is no user study behind 30min / 3 per day / 120min.
 DEFAULTS = {
     "standby_enabled": False,
     "standby_model_base_url": "",
@@ -53,13 +55,15 @@ DEFAULTS = {
     "standby_model_key": "",
     "standby_every_minutes": 30,
     "standby_active_hours": "09:00-23:00",
-    "standby_max_per_day": 6,
+    "standby_max_per_day": 3,
+    "standby_cooldown_minutes": 120,
+    "standby_max_no_reply": 2,
     "standby_channel": "outbox",
     "standby_timeout": 20.0,
     "standby_store": "",
     "standby_session_id": "standby",
-    "standby_min_trust": 0.6,
-    "standby_require_open_loop": True,
+    "standby_min_trust": 0.0,
+    "standby_require_open_loop": False,
 }
 
 
@@ -102,13 +106,17 @@ def normalize_config(config=None):
     out["standby_every_minutes"] = max(
         1, min(24 * 60, int(_num(out.get("standby_every_minutes"), 30))))
     out["standby_max_per_day"] = max(
-        1, min(100, int(_num(out.get("standby_max_per_day"), 6))))
+        1, min(100, int(_num(out.get("standby_max_per_day"), 3))))
+    out["standby_cooldown_minutes"] = max(
+        1, min(24 * 60, int(_num(out.get("standby_cooldown_minutes"), 120))))
+    out["standby_max_no_reply"] = max(
+        1, min(10, int(_num(out.get("standby_max_no_reply"), 2))))
     out["standby_timeout"] = max(
         0.2, min(120.0, _num(out.get("standby_timeout"), 20.0)))
     out["standby_min_trust"] = max(
-        0.0, min(1.0, _num(out.get("standby_min_trust"), 0.6)))
+        0.0, min(1.0, _num(out.get("standby_min_trust"), 0.0)))
     out["standby_require_open_loop"] = _as_bool(
-        out.get("standby_require_open_loop"), True)
+        out.get("standby_require_open_loop"), False)
     out["standby_session_id"] = out["standby_session_id"] or "standby"
     return out
 
@@ -198,8 +206,9 @@ def load_session_state(store, session_id):
     return _pipeline.apply_intero_to_state(state)
 
 
-def build_prompt(state, memories, persona_text="", channel="outbox"):
-    """Full persona (never truncated) + thinking rule + state + recent memories."""
+def build_prompt(state, memories, persona_text="", channel="outbox",
+                 digest=""):
+    """Full persona (never truncated) + thinking rule + state + memories + digest."""
     parts = []
     if persona_text:
         parts.append(str(persona_text))
@@ -212,6 +221,8 @@ def build_prompt(state, memories, persona_text="", channel="outbox"):
     recent = [str(item).strip() for item in (memories or []) if str(item).strip()]
     if recent:
         parts.append("最近记得：" + "；".join(recent[:3]))
+    if digest:
+        parts.append("上次对话：" + str(digest)[:60])
     prompt = "\n\n".join(parts)
     return prompt
 
@@ -341,6 +352,45 @@ def _bookkeep(store, now, state, sent=False, reason="", text=""):
     return data
 
 
+def _settle_reply_bookkeeping(store, state, session_state, now, cfg):
+    """Count unanswered sends; two in a row block standby."""
+    awaiting = bool(state.get("awaiting_reply"))
+    streak = int(_num(state.get("no_reply_streak"), 0))
+    if not awaiting:
+        return streak, state
+    last_sent = _num(state.get("last_sent_ts"), 0.0)
+    last_human = _num((session_state or {}).get("last_human_ts"), 0.0)
+    if last_human > last_sent:
+        streak = 0
+    elif now - last_sent > cfg["standby_cooldown_minutes"] * 60.0:
+        streak += 1
+    else:
+        return streak, state
+    state = dict(state)
+    state["awaiting_reply"] = False
+    state["no_reply_streak"] = streak
+    try:
+        _write_json(_bookkeeping_path(store), state)
+    except Exception:
+        pass
+    return streak, state
+
+
+def _last_digest(session_state):
+    for key in ("last_user_text", "last_digest", "last_line"):
+        value = str((session_state or {}).get(key) or "").strip()
+        if value:
+            return value[:60]
+    return ""
+
+
+def _template_line(state):
+    intero = (state or {}).get("intero") if isinstance((state or {}).get("intero"), dict) else {}
+    if _num(intero.get("tension"), 0.5) >= 0.65:
+        return "在忙吗？刚刚想起你，不用急着回。"
+    return "刚刚想起你，今天还好吗？"
+
+
 def tick(now=None, config=None, transport=None, proactive=None):
     """One standby tick. Returns {ok, sent, reason, text?, channel, outbox?}."""
     cfg = normalize_config(config)
@@ -358,16 +408,22 @@ def tick(now=None, config=None, transport=None, proactive=None):
         result["reason"] = "outside_active_hours"
         return result
     state = load_state(store)
+    session_state = load_session_state(store, session_id)
+    streak, state = _settle_reply_bookkeeping(store, state, session_state,
+                                              now_value, cfg)
+    result["no_reply_streak"] = streak
+    if streak >= cfg["standby_max_no_reply"]:
+        result["reason"] = "no_reply_streak"
+        return result
     if len(_sent_today(state, now_value)) >= cfg["standby_max_per_day"]:
         result["reason"] = "daily_cap"
         return result
     last_attempt = _num(state.get("last_attempt_ts"), 0.0)
     last_sent = _num(state.get("last_sent_ts"), 0.0)
-    cooldown_until = max(last_attempt, last_sent) + cfg["standby_every_minutes"] * 60.0
+    cooldown_until = max(last_attempt, last_sent) + cfg["standby_cooldown_minutes"] * 60.0
     if cooldown_until > now_value:
         result["reason"] = "cooldown"
         return result
-    session_state = load_session_state(store, session_id)
     last_human = _num(session_state.get("last_human_ts"),
                       now_value - max(cfg["standby_every_minutes"], 180) * 60.0)
     switches = {
@@ -399,22 +455,26 @@ def tick(now=None, config=None, transport=None, proactive=None):
     memories = _recent_memories(store, session_id)
     persona = _persona_text(store)
     prompt = build_prompt(session_state, memories, persona,
-                          cfg["standby_channel"])
+                          cfg["standby_channel"],
+                          digest=_last_digest(session_state))
     text, reason = generate(prompt, cfg, transport=transport)
+    fallback = False
     if reason != "ok" or not text:
-        _bookkeep(store, now_value, state, sent=False, reason=reason)
-        result["reason"] = reason
-        return result
+        text = _template_line(session_state)
+        reason = "template_fallback"
+        fallback = True
     outbox = _outbox_path(store)
     try:
         outbox.parent.mkdir(parents=True, exist_ok=True)
         row = {
             "ts": round(now_value, 3),
             "text": text,
-            "reason": "ok",
+            "reason": reason,
             "state_snapshot": session_state,
             "channel": cfg["standby_channel"],
             "model": cfg["standby_model"],
+            "fallback": fallback,
+            "prompt": prompt,
         }
         with outbox.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -422,10 +482,59 @@ def tick(now=None, config=None, transport=None, proactive=None):
         _bookkeep(store, now_value, state, sent=False, reason="outbox_write_failed")
         result["reason"] = "outbox_write_failed"
         return result
-    data = _bookkeep(store, now_value, state, sent=True, reason="ok", text=text)
-    result.update({"sent": True, "reason": "ok", "text": text,
-                   "outbox": str(outbox), "sent_today": len(_sent_today(data, now_value))})
+    state = dict(state)
+    state["awaiting_reply"] = True
+    state["no_reply_streak"] = 0
+    data = _bookkeep(store, now_value, state, sent=True, reason=reason, text=text)
+    data["awaiting_reply"] = True
+    data["no_reply_streak"] = 0
+    try:
+        _write_json(_bookkeeping_path(store), data)
+    except Exception:
+        pass
+    result.update({"sent": True, "reason": reason, "text": text,
+                   "fallback": fallback, "prompt": prompt,
+                   "outbox": str(outbox),
+                   "sent_today": len(_sent_today(data, now_value))})
     return result
+
+
+def _results_path(store):
+    return _proactive_dir(store) / "results.jsonl"
+
+
+def _count_lines(path):
+    try:
+        if path is None or not Path(path).exists():
+            return 0
+        return sum(1 for line in Path(path).read_text(encoding="utf-8").splitlines()
+                   if line.strip())
+    except Exception:
+        return 0
+
+
+def summary(store, now=None, enabled=False):
+    """Numbers for /state; never generates or sends."""
+    stamp = _num(now, time.time())
+    state = load_state(store)
+    sent_today = len(_sent_today(state, stamp))
+    pending = max(0, _count_lines(_outbox_path(store))
+                  - _count_lines(_results_path(store)))
+    cfg = normalize_config({})
+    last_attempt = _num(state.get("last_attempt_ts"), 0.0)
+    next_at = (last_attempt + cfg["standby_every_minutes"] * 60.0
+               if last_attempt > 0 else 0.0)
+    return {
+        "enabled": bool(enabled),
+        "next_at": round(next_at, 3),
+        "pending": pending,
+        "sent_today": sent_today,
+        "last_reason": str(state.get("last_reason") or ""),
+        "no_reply_streak": int(_num(state.get("no_reply_streak"), 0)),
+        "awaiting_reply": bool(state.get("awaiting_reply")),
+        "cooldown_minutes": cfg["standby_cooldown_minutes"],
+        "max_per_day": cfg["standby_max_per_day"],
+    }
 
 
 def sleep_loop(config=None, once=False):
