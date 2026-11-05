@@ -23,6 +23,8 @@ PROTOTYPES = {
     "loneliness": {"v": -0.5, "a": -0.4, "d": -0.3, "social": -0.7, "stress": 0.2},
     "trust": {"v": 0.4, "a": 0.1, "d": 0.2, "social": 0.5, "trust": 0.7},
 }
+# [engineering] six-axis weights and the distance formula have no source;
+# the axis choice echoes Russell 1980 / Mehrabian 1996 (see PAPER-MAP.md).
 WEIGHTS = {"v": 0.35, "a": 0.25, "d": 0.15, "social": 0.15,
            "stress": 0.10, "trust": 0.15}
 CORE_DIMS = ("v", "a", "d", "social", "stress", "trust")
@@ -90,7 +92,14 @@ def classify(state, temperature=0.25):
     coverage = present_weight / total_weight if total_weight > 0 else 1.0
     # Missing dimensions always reduce confidence; neutral fill is not evidence.
     confidence *= max(0.0, min(1.0, coverage))
+    # Raw per-emotion closeness (1 - distance) stays visible; the softmax
+    # probability is a DISPLAY label only, never fed back into a decision.
+    scores = {name: round(max(0.0, 1.0 - distance), 4)
+              for name, distance in distances.items()}
     return {"label": label,
+            "scores": scores,
+            "distances": {name: round(value, 4)
+                          for name, value in distances.items()},
             "probs": {name: round(prob, 4) for name, prob in probs.items()},
             "confidence": round(max(0.0, min(1.0, confidence)), 4),
             "top2": top2,

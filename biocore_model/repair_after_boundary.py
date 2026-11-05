@@ -30,6 +30,7 @@ STAGES = ("cold", "state", "record", "turn_page")
 LABELS = {"cold": "冷处理", "state": "明说", "record": "记账",
           "turn_page": "翻页"}
 
+# [engineering] stage durations and the forgive floor are hand-tuned.
 COLD_SECONDS = 300.0       # cold -> state
 STATE_SECONDS = 1800.0     # state -> record
 RECORD_SECONDS = 7200.0    # record -> turn_page

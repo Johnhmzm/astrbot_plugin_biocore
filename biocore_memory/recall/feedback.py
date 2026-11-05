@@ -94,8 +94,13 @@ def _weight(entry):
 
 
 def plan(rows, current, cooldowns=None, now=0.0, budget=None,
-         gain=None, max_step=None, cooldown=None, neg_floor=None):
+         gain=None, max_step=None, cooldown=None, neg_floor=None, split=True):
     """Decide the per-turn affect nudge for one recall batch.
+
+    split=True (default): every recalled memory keeps its own proposal row
+    (source id + v/a + weight); no averaged target is invented. The turn then
+    takes the most trusted proposal (ties: the larger pull) instead of a mean.
+    split=False restores the old weighted-average target exactly.
 
     rows       what this recall injected (row dicts or raw entries); trimmed
                to budget when given
@@ -147,6 +152,8 @@ def plan(rows, current, cooldowns=None, now=0.0, budget=None,
         "capped": False,
         "blocked_negative": False,
         "regulation": None,
+        "proposals": [],
+        "selected": "",
         "reason": "",
     }
     if not eligible:
@@ -159,12 +166,32 @@ def plan(rows, current, cooldowns=None, now=0.0, budget=None,
         weights = [1.0] * len(eligible)
     else:
         weights = [weight for _key, _value, weight in eligible]
-    target_v = sum(pair[0] * weight
-                   for (_key, pair, _weight_value), weight
-                   in zip(eligible, weights)) / total_w
-    target_a = sum(pair[1] * weight
-                   for (_key, pair, _weight_value), weight
-                   in zip(eligible, weights)) / total_w
+    # Every recalled memory is a proposal with its own source id. Nothing is
+    # averaged: the turn follows the most trusted proposal (ties -> the larger
+    # pull), so a strong memory can never be diluted by a weak one.
+    proposals = []
+    for (key, pair, weight), mass in zip(eligible, weights):
+        proposals.append({"id": str(key),
+                          "v": round(_clamp(pair[0], -1.0, 1.0), 4),
+                          "a": round(_clamp(pair[1], 0.0, 1.0), 4),
+                          "weight": round(_num(mass, 1.0), 4),
+                          "delta_v": round(_clamp(
+                              (pair[0] - before_v) * gain, -max_step, max_step), 6),
+                          "delta_a": round(_clamp(
+                              (pair[1] - before_a) * gain, -max_step, max_step), 6)})
+    report["proposals"] = proposals
+    if not split and proposals:
+        target_v = sum(row["v"] * row["weight"] for row in proposals) / max(
+            1e-9, sum(row["weight"] for row in proposals))
+        target_a = sum(row["a"] * row["weight"] for row in proposals) / max(
+            1e-9, sum(row["weight"] for row in proposals))
+        report["selected"] = ""
+    else:
+        winner = max(proposals,
+                     key=lambda row: (row["weight"],
+                                      abs(row["delta_v"]) + abs(row["delta_a"])))
+        target_v, target_a = winner["v"], winner["a"]
+        report["selected"] = str(winner["id"])
     target_v = _clamp(target_v, -1.0, 1.0)
     target_a = _clamp(target_a, 0.0, 1.0)
 

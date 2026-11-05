@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""0.6/0.4 fusion + 0.55/0.35 tiers."""
+"""0.50/0.30/0.10/0.10 fusion (cue/semantic/importance/time) + 0.55/0.35 tiers.
+
+The weights live in biocore_memory.core.config; this docstring used to say
+0.6/0.4, which never matched the constants. [engineering]
+"""
 from __future__ import annotations
 from ..core.config import (CUE_WEIGHT, HIGH_TIER, IMPORTANCE_WEIGHT, MID_TIER,
                            SEM_WEIGHT, TIME_BONUS)

@@ -108,30 +108,51 @@ def apply(needs, events, scale=1.0):
                    "events": applied, "scale": round(factor, 3)}
 
 
-def behavior_bias(needs, baseline=BASELINE):
-    """Need deficits -> 0..1 behavioural biases (expression/inclination)."""
+def need_biases(needs, baseline=BASELINE):
+    """One row per need: value / deficit / surplus / bias.
+
+    Each need keeps its own bias; nothing is combined into one number, so
+    reading belonging never tells you anything about control.
+    """
     state = needs_state(needs)
     base = _clamp(baseline, 0.0, 1.0)
+    rows = {}
+    for key in NEED_KEYS:
+        deficit = max(0.0, base - state[key])
+        surplus = max(0.0, state[key] - base)
+        rows[key] = {"value": state[key],
+                     "deficit": round(deficit, 4),
+                     "surplus": round(surplus, 4),
+                     "bias": round(surplus - deficit, 4)}
+    return rows
+
+
+def behavior_bias(needs, baseline=BASELINE):
+    """Action inclinations, each read from exactly ONE need (no weighted mix).
+
+    Before this change self_assert summed self_esteem and control, and
+    ask_clarify summed control and meaningful_existence; a deficit in one need
+    could therefore masquerade as a deficit in another.
+    """
+    rows = need_biases(needs, baseline)
 
     def deficit(key):
-        return max(0.0, base - state[key])
+        return _clamp(rows.get(key, {}).get("deficit"), 0.0, 1.0)
 
     def surplus(key):
-        return max(0.0, state[key] - base)
+        return _clamp(rows.get(key, {}).get("surplus"), 0.0, 1.0)
 
     return {
         "seek_contact": round(_clamp(3.0 * deficit("belonging"), 0.0, 1.0), 3),
-        "self_assert": round(_clamp(2.0 * surplus("self_esteem")
-                                    + 1.5 * deficit("control"), 0.0, 1.0), 3),
-        "ask_clarify": round(_clamp(2.0 * deficit("control")
-                                    + 1.0 * deficit("meaningful_existence"),
-                                    0.0, 1.0), 3),
+        "self_assert": round(_clamp(2.0 * surplus("self_esteem"), 0.0, 1.0), 3),
+        "ask_clarify": round(_clamp(2.0 * deficit("control"), 0.0, 1.0), 3),
         "share_meaning": round(_clamp(2.5 * surplus("meaningful_existence"),
                                       0.0, 1.0), 3),
     }
 
 
 def summary(needs):
-    """Bounded row for logs/panel."""
+    """Bounded row for logs/panel: the four actions plus every need line."""
     state = needs_state(needs)
-    return {"needs": state, "behavior": behavior_bias(state)}
+    return {"needs": state, "behavior": behavior_bias(state),
+            "bias": need_biases(state)}

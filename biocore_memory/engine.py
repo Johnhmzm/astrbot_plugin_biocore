@@ -98,6 +98,11 @@ class MemoryEngine:
                  eviction_readonly=None, identity_writeback=None,
                  config=None, slots_enabled=None, due_hints_enabled=None):
         self.affect = affect
+        # task-228: the shared field (single source of truth). Unbound by
+        # default -- every existing caller keeps reading/writing self.affect.
+        self._field_view = None
+        self._field_arbiter = False
+        self._field_proposals = []
         self.config = config if isinstance(config, dict) else {}
         self.flags = dict(FLAGS)
         overrides = (self.config.get("flags")
@@ -257,6 +262,65 @@ class MemoryEngine:
                 self.slot_registry = None
         elif not self.slots_enabled:
             self.slot_registry = None
+
+    # -- shared field (task-228) -----------------------------------------
+    def bind_field(self, view=None, arbitrate=True):
+        """Bind the shared field (a read-only copy) and its write-back arbiter.
+
+        With a field bound the learners stop reading their own affect copy:
+        mood_recall, affect_encoding and memory_feedback all read the field, and
+        memory_feedback stops writing -- it proposes a delta instead, which
+        drain_field_proposals() hands to biocore_runtime.arbiter at turn_end.
+        bind_field(None) restores the old behaviour exactly.
+        """
+        if isinstance(view, dict):
+            self._field_view = {key: value for key, value in view.items()
+                                if not isinstance(value, (dict, list))}
+        else:
+            self._field_view = None
+        self._field_arbiter = bool(arbitrate and self._field_view is not None)
+        self._field_proposals = []
+        return self.field_view()
+
+    def field_view(self):
+        """Copy of the bound field, or None when no field is bound."""
+        return dict(self._field_view) if isinstance(self._field_view, dict) else None
+
+    def _affect_source(self):
+        """What the learners read: the field when bound, else self.affect."""
+        view = getattr(self, "_field_view", None)
+        if isinstance(view, dict):
+            valence = view.get("v", view.get("valence"))
+            arousal = view.get("a", view.get("arousal"))
+            if valence is not None:
+                return {"v": valence,
+                        "a": 0.5 if arousal is None else arousal}
+        return getattr(self, "affect", None)
+
+    def propose_field(self, learner, values, weight=None):
+        """Record one learner delta; returns True when anything was proposed."""
+        data = values if isinstance(values, dict) else {}
+        added = False
+        for name, delta in data.items():
+            try:
+                number = float(delta)
+            except Exception:
+                continue
+            if not (number == number) or abs(number) < 1e-6:
+                continue
+            item = {"learner": str(learner or "unknown")[:32],
+                    "field": str(name), "delta": round(number, 6)}
+            if weight is not None:
+                item["weight"] = weight
+            self._field_proposals.append(item)
+            added = True
+        return added
+
+    def drain_field_proposals(self):
+        """Pop the proposals recorded since the last drain (turn_end input)."""
+        items = list(getattr(self, "_field_proposals", []) or [])
+        self._field_proposals = []
+        return items
 
     def _auto_turn_limit(self):
         """Resolve the auto-consolidate interval (default 10, flags/config)."""
@@ -1023,7 +1087,7 @@ class MemoryEngine:
         _base_importance = explicit_importance if explicit_importance is not None else value_of(ev)
         _encode_on = self._flag("affect_encoding") or str(os.environ.get("BIOCORE_AFFECT_ENCODING") or "").strip().lower() in ("1", "true", "on", "yes")
         if _encode_on and explicit_importance is None:
-            _affect_source = getattr(self, "affect", None)
+            _affect_source = self._affect_source()
             if _affect_source is not None:
                 _ev, _ea = _affect_pair(_affect_source)
                 try:
@@ -1059,7 +1123,8 @@ class MemoryEngine:
             "scope": entry_scope,
         }
         entry.update({k: v for k, v in meta.items() if k not in entry})
-        _affect_source = meta.get("affect") if isinstance(meta.get("affect"), dict) else getattr(self, "affect", None)
+        _affect_source = (meta.get("affect") if isinstance(meta.get("affect"), dict)
+                          else self._affect_source())
         _mv, _ma = _affect_pair(_affect_source)
         entry["affect"] = {"valence": round(_mv, 4), "arousal": round(_ma, 4)}
         try:
@@ -1210,7 +1275,7 @@ class MemoryEngine:
                 _lam = float(os.environ.get("BIOCORE_MOOD_LAMBDA") or 0.25)
             except Exception:
                 _lam = 0.25
-            _current = _affect_pair(getattr(self, "affect", None))
+            _current = _affect_pair(self._affect_source())
             for row in rows:
                 entry = row.get("entry") or {}
                 stored = entry.get("affect") if isinstance(entry.get("affect"), dict) else None
@@ -1293,7 +1358,22 @@ class MemoryEngine:
             return False
 
     def _write_affect(self, valence, arousal):
-        """Write (v, a) back to self.affect, dict or object; never raises."""
+        """Write (v, a) back, or propose it when the shared field is bound.
+
+        task-228: a learner never writes the field. With a field bound the
+        change is recorded as a "memory_feedback" proposal and the arbiter
+        decides at turn_end; without one this is the old direct write.
+        """
+        if isinstance(getattr(self, "_field_view", None), dict) and self._field_arbiter:
+            try:
+                base_v, base_a = _affect_pair(self._affect_source())
+                value_v = max(-1.0, min(1.0, float(valence)))
+                value_a = max(0.0, min(1.0, float(arousal)))
+            except Exception:
+                return False
+            return bool(self.propose_field("memory_feedback", {
+                "v": round(value_v - base_v, 6),
+                "a": round(value_a - base_a, 6)}))
         target = getattr(self, "affect", None)
         if target is None:
             return False
@@ -1357,7 +1437,8 @@ class MemoryEngine:
         if not self._memory_feedback_on():
             self._last_memory_feedback = None
             return None
-        if getattr(self, "affect", None) is None:
+        _source = self._affect_source()
+        if _source is None:
             self._last_memory_feedback = {"enabled": True, "applied": [],
                                           "delta": [0.0, 0.0],
                                           "reason": "no_affect_state"}
@@ -1366,7 +1447,7 @@ class MemoryEngine:
             from .recall import feedback as _feedback_mod
             limit = max(1, int(budget))
             report = _feedback_mod.plan(
-                list(rows or [])[:limit], self.affect, self._feedback_last,
+                list(rows or [])[:limit], _source, self._feedback_last,
                 now=float(self.now()))
         except Exception:
             self._last_memory_feedback = None
@@ -1384,6 +1465,10 @@ class MemoryEngine:
                 report["delta"] = [0.0, 0.0]
                 report["after"] = list(report.get("before") or [0.0, 0.5])
                 report["reason"] = "affect_not_writable"
+            if report.get("applied") and self._field_arbiter:
+                # task-228: recorded as a proposal; the arbiter writes at turn_end.
+                report["deferred"] = True
+                report["field_write"] = "proposal"
         self._last_memory_feedback = report
         return report
 

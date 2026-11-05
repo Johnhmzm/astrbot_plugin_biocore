@@ -8,7 +8,9 @@ TOMBSTONE_LIMIT = 100
 DEFAULT_BUDGET = 3
 MAX_BUDGET = 5
 
-# recall fusion / tiers (M2)
+# recall fusion / tiers (M2). [engineering] no fitting source; .50/.30/.10/.10
+# is the single口径 now (the old "0.6/0.4" comment and the task's .4/.3/.2/.1
+# are retired, code unchanged).
 CUE_WEIGHT = 0.50
 SEM_WEIGHT = 0.30
 IMPORTANCE_WEIGHT = 0.10
@@ -21,6 +23,7 @@ SOURCE_MIN_CONFIDENCE = 0.55
 SOURCE_CONFIDENCE_DEFAULT = 0.70
 
 # memory value formula (deterministic; trust is NOT part of value)
+# [engineering] product definition, no behavioural data behind the weights.
 VALUE_BASE = 0.20
 VALUE_W_INTENSITY = 0.30
 VALUE_W_VALENCE = 0.20
@@ -28,7 +31,7 @@ VALUE_W_SELF = 0.15
 VALUE_W_MAINLINE = 0.15
 VALUE_W_ROUTINE = 0.20
 
-# eviction weights (read-only score)
+# eviction weights (read-only score) [engineering]
 EVICT_W_SALIENCE = 0.30
 EVICT_W_POSITION = 0.20
 EVICT_W_REDUNDANCY = 0.20
@@ -46,7 +49,7 @@ THREAD_LIMIT = 3
 
 # memory-point gate (OR): value >= MIN_VALUE or importance >= MIN_IMPORTANCE or self >= MIN_SELF
 # (event centrality / emotional intensity; self-reference effect; engineering thresholds)
-MEMORY_POINT_MIN_VALUE = 0.60
+MEMORY_POINT_MIN_VALUE = 0.60   # [engineering]
 MEMORY_POINT_MIN_SELF = 0.45
 MEMORY_POINT_MIN_IMPORTANCE = 0.75
 
@@ -60,6 +63,7 @@ CONSOLIDATE_AUTO_TURNS = 10
 
 # recall -> affect feedback (task-218): a recalled memory nudges the live
 # affect a little. Engine owns the state; recall/feedback.py owns the guards.
+# [engineering] gain / step / cooldown / floor are hand-set (see PAPER-MAP.md).
 FEEDBACK_MAX_STEP = 0.02    # per-turn cap on |delta valence| and |delta arousal|
 FEEDBACK_GAIN = 0.50        # share of (recalled - current) that flows back
 FEEDBACK_COOLDOWN = 1800.0  # same entry: no second feedback inside 30 minutes

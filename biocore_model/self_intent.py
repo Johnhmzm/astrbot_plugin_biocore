@@ -26,8 +26,10 @@ from __future__ import annotations
 import math
 
 NEED_KEYS = ("belonging", "self_esteem", "control", "meaningful_existence")
-NEED_WEIGHTS = {"belonging": 0.30, "self_esteem": 0.25,
-                "control": 0.20, "meaningful_existence": 0.25}
+# Deci & Ryan 2000, Psychological Inquiry 11(4):227-268: the basic needs have
+# equal standing, so every slot weighs the same instead of .30/.25/.20/.25.
+NEED_WEIGHTS = {"belonging": 0.25, "self_esteem": 0.25,
+                "control": 0.25, "meaningful_existence": 0.25}
 KINDS = ("要你陪", "自己待着", "拒绝话题", "顺着你", "说真话")
 
 # Expectations start near the "just fine" line and drift with experience.
@@ -40,8 +42,8 @@ DEFAULT_EXPECTED = {
 EXPECTED_RATE = 0.03          # per-call drift, never a jump
 SELF_WEIGHT_FLOOR = 0.10
 SELF_WEIGHT_CEIL = 0.90
-MIN_WEIGHT = 0.15             # intents below this are dropped
-MAX_INTENTS = 2
+MIN_WEIGHT = 0.15             # [engineering] intents below this are dropped
+MAX_INTENTS = 2               # [engineering]
 MAX_CANDIDATES = 4
 SELF_HANDLE_URGE = 0.35       # below this she tends to handle it herself
 OPEN_UP_URGE = 0.50           # above this she tends to ask / speak up

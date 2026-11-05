@@ -25,11 +25,16 @@ class MatrixTest(unittest.TestCase):
         high = ap.appraise(d(goal=0.8), confidence=1.0)
         self.assertGreater(high.get("v", 0.0), low.get("v", 0.0))
 
-    def test_monotonic_blame_self_esteem_and_stress(self):
+    def test_blame_goes_to_trust_and_conflict(self):
+        # v2: blame no longer touches self-esteem or v; it lands on trust and
+        # conflict (and a little stress), exactly where it belongs.
         low = ap.appraise(d(blame=0.0), confidence=1.0)
         high = ap.appraise(d(blame=0.9), confidence=1.0)
-        self.assertLess(high["self_esteem"], low.get("self_esteem", 0.0))
-        self.assertGreater(high["stress"], low.get("stress", 0.0))
+        self.assertLess(high["trust"], low.get("trust", 0.0))
+        self.assertGreater(high["conflict"], 0.0)
+        self.assertGreater(high.get("stress", 0.0), low.get("stress", 0.0))
+        old = ap.appraise(d(blame=0.9), confidence=1.0, v2=False)
+        self.assertLess(old["self_esteem"], 0.0)   # the v1 path is unchanged
 
     def test_monotonic_hit_social_and_stress(self):
         low = ap.appraise(d(hit=0.0), confidence=1.0)
@@ -37,16 +42,24 @@ class MatrixTest(unittest.TestCase):
         self.assertLess(high["social"], low.get("social", 0.0))
         self.assertGreater(high["stress"], low.get("stress", 0.0))
 
-    def test_monotonic_control_stress_down(self):
+    def test_control_moves_dominance_only(self):
         low = ap.appraise(d(control=0.0), confidence=1.0)
         high = ap.appraise(d(control=0.9), confidence=1.0)
-        self.assertLess(high.get("stress", 0.0), low.get("stress", 0.0))
+        self.assertGreater(high.get("d", 0.0), low.get("d", 0.0))
+        self.assertEqual(high.get("stress", 0.0), low.get("stress", 0.0))
+        old = ap.appraise(d(control=0.9), confidence=1.0, v2=False)
+        self.assertLess(old["stress"], 0.0)        # v1 keeps its old row
 
-    def test_involve_amplifies(self):
+    def test_involve_has_its_own_line(self):
+        # v2: involve feeds social/arousal instead of amplifying every row
         cold = ap.appraise(d(goal=0.1, involve=0.0), confidence=1.0)
         hot = ap.appraise(d(goal=0.1, involve=1.0), confidence=1.0)
-        self.assertGreater(hot["v"], cold["v"])
-        self.assertGreater(hot["trust"], cold["trust"])
+        self.assertEqual(hot.get("v", 0.0), cold.get("v", 0.0))
+        self.assertGreater(hot.get("social", 0.0), cold.get("social", 0.0))
+        old = ap.appraise(d(goal=0.1, involve=1.0), confidence=1.0, v2=False)
+        old_cold = ap.appraise(d(goal=0.1, involve=0.0), confidence=1.0,
+                               v2=False)
+        self.assertGreater(old["v"], old_cold["v"])   # v1 amplification kept
 
     def test_confidence_scales(self):
         half = ap.appraise(d(goal=0.2, blame=0.2), confidence=0.5)
@@ -57,7 +70,8 @@ class MatrixTest(unittest.TestCase):
     def test_caps(self):
         out = ap.appraise({name: 1.0 for name in ap.DIMS}, confidence=1.0)
         for key, value in out.items():
-            self.assertLessEqual(abs(value), ap.CAPS[key] + 1e-9)
+            cap = ap.V2_CAPS.get(key, ap.CAPS.get(key, 1.0))
+            self.assertLessEqual(abs(value), cap + 1e-9)
 
     def test_out_of_range_is_clipped(self):
         clipped = ap.appraise(d(goal=5.0), confidence=1.0)
