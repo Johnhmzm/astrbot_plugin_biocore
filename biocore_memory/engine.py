@@ -763,8 +763,8 @@ class MemoryEngine:
                 edges.append((str(item[0]), str(item[1])))
         return edges
 
-    def _apply_inhibition_filter(self, entries):
-        if not self._flag("inhibition"):
+    def _apply_inhibition_filter(self, entries, repeat=False):
+        if not (self._flag("inhibition") and repeat):
             return entries
         try:
             from .evict import inhibition as inhibition_mod
@@ -1353,7 +1353,8 @@ class MemoryEngine:
     # -- recall -----------------------------------------------------------
     def recall(self, query, budget=DEFAULT_BUDGET, vector=None, scope="default",
                mode="now", principal=None, query_ts=None,
-               include_superseded=False, spatial=None, reconsolidate=None):
+               include_superseded=False, spatial=None, reconsolidate=None,
+               repeat=False):
         """Ranked memories for one question.
 
         query_ts anchors retrieval to the moment the QUESTION was asked
@@ -1403,7 +1404,7 @@ class MemoryEngine:
             except Exception:
                 pass
         if self._flag("inhibition"):
-            entries = self._apply_inhibition_filter(entries)
+            entries = self._apply_inhibition_filter(entries, repeat=repeat)
         if self._flag("complexity"):
             try:
                 from .recall.complexity import suggest
@@ -1522,7 +1523,7 @@ class MemoryEngine:
         if self.slot_registry is not None:
             for row in rows:
                 self._slots_ingest(row.get("entry") or {}, cue=row.get("score", 0.0))
-        if self._flag("inhibition"):
+        if self._flag("inhibition") and repeat:
             selected = [str((r.get("entry") or {}).get("id") or "") for r in rows]
             self._mark_inhibition(entries, selected)
         if self._flag("compress"):
