@@ -27,7 +27,8 @@ except Exception:  # pragma: no cover - top-level/standalone tests
 EMBED_CACHE_MAX = 512
 
 # task-221: observable cache/provider counters (process-local, never raises).
-EMBED_STATS = {"hit": 0, "disk_hit": 0, "miss": 0, "remote": 0, "local": 0, "fail": 0}
+EMBED_STATS = {"hit": 0, "disk_hit": 0, "miss": 0, "remote": 0, "local": 0,
+               "fail": 0, "corrupt": 0}
 
 
 def embed_stats(reset=False):
@@ -91,9 +92,15 @@ def normalize_text(text) -> str:
     return _clean(text)[:EMBED_TEXT_MAX_CHARS]
 
 
-def cache_key(text) -> str:
-    """Stable hash key for the normalized text."""
-    return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()[:32]
+def cache_key(text, model="") -> str:
+    """Cache identity: the model that produced the vector + the normalized text.
+
+    Text alone is not an identity -- a model swap would be answered with a
+    stale vector -- so the model name is part of the hash (an empty model keeps
+    the historical text-only key for providers that do not name one).
+    """
+    body = "%s|%s" % (str(model or "").strip().lower(), normalize_text(text))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()[:32]
 
 
 def _timeout_for(provider, timeout=None) -> float:
@@ -116,58 +123,148 @@ def _validate_vector(value) -> Optional[List[float]]:
     return out
 
 
+# The persisted cache is what makes an embedding deterministic ACROSS runs:
+# the key is the normalized text AND the model that produced it, so a model
+# swap can never be answered with a stale vector. One JSON object written
+# through a temp file + os.replace (a half-written cache never becomes the
+# cache), and a corrupt file degrades to a miss instead of raising.
 CACHE_FILE_ENV = "BIOCORE_EMBEDDING_CACHE_FILE"
+CACHE_DIR_ENV = "BIOCORE_EMBEDDING_CACHE_DIR"
+CACHE_FORMAT = 1
+DEFAULT_CACHE_FILE = ("data", "cache", "embedding.json")
+_CONFIGURED_CACHE_FILE = None
 
 
-def _cache_file():
-    path = os.environ.get(CACHE_FILE_ENV) or ""
-    if not path:
-        return None
-    try:
-        os.makedirs(path, exist_ok=True)
-        return os.path.join(path, "embedding-cache.jsonl")
-    except Exception:
-        return None
+def default_cache_file(data_dir=None):
+    """<data_dir>/cache/embedding.json; the bare default is data/cache/embedding.json."""
+    if data_dir:
+        return os.path.join(str(data_dir), "cache", "embedding.json")
+    return os.path.join(*DEFAULT_CACHE_FILE)
 
 
-def _disk_lookup(file_path, key):
-    if not file_path or not os.path.isfile(file_path):
-        return None
-    try:
-        with open(file_path, encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    row = json.loads(line)
-                except Exception:
-                    continue
-                if row.get("k") == key:
-                    return _validate_vector(row.get("v"))
-    except Exception:
-        return None
+def cache_file(config=None, data_dir=None):
+    """Resolve the cache file: config -> env -> <data_dir>/cache/embedding.json.
+
+    None when nothing names a directory: an engine without a data dir must not
+    scatter cache files into the caller's working directory.
+    """
+    block = config if isinstance(config, dict) else {}
+    if isinstance(block.get("embedding"), dict):
+        block = block["embedding"]
+    for key in ("cache_file", "cache_path"):
+        value = str(block.get(key) or "").strip()
+        if value:
+            return value
+    env_file = str(os.environ.get(CACHE_FILE_ENV) or "").strip()
+    if env_file:
+        if env_file.lower().endswith((".json", ".jsonl")):
+            return env_file
+        return os.path.join(env_file, "embedding.json")
+    env_dir = str(os.environ.get(CACHE_DIR_ENV) or "").strip()
+    if env_dir:
+        return os.path.join(env_dir, "embedding.json")
+    if data_dir:
+        return default_cache_file(data_dir)
     return None
 
 
-def _disk_put(file_path, key, vector, keep=512):
-    if not file_path:
-        return
+def set_cache_file(path):
+    """Process-wide default used by embed(); the engine sets it from its config."""
+    global _CONFIGURED_CACHE_FILE
+    _CONFIGURED_CACHE_FILE = str(path) if path else None
+    return _CONFIGURED_CACHE_FILE
+
+
+def configured_cache_file():
+    """The path embed() uses when its caller does not pass one."""
+    return _CONFIGURED_CACHE_FILE or cache_file(None, None)
+
+
+_CACHE_MEMO = {"target": None, "stamp": None, "rows": {}}
+
+
+def _cache_stamp(target):
     try:
-        rows = []
-        if os.path.isfile(file_path):
-            with open(file_path, encoding="utf-8") as fh:
-                for line in fh:
-                    try:
-                        rows.append(json.loads(line))
-                    except Exception:
-                        continue
-        rows = [r for r in rows if r.get("k") != key]
-        rows.append({"k": key, "v": list(vector)})
-        rows = rows[-keep:]
-        with open(file_path + ".tmp", "w", encoding="utf-8") as fh:
-            for row in rows:
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-        os.replace(file_path + ".tmp", file_path)
+        info = os.stat(target)
+        return (int(info.st_mtime_ns), int(info.st_size))
     except Exception:
-        return
+        return None
+
+
+def read_cache(path=None):
+    """The cache mapping; a corrupt or unreadable file is simply a miss.
+
+    A stat-keyed memo keeps the hot path from re-parsing the file for every
+    embedding in one process; another writer (or any mtime change) invalidates
+    it, so it can only save a read, never serve a stale vector.
+    """
+    target = path or configured_cache_file()
+    if not target or not os.path.isfile(target):
+        return {}
+    stamp = _cache_stamp(target)
+    if (stamp is not None and _CACHE_MEMO.get("target") == target
+            and _CACHE_MEMO.get("stamp") == stamp):
+        return dict(_CACHE_MEMO.get("rows") or {})
+    try:
+        with open(target, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        EMBED_STATS["corrupt"] = int(EMBED_STATS.get("corrupt", 0)) + 1
+        return {}
+    rows = doc.get("entries") if isinstance(doc, dict) else doc
+    if not isinstance(rows, dict):
+        return {}
+    out = {}
+    for key, value in rows.items():
+        vector = _validate_vector(value.get("v") if isinstance(value, dict) else value)
+        if vector is None:
+            continue
+        out[str(key)] = vector
+    _CACHE_MEMO.update({"target": target, "stamp": stamp, "rows": out})
+    return dict(out)
+
+
+def write_cache(rows, path=None):
+    """Temp file + os.replace; returns False when the file cannot be written."""
+    target = path or configured_cache_file()
+    if not target or not isinstance(rows, dict):
+        return False
+    try:
+        folder = os.path.dirname(os.path.abspath(target))
+        if folder:
+            os.makedirs(folder, exist_ok=True)
+        tmp = target + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"format": CACHE_FORMAT, "entries": rows}, fh,
+                      ensure_ascii=False)
+        os.replace(tmp, target)
+        _CACHE_MEMO.update({"target": target, "stamp": _cache_stamp(target),
+                            "rows": dict(rows)})
+        return True
+    except Exception:
+        return False
+
+
+def cache_summary(path=None, data_dir=None):
+    """hit / miss / size for /state; hit already includes the disk hits."""
+    target = path or configured_cache_file() or cache_file(None, data_dir)
+    rows = read_cache(target) if target else {}
+    memory_hit = int(EMBED_STATS.get("hit", 0))
+    disk_hit = int(EMBED_STATS.get("disk_hit", 0))
+    miss = int(EMBED_STATS.get("miss", 0))
+    total = memory_hit + disk_hit + miss
+    return {"hit": memory_hit + disk_hit, "miss": miss, "size": len(rows),
+            "hit_rate": (round((memory_hit + disk_hit) / float(total), 4)
+                         if total else 0.0),
+            "memory_hit": memory_hit, "disk_hit": disk_hit,
+            "corrupt": int(EMBED_STATS.get("corrupt", 0)),
+            "file": str(target or "")}
+
+
+def _cache_trim(rows, keep=EMBED_CACHE_MAX):
+    while len(rows) > keep:
+        rows.pop(next(iter(rows)), None)
+    return rows
 
 
 def _cache_get(cache, key):
@@ -782,14 +879,21 @@ def _call_provider(provider, text, timeout):
         executor.shutdown(wait=False)
 
 
-def embed(text, provider, cache=None, timeout=None):
-    """Return a vector for text, or None (never raises); LRU cache optional."""
+def embed(text, provider, cache=None, timeout=None, path=None):
+    """Return a vector for text, or None (never raises).
+
+    Both caches are optional: the caller may pass an in-memory LRU, and the
+    disk cache lives at path (default: the configured cache file, or none).
+    The same text through the same model returns the same vector bit for bit --
+    the first call writes it, every later call reads it back unchanged.
+    """
     if provider is None:
         return None
     normalized = normalize_text(text)
     if not normalized:
         return None
-    key = cache_key(normalized)
+    model = str(getattr(provider, "model", "") or "")
+    key = cache_key(normalized, model)
     cached = _cache_get(cache, key)
     if cached is not None:
         EMBED_STATS["hit"] += 1
@@ -798,8 +902,9 @@ def embed(text, provider, cache=None, timeout=None):
         except Exception:
             pass
         return cached
-    disk = _cache_file()
-    from_disk = _disk_lookup(disk, key) if disk else None
+    target = path or configured_cache_file()
+    rows = read_cache(target) if target else {}
+    from_disk = rows.get(key)
     if from_disk is not None:
         EMBED_STATS["disk_hit"] += 1
         _cache_put(cache, key, from_disk)
@@ -810,7 +915,10 @@ def embed(text, provider, cache=None, timeout=None):
     if checked is not None:
         EMBED_STATS["remote"] += 1
         _cache_put(cache, key, checked)
-        _disk_put(disk, key, checked)
+        if target:
+            rows.pop(key, None)
+            rows[key] = list(checked)
+            write_cache(_cache_trim(rows), target)
         return checked
     # Remote failed / timed out / missing key: try the local CPU int8 model.
     local = _fallback_embed(provider, normalized)
@@ -819,5 +927,8 @@ def embed(text, provider, cache=None, timeout=None):
         return None
     EMBED_STATS["local"] += 1
     _cache_put(cache, key, local)
-    _disk_put(disk, key, local)
+    if target:
+        rows.pop(key, None)
+        rows[key] = list(local)
+        write_cache(_cache_trim(rows), target)
     return local

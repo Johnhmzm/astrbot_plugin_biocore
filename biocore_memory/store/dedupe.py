@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Deterministic remember-side dedupe (L0 exact / L1 near / L2 fact / L3 structural).
+"""Deterministic remember-side dedupe (L0 exact / L1 near / L2 structural).
 
-Host-neutral: stdlib + core + index/entities only; no astrbot, no prompt, no LLM.
+Host-neutral: stdlib + core only; no astrbot, no prompt, no LLM, no word list.
 Public API:
     normalize(text) -> str                       # punctuation/space/case-insensitive hash
     dedupe(entry, entries, embedder=None) -> (action, target_id|None, reason)
-where action is one of "merge" / "flag" / "update" / "keep".
+where action is one of "merge" / "flag" / "keep".
 Failure of any optional layer degrades to ("keep", None, "fallback").
+The old fact-level layer is gone with its predicate table: a changed fact is
+only recognised through the caller's explicit metadata or embeddings.
 """
 from __future__ import annotations
 
@@ -16,7 +18,6 @@ import re
 import unicodedata
 
 from ..core.util import clamp01
-from ..index.entities import cues
 
 # [engineering] the four-level rules and these thresholds are hand-set.
 L1_MERGE = 0.90
@@ -24,8 +25,6 @@ L1_FLAG = 0.75
 L3_WINDOW_SECONDS = 60.0
 
 _PUNCT = re.compile(r"[\s\W_]+", re.UNICODE)
-_PREDICATES = ("生日", "住在", "工作", "上学", "喜欢", "讨厌", "爱吃", "害怕",
-               "养了", "叫", "是", "有", "去", "在", "买了", "看了")
 
 
 def normalize(text) -> str:
@@ -73,36 +72,6 @@ def _entry_vector(entry, embedder):
         if hasattr(value, "__await__"):
             return None  # sync dedupe never drives async embedders
         return list(value) if isinstance(value, (list, tuple)) and value else None
-    except Exception:
-        return None
-
-
-def extract_fact(text):
-    """Extract (main_entity, predicate, value) slots from text; None if unclear.
-
-    Uses the deterministic index/entities cue rules for the subject and a fixed
-    predicate list for the relation. Values are punctuation-normalized.
-    """
-    try:
-        raw = str(text or "")
-        c = cues(raw)
-        entities = [e for e in (c.get("entities") or []) if len(e) >= 1]
-        if not entities:
-            return None
-        main_entity = entities[0]
-        predicate, value = "", ""
-        for p in _PREDICATES:
-            pos = raw.find(p)
-            if pos < 0:
-                continue
-            tail = raw[pos + len(p):].strip(" 了过是在的，。,.!?！？；;：:、")
-            tail = re.sub(r"[\s\W_]+", "", tail, flags=re.UNICODE)[:24]
-            if tail:
-                predicate, value = p, tail
-                break
-        if not predicate or not value:
-            return None
-        return (main_entity[:32], predicate, value)
     except Exception:
         return None
 
@@ -158,12 +127,6 @@ def dedupe(entry, entries, embedder=None):
         if best_id and L1_FLAG <= best_score < L1_MERGE:
             return "flag", best_id, "near_review:%.3f" % best_score
 
-        # L2 fact-level: same subject + predicate + value -> update.
-        fact = extract_fact(text)
-        if fact:
-            for old in candidates:
-                if extract_fact(old.get("text")) == fact:
-                    return "update", str(old.get("id") or ""), "fact_duplicate"
 
         # L3 structural: same event_key, or same source within 60s.
         event_key, source, ts = _structural_key(entry)

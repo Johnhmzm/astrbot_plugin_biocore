@@ -50,7 +50,15 @@ def dispatch(engine, action, **kwargs):
     if action == "recall":
         return engine.recall(kwargs.get("query", ""),
                              budget=kwargs.get("budget", 3),
-                             vector=kwargs.get("vector"))
+                             vector=kwargs.get("vector"),
+                             mode=kwargs.get("mode", "now"))
+    if action in ("spatial_rank", "rank"):
+        from ..core.config import SPATIAL_SELECT_DEPTH
+        return engine.spatial_rank(
+            kwargs.get("query", ""),
+            query_ts=kwargs.get("query_ts"),
+            limit=kwargs.get("limit", SPATIAL_SELECT_DEPTH),
+            scope=kwargs.get("scope", "default"))
     if action == "forget":
         return engine.forget(kwargs.get("entry_id", ""))
     if action == "pin":
@@ -130,8 +138,25 @@ def cmd_recall(args):
                     "tier": "expand" if score >= 0.55 else "hint",
                     "role": entry.get("role"), "ts": entry.get("ts")})
     return _emit({"ok": True, "command": "recall", "query": args.query,
+                  "mode": getattr(args, "mode", "now") or "now",
+                  "spatial_select": getattr(engine, "_last_spatial_select", None),
                   "count": len(out), "results": out,
                   "hint": "no_cue" if not out else ""})
+
+
+def cmd_rank(args):
+    """Whole-store spatial selection (engine.spatial_rank), JSON out."""
+    engine = _engine_class()(data_dir=args.store)
+    try:
+        limit = int(args.limit) if args.limit is not None else None
+    except Exception:
+        limit = None
+    scope = str(getattr(args, "scope", "") or "").strip() or None
+    payload = engine.spatial_rank(args.query,
+                                  query_ts=getattr(args, "ts", None),
+                                  limit=limit, scope=scope)
+    return _emit({"ok": bool(payload.get("ok")), "command": "rank",
+                  "result": payload})
 
 
 def cmd_forget(args):
@@ -285,8 +310,17 @@ def build_parser():
     r = sp.add_parser("recall", help="query memories")
     r.add_argument("query")
     r.add_argument("--limit", type=int, default=3)
-    r.add_argument("--mode", default="now", choices=("now", "then"))
+    r.add_argument("--mode", default="now", choices=("now", "then", "spatial"))
     r.set_defaults(func=cmd_recall)
+    r = sp.add_parser("rank",
+                      help="top-N over the whole store by five-axis distance")
+    r.add_argument("query")
+    r.add_argument("--limit", type=int, default=None)
+    r.add_argument("--ts", type=float, default=None,
+                   help="anchor the time axis at this epoch (default now)")
+    r.add_argument("--scope", default="",
+                   help="scope filter (default: every scope in the store)")
+    r.set_defaults(func=cmd_rank)
     r = sp.add_parser("forget", help="delete by id")
     r.add_argument("entry_id")
     r.set_defaults(func=cmd_forget)

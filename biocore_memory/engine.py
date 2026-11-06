@@ -22,7 +22,7 @@ from pathlib import Path
 from .core.config import (COMPRESS_MAX_CHARS, CONSOLIDATE_AUTO_TURNS,
                           DEFAULT_BUDGET, FLAGS, MEMORY_POINT_MIN_IMPORTANCE,
                           MEMORY_POINT_MIN_SELF, MEMORY_POINT_MIN_VALUE,
-                          RATE_LIMIT_PER_MIN)
+                          RATE_LIMIT_PER_MIN, SPATIAL_SELECT_DEPTH)
 from .core.util import clamp01, now_ts, sha12
 from .engine_helpers import (annotate_tiers, check_after_remember,
                              cosine_vectors, explicit_number,
@@ -38,6 +38,12 @@ from .identity import identity_snapshot as _identity_snapshot, is_identity
 from .identity.api import write as _identity_write
 from .relay import relay_card as _relay_card
 from .thread import expire_threads, thread_card as _thread_card, update_thread
+
+# flags.json / config["flags"] may carry numbers as well as booleans; only
+# these keys are numeric (the rest stay strictly boolean).
+NUMERIC_FLAGS = ("consolidate_auto_turns", "spatial_depth",
+                  "spatial_index_threshold", "spatial_learn_eta",
+                  "near_dup_cosine", "event_window")
 
 _EMPTY_INDEX = ("entities", "place", "time_coarse", "event_name", "id")
 _SUMMARY_SOURCES = ("consolidate", "ti_mem", "reflection")
@@ -109,7 +115,7 @@ class MemoryEngine:
                      if isinstance(self.config.get("flags"), dict) else {})
         for key, value in overrides.items():
             if isinstance(value, bool) or (
-                    str(key) == "consolidate_auto_turns"
+                    str(key) in NUMERIC_FLAGS
                     and isinstance(value, (int, float))
                     and not isinstance(value, bool)):
                 self.flags[str(key)] = value
@@ -128,6 +134,17 @@ class MemoryEngine:
             except Exception:
                 embedder = None
         self.embedder = embedder
+        # Embedding cache file: config["embedding"]["cache_file"] > env >
+        # <data_dir>/cache/embedding.json; None means "no disk cache here".
+        self.embed_cache_file = None
+        try:
+            from .recall import embedding as _embedding
+            self.embed_cache_file = _embedding.cache_file(self.config,
+                                                          self._data_dir)
+            if self.embed_cache_file:
+                _embedding.set_cache_file(self.embed_cache_file)
+        except Exception:
+            self.embed_cache_file = None
         self.three_channel = (bool(three_channel) if three_channel is not None
                               else bool(self.flags.get("three_channel", False)))
         self.eviction_readonly = (bool(eviction_readonly)
@@ -171,6 +188,10 @@ class MemoryEngine:
         self._last_evictions = None
         self._last_deletion_audit = None
         self._last_consistency = None
+        self._last_versioning = None
+        self._last_spatial = None
+        self._last_spatial_select = None
+        self._last_space_refresh = None
         self._last_source_consistency = None
         self._last_narrative = None
         self._remember_turns = 0
@@ -205,7 +226,7 @@ class MemoryEngine:
         changed = False
         for key, value in data.items():
             if isinstance(value, bool) or (
-                    str(key) == "consolidate_auto_turns"
+                    str(key) in NUMERIC_FLAGS
                     and isinstance(value, (int, float))
                     and not isinstance(value, bool)):
                 self.flags[str(key)] = value
@@ -930,6 +951,60 @@ class MemoryEngine:
         self._last_consistency = result
         return entry
 
+    def _apply_versioning(self, entry):
+        """Same-attribute resolution on the write path (text never edited).
+
+        memory_versioning OFF keeps the old path: nothing is extracted, nothing
+        is marked, nothing is filtered.
+        """
+        if not isinstance(entry, dict):
+            return entry
+        try:
+            from .store import versioning
+            if not versioning.enabled(self.flags, os.environ):
+                return entry
+            report = versioning.apply(entry, self.store.entries,
+                                      now=self.now())
+        except Exception:
+            return entry
+        self._last_versioning = report
+        if report.get("superseded"):
+            self._bump("version_superseded", len(report["superseded"]))
+            self._audit_write("version_superseded", entry.get("id"), "remember",
+                              "ids=%s" % ",".join(report["superseded"])[:120])
+        if report.get("disputed"):
+            self._bump("version_disputed", len(report["disputed"]))
+        if isinstance(report.get("conflict"), dict):
+            key = report["conflict"].get("attribute") or ""
+            self._audit_write("version_conflict", entry.get("id"), "remember",
+                              "attribute=%s" % str(key)[:40])
+        return entry
+
+    def memory_versions(self):
+        """/state.memory_versions: counts, recent changes and the near-dup block."""
+        try:
+            from .store import versioning
+            out = versioning.summary(self.store.entries)
+        except Exception:
+            out = {"active": 0, "superseded": 0, "disputed": 0, "recent": []}
+        try:
+            from .store import near_dup as _near_dup
+            out["near_dup"] = _near_dup.state_of(
+                self.store.entries,
+                (str(self._data_dir) if self._data_dir else None),
+                self.flags, os.environ)
+        except Exception:
+            out.setdefault("near_dup", {"marked": 0, "threshold": 0.0})
+        return out
+
+    def memory_conflicts(self):
+        """/state.memory_conflicts: same-turn values that cannot be ordered."""
+        try:
+            from .store import versioning
+            return versioning.conflicts(self.store.entries)
+        except Exception:
+            return []
+
     def _apply_source_consistency(self, rows):
         """Mark source_rank per candidate and downweight conflicting sources."""
         if not self._flag("source_consistency"):
@@ -1173,6 +1248,30 @@ class MemoryEngine:
                                   "time_coarse")}
             except Exception:
                 pass
+        # spatial_recall (default OFF): the engine's own write path carries the
+        # same five-axis coordinates the host pipeline writes, so an entry made
+        # here is rankable by spatial_select without a backfill. Gated by the
+        # same switch: off writes exactly the old entry, byte for byte.
+        if self._space_enabled():
+            try:
+                from . import space
+                _coords = space.build(entry, self._space_relationship(),
+                                      now=stamp, embed=self._space_embed_info())
+                if isinstance(_coords, dict):
+                    entry["space"] = _coords
+            except Exception:      # a coordinate is a shadow, never a failure
+                pass
+        # near_dup_time: a changed value usually arrives as a near duplicate of
+        # the stored memory; the older one is marked superseded, the newer kept.
+        try:
+            from .store import near_dup as _near_dup
+            if _near_dup.enabled(self.flags, os.environ):
+                self._last_near_dup = _near_dup.apply(
+                    self.store.entries, entry, flags=self.flags,
+                    env=os.environ, now=stamp,
+                    data_dir=(str(self._data_dir) if self._data_dir else None))
+        except Exception:
+            pass
         added = self.store.add(entry)
         if added is None:
             return None
@@ -1202,6 +1301,7 @@ class MemoryEngine:
             self._bump("dedupe_noop_count")
         self._apply_ledger(ev, stamp)
         self._apply_consistency(added)
+        self._apply_versioning(added)
         self._slots_ingest(added)
         self._cooc_refresh()
         self._audit_write("remember", added.get("id"), "remember",
@@ -1213,11 +1313,39 @@ class MemoryEngine:
 
     # -- recall -----------------------------------------------------------
     def recall(self, query, budget=DEFAULT_BUDGET, vector=None, scope="default",
-               mode="now", principal=None):
+               mode="now", principal=None, query_ts=None,
+               include_superseded=False, spatial=None, reconsolidate=None):
+        """Ranked memories for one question.
+
+        query_ts anchors retrieval to the moment the QUESTION was asked
+        (Howard & Kahana 2002), defaulting to now. include_superseded=True is
+        the historical question ("她以前说过…吗"). spatial=True forces the
+        weighted five-axis ordering; None decides from the switches and the
+        question itself (see _apply_spatial_rank).
+
+        mode="spatial" (or the spatial_select switch, default OFF) runs one
+        full-pool selection by that same weighted distance BEFORE anything is
+        scored, and the ordinary scoring fusion still picks the final k.
+        reconsolidate=True (or the spatial_reconsolidate switch, default OFF)
+        rewrites the coordinates of every returned row with the relationship
+        and affect that are current at the anchor (Nader 2000).
+        """
+        try:
+            anchor = float(query_ts) if query_ts is not None else None
+        except Exception:
+            anchor = None
+        at = float(self.now()) if anchor is None else anchor
         entries = [e for e in self.store.entries
                    if isinstance(e, dict) and not e.get("deleted")
                    and str(e.get("scope") or "default") == str(scope or "default")
                    and not e.get("archived")]
+        if self._flag("memory_versioning", True):
+            try:
+                from .store.versioning import visible as _version_visible
+                entries = _version_visible(
+                    entries, include_superseded=bool(include_superseded))
+            except Exception:
+                pass
         if self._flag("permissions"):
             checked = []
             for entry in entries:
@@ -1232,7 +1360,7 @@ class MemoryEngine:
         if self._flag("temporal_filter"):
             try:
                 from .recall.filters import filter_valid
-                entries = filter_valid(entries, at=float(self.now()), mode=mode)
+                entries = filter_valid(entries, at=at, mode=mode)
             except Exception:
                 pass
         if self._flag("inhibition"):
@@ -1253,7 +1381,22 @@ class MemoryEngine:
                                  if isinstance(x, dict) and x.get("promise")])
             except Exception:
                 self._last_constraint_hint = None
-        rows = recall_entries(entries, query, budget=budget, vector=vector,
+        # spatial_select (default OFF) / mode="spatial": rank the WHOLE pool by
+        # the weighted five-axis distance and keep the nearest candidates, then
+        # let the ordinary scoring fusion pick k out of them. With the switch
+        # off and no explicit mode, pool is the pool recall always used.
+        pool = entries
+        if self._spatial_select_wanted(mode):
+            picked, report = self._preselect_spatial(entries, query, at,
+                                                     vector=vector)
+            self._last_spatial_select = report
+            if picked:
+                pool = picked
+                self._bump("spatial_select_runs")
+                self._bump("spatial_select_kept", len(picked))
+        else:
+            self._last_spatial_select = None
+        rows = recall_entries(pool, query, budget=budget, vector=vector,
                               embedder=self.embedder,
                               three_channel=self.three_channel,
                               now=float(self.now()), cue_scorer=cue_score)
@@ -1342,11 +1485,255 @@ class MemoryEngine:
             self._compress_entries(entries)
         # task-218: recalled affect feeds back into the live affect (default OFF).
         self._apply_memory_feedback(rows, budget)
+        # arXiv 2610.36308 + Howard & Kahana 2002: weighted five-axis order,
+        # anchored to the question time, instead of a lexicographic axis order.
+        rows = self._apply_spatial_rank(rows, query, at, spatial=spatial,
+                                        explicit=anchor is not None,
+                                        vector=vector)
+        # spatial_reconsolidate (default OFF): a memory that is recalled is
+        # rewritten by the act of recalling it (Nader 2000) -- the coordinates
+        # are re-sampled with today's relationship and affect.
+        self._refresh_space(rows, at, reconsolidate)
         self._bump("recall_count")
         self._audit_write("recall", "", "recall",
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
         self._flush_stats()
         return rows
+
+    # -- weighted five-axis ordering (spatial_weighted) --------------------
+    def _apply_spatial_rank(self, rows, query, at, spatial=None, explicit=False,
+                            vector=None):
+        """Reorder recall rows by distance = sum(w_axis * d_axis).
+
+        The stage is ON when the caller asks for it (spatial=True), when the
+        question is anchored in time (query_ts given), or when the
+        spatial_recall switch is set. spatial_weighted (default ON) picks the
+        weighted sum; OFF falls back to the old lexicographic order_key.
+        Ranking only reorders rows: scores and rows are untouched.
+        """
+        if not rows:
+            return rows
+        try:
+            from . import space
+            if isinstance(spatial, bool):
+                on = spatial
+            else:
+                on = bool(space.enabled(self.flags, os.environ) or explicit)
+            if not on:
+                return rows
+            base = space.weights(self.flags, os.environ)
+            target = space.query_space(query, vector=vector, now=at)
+            used = base
+            for row in rows:
+                entry = row.get("entry") if isinstance(row, dict) else None
+                if not isinstance(entry, dict):
+                    continue
+                built = entry.get("space")
+                if not isinstance(built, dict):
+                    built = space.build(entry, now=at)
+                if not isinstance(built, dict):
+                    continue
+                distances = space.distance(built, target)
+                row["space_distance"] = distances
+                row["space_weighted"] = space.weighted_distance(distances, used)
+                row["space_order"] = list(space.order_key(distances))
+            rows.sort(key=lambda row: space.sort_key(
+                row.get("space_distance") or {}, query, base,
+                self.flags, os.environ))
+            self._last_spatial = {
+                "mode": ("weighted" if space.weighted_enabled(self.flags, os.environ)
+                         else "lexicographic"),
+                "query_ts": round(at, 3),
+                "weights": used, "rows": len(rows)}
+            return rows
+        except Exception:      # ordering is never a reason to fail recall
+            return rows
+
+    # -- space coordinates on the engine write path ------------------------
+    def _space_enabled(self):
+        """spatial_recall, resolved the same way the host pipeline resolves it."""
+        try:
+            from . import space
+            return bool(space.enabled(self.flags, os.environ))
+        except Exception:
+            return False
+
+    def _space_relationship(self):
+        """Relationship block for the social axis; absent means defaults."""
+        block = self.config.get("relationship") if isinstance(self.config, dict) else None
+        return block if isinstance(block, dict) else None
+
+    def _space_embed_info(self):
+        """Embedding provider / model names, kept in the coordinates for audit."""
+        block = self.config.get("embedding") if isinstance(self.config, dict) else None
+        if not isinstance(block, dict):
+            return {}
+        return {"provider": str(block.get("provider")
+                               or block.get("embedding_provider") or "")[:64],
+                "model": str(block.get("model")
+                             or block.get("embedding_model") or "")[:64]}
+
+    # -- full-store selection (spatial_select) -----------------------------
+    def _spatial_select_wanted(self, mode):
+        """True when the caller asked for mode="spatial" or the switch is on.
+
+        mode="spatial" is an explicit request by the caller (the same shape as
+        recall(spatial=True) for the ordering stage), so it does not need the
+        switch; the switch makes every recall take the full-pool path.
+        """
+        if str(mode or "").strip().lower() == "spatial":
+            return True
+        try:
+            from . import space
+            return bool(space.select_enabled(self.flags, os.environ))
+        except Exception:
+            return False
+
+    def _reconsolidate_wanted(self, reconsolidate):
+        """Explicit True/False wins, else the spatial_reconsolidate switch."""
+        if isinstance(reconsolidate, bool):
+            return reconsolidate
+        try:
+            from . import space
+            return bool(space.reconsolidate_enabled(self.flags, os.environ))
+        except Exception:
+            return False
+
+    def _refresh_space(self, rows, at, reconsolidate=None):
+        """Rewrite the coordinates of the rows that were actually recalled.
+
+        Only hits are rewritten: the act of recall is what re-samples them.
+        Returns the report and leaves it on the engine for /state; the store is
+        saved when it has a path, so a refresh is not lost with the process.
+        """
+        if not rows or not self._reconsolidate_wanted(reconsolidate):
+            self._last_space_refresh = None
+            return None
+        try:
+            from . import space
+        except Exception:
+            self._last_space_refresh = None
+            return None
+        source = self._affect_source()
+        affect = None
+        if source is not None:
+            current_v, current_a = _affect_pair(source)
+            affect = {"v": round(current_v, 6), "a": round(current_a, 6)}
+        relationship = self._space_relationship()
+        embed = self._space_embed_info()
+        refreshed, drifted = [], 0.0
+        for row in rows:
+            entry = row.get("entry") if isinstance(row, dict) else None
+            if not isinstance(entry, dict):
+                continue
+            fresh = space.refresh(entry, relationship, affect=affect,
+                                  now=at, embed=embed)
+            if not isinstance(fresh, dict):
+                continue
+            entry["space"] = fresh
+            refreshed.append(str(entry.get("id") or ""))
+            try:
+                drifted += float((fresh.get("drift") or {}).get("weighted") or 0.0)
+            except Exception:
+                pass
+        report = {"refreshed": len(refreshed), "ids": refreshed,
+                  "at": round(float(at), 3),
+                  "drift": round(drifted, 6) if refreshed else 0.0,
+                  "affect": affect}
+        self._last_space_refresh = report if refreshed else None
+        if not refreshed:
+            return report
+        self._bump("space_refreshed", len(refreshed))
+        try:
+            if getattr(self.store, "path", None):
+                self.store.save()
+        except Exception:
+            pass
+        return report
+
+    def _query_vector(self, query):
+        """Optional query embedding, resolved like the scorer resolves it."""
+        if self.embedder is None:
+            return None
+        try:
+            value = vector_for(self, MemoryEvent(text=str(query or "")))
+        except Exception:
+            return None
+        return list(value) if value else None
+
+    def _preselect_spatial(self, entries, query, at, depth=None, vector=None):
+        """Nearest candidates over the whole pool; (entries, report).
+
+        The report is diagnostic only (pool size, depth, mode); an empty pool
+        returns (None, report) and the caller keeps its old candidate list.
+        """
+        report = {"enabled": True, "pool": len(entries or []),
+                  "depth": 0, "selected": 0, "mode": "", "query_ts": 0.0}
+        try:
+            from . import space
+            cap = (int(depth) if depth is not None
+                   else space.depth(self.flags, os.environ,
+                                    default=SPATIAL_SELECT_DEPTH))
+            report["depth"] = cap
+            report["query_ts"] = round(float(at), 3)
+            qvec = (list(vector) if isinstance(vector, (list, tuple)) and vector
+                    else self._query_vector(query))
+            picked = space.select(entries, query, query_ts=at, limit=cap,
+                                  scope=None, flags=self.flags,
+                                  env=os.environ, vector=qvec)
+            report["mode"] = str(picked.get("mode") or "")
+            report["pool"] = int(picked.get("pool") or 0)
+        except Exception:
+            return None, report
+        ids = [str(entry_id) for entry_id in (picked.get("ids") or [])]
+        if not ids:
+            return None, report
+        by_id = {str(row.get("id") or ""): row
+                 for row in (entries or []) if isinstance(row, dict)}
+        kept = [by_id[entry_id] for entry_id in ids if entry_id in by_id]
+        report["selected"] = len(kept)
+        return (kept or None), report
+
+    def spatial_rank(self, query, query_ts=None, limit=None, scope="default",
+                     base_weights=None, vector=None):
+        """Top-N over the WHOLE store by weighted five-axis distance.
+
+        scope=None ranks every scope; limit=None returns everything (defaults
+        belong to the caller only -- this is the selection primitive, so it
+        does not silently cap a caller that asked for all). The ids travel next
+        to the rows, which is what makes the result usable as a candidate list.
+        """
+        try:
+            from . import space
+            entries = [e for e in self.store.entries
+                       if isinstance(e, dict) and not e.get("deleted")
+                       and not e.get("archived")]
+            if self._flag("memory_versioning", True):
+                from .store.versioning import visible as _version_visible
+                entries = _version_visible(entries, include_superseded=True)
+            cap = (max(0, len(entries)) if limit is None
+                   else max(0, int(limit)))
+            qvec = (list(vector) if isinstance(vector, (list, tuple)) and vector
+                    else self._query_vector(query))
+            if base_weights is None:
+                try:
+                    from . import space_learning as _space_learning
+                    base_weights = _space_learning.active_weights(
+                        str(self._data_dir) if getattr(self, "_data_dir", None)
+                        else None, self.flags, os.environ)
+                except Exception:
+                    base_weights = None
+            picked = space.select(
+                entries, query,
+                query_ts=(float(self.now()) if query_ts is None else query_ts),
+                limit=cap, scope=scope, flags=self.flags, env=os.environ,
+                vector=qvec, base_weights=base_weights)
+            picked["ok"] = bool(picked.get("ok"))
+            picked["scope"] = str(scope or "")
+            return picked
+        except Exception:
+            return {"ok": False, "reason": "spatial_unavailable",
+                    "results": [], "ids": []}
 
     # -- recall -> affect feedback (task-218) ------------------------------
     def _memory_feedback_on(self):
@@ -2153,6 +2540,18 @@ class MemoryEngine:
                 "previous_versions": []})
         except Exception:
             return None
+        # the summary is a new memory: give it its own coordinates (only when
+        # the spatial layer is on). The sources keep theirs -- consolidation
+        # marks, it never strips.
+        if summary is not None and self._space_enabled():
+            try:
+                from . import space
+                coords = space.build(summary, self._space_relationship(),
+                                     now=stamp, embed=self._space_embed_info())
+                if isinstance(coords, dict):
+                    summary["space"] = coords
+            except Exception:
+                pass
         return summary
 
     def _consolidate_writeback(self, result, stamp):
@@ -2475,7 +2874,20 @@ class MemoryEngine:
 
     def monitor(self):
         """Read-only module health snapshot (no defaults/behaviour change)."""
-        return self._stats_snapshot()
+        out = self._stats_snapshot()
+        out["embedding_cache"] = self.embedding_cache()
+        return out
+
+    def embedding_cache(self):
+        """hit / miss / size of the embedding cache (never raises)."""
+        try:
+            from .recall import embedding as _embedding
+            return _embedding.cache_summary(
+                path=self.embed_cache_file,
+                data_dir=(str(self._data_dir) if self._data_dir else None))
+        except Exception:
+            return {"hit": 0, "miss": 0, "size": 0, "hit_rate": 0.0,
+                    "file": "", "corrupt": 0}
 
     def eviction_snapshot(self, now=None):
         if not self.eviction_readonly:

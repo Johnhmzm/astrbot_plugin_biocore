@@ -11,7 +11,9 @@ def vector_for(engine, event):
         try:
             from .recall import embedding as _embedding
             fn = getattr(_embedding, "embed", None)
-            value = fn(text, engine.embedder) if fn else None
+            value = (fn(text, engine.embedder,
+                        path=getattr(engine, "embed_cache_file", None))
+                     if fn else None)
             if isinstance(value, (list, tuple)):
                 vector = list(value)
         except Exception:
@@ -168,6 +170,18 @@ def check_after_remember(store, entry, embedder=None):
                 }
                 if not target.get("vector") and entry.get("vector"):
                     fields["vector"] = list(entry.get("vector") or [])
+                # coordinates: a merge keeps the snapshot written LAST and
+                # records the ids that were folded into it (merged_from);
+                # a merge never invents coordinates, so with the spatial
+                # layer off nothing new appears on the entry.
+                try:
+                    from .space import merge_space
+                    kept = merge_space(target, entry,
+                                       removed_id=str(entry.get("id") or ""))
+                except Exception:
+                    kept = None
+                if isinstance(kept, dict):
+                    fields["space"] = kept
                 store.update(target_id, **fields)
                 store.remove(entry.get("id"), hard=True)
                 result["dedupe"]["merged"] = True

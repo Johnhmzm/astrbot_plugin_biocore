@@ -46,9 +46,14 @@ class CoordinateTest(unittest.TestCase):
         self.assertTrue(space["semantic"]["fallback"])   # no vector: tags only
         self.assertEqual(sorted(space["time"]),
                          ["age_minutes", "half_life_minutes", "last_hit_ts", "ts"])
-        self.assertEqual(sorted(space["affect"]), ["a", "v"])
+        # fallback marks an affect that never existed for this entry
+        self.assertEqual(sorted(space["affect"]), ["a", "fallback", "v"])
+        self.assertTrue(space["affect"]["fallback"])
+        # participants: who the memory is about; fallback when nobody was named
         self.assertEqual(sorted(space["social"]),
-                         ["closeness", "scope", "trust"])
+                         ["closeness", "fallback", "participants", "scope",
+                          "trust"])
+        self.assertTrue(space["social"]["fallback"])
         self.assertEqual(sorted(space["activation"]),
                          ["hits", "importance", "last_hit_ts", "retrieval_count"])
 
@@ -176,8 +181,13 @@ class PipelineSpaceTest(unittest.TestCase):
         second = self.remember("我的猫叫团子", tags=["猫"])
         self.assertTrue(second.get("deduped"))
         after = self.stored()[0]["space"]
-        self.assertEqual(json.dumps(before, sort_keys=True),
-                         json.dumps(after, sort_keys=True))
+        # the five axes are untouched by a duplicate write ...
+        self.assertEqual(
+            json.dumps({axis: before[axis] for axis in sp.AXES}, sort_keys=True),
+            json.dumps({axis: after[axis] for axis in sp.AXES}, sort_keys=True))
+        # ... and the fold-in is recorded the way a merge records it
+        self.assertEqual(len(after.get("merged_from") or []), 1)
+        self.assertEqual(before.get("merged_from"), None)
         self.assertEqual(self.stored()[0]["hits"], 2)
         self.assertEqual(first["entry"]["id"], second["entry"]["id"])
 

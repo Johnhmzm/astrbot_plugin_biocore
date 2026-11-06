@@ -183,6 +183,62 @@ except Exception:  # pragma: no cover
     except Exception:
         _space = None
 
+try:  # near-duplicate, newer wins (a separate mechanism from versioning)
+    from biocore_memory.store import near_dup as _near_dup
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory.store import near_dup as _near_dup
+    except Exception:
+        _near_dup = None
+
+try:  # coverage select: pick k from the pool by five-axis spread
+    from biocore_memory.recall import cover as _cover
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory.recall import cover as _cover
+    except Exception:
+        _cover = None
+
+try:  # point-expand: hits first, then the neighbour memories of each hit
+    from biocore_memory.recall import point_expand as _point_expand
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory.recall import point_expand as _point_expand
+    except Exception:
+        _point_expand = None
+
+try:  # segment recall (Zacks 2007 / TextTiling): the retrieval unit is the event
+    from biocore_memory.recall import segments as _segments
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory.recall import segments as _segments
+    except Exception:
+        _segments = None
+
+try:  # event segmentation (Zacks 2007): one segment per stretch of a session
+    from biocore_memory.event import segment as _segment
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory.event import segment as _segment
+    except Exception:
+        _segment = None
+
+try:  # usage feedback + axis-weight learning (spatial_feedback / spatial_learn)
+    from biocore_memory import space_learning as _learning
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory import space_learning as _learning
+    except Exception:
+        _learning = None
+
+try:  # arXiv 2610.36308: same-key version resolution (superseded / disputed)
+    from biocore_memory.store import versioning as _versioning
+except Exception:  # pragma: no cover
+    try:
+        from .biocore_memory.store import versioning as _versioning
+    except Exception:
+        _versioning = None
+
 try:  # task-228: the shared field + its write-back arbiter (pure, optional)
     from biocore_runtime import field as _field_mod
     from biocore_runtime import arbiter as _arbiter_mod
@@ -305,6 +361,30 @@ def _num(value, default=0.0):
 
 def _clamp(value, low, high):
     return max(low, min(high, value))
+
+
+def _affect_pair_from(value):
+    """Normalize a caller's affect into {"v", "a"}; None when unusable."""
+    block = value if isinstance(value, dict) else None
+    if block is None:
+        return None
+    v = block.get("v", block.get("valence"))
+    a = block.get("a", block.get("arousal"))
+    if v is None and a is None:
+        return None
+    return {"v": _clamp(_num(v, 0.0), -1.0, 1.0),
+            "a": _clamp(_num(a, 0.5), 0.0, 1.0)}
+
+
+def _affect_from_state(state):
+    """(v, a) from a state the pipeline already holds; None when absent."""
+    block = state if isinstance(state, dict) else {}
+    core = block.get("core") if isinstance(block.get("core"), dict) else block
+    if not isinstance(core, dict):
+        return None
+    if core.get("v") is None and core.get("a") is None:
+        return None
+    return _affect_pair_from({"v": core.get("v"), "a": core.get("a")})
 
 
 def _int_param(value, default, low, high):
@@ -518,6 +598,8 @@ def capture(session_id, role, text, store, config=None):
     if decision["capture"]:
         result = tool_call("remember", {
             "text": decision["text"], "role": decision["role"], "ts": now,
+            "affect": cfg.get("affect"),
+            "participants": cfg.get("participants"),
         }, store, session_id=session_id)
         entry = result.get("entry") if result.get("ok") else None
         if entry is not None:
@@ -877,6 +959,228 @@ def _store_data_dir(store):
     return root.parent if root.name == "memory" else root
 
 
+def _embed_cache_path(store):
+    """The embedding cache file for this store: config > env > <data>/cache/."""
+    try:
+        from biocore_memory.recall.embedding import cache_file
+    except Exception:
+        return None
+    try:
+        config = _load_runtime_config(store)
+    except Exception:
+        config = {}
+    try:
+        data_dir = _store_data_dir(store)
+    except Exception:
+        data_dir = None
+    try:
+        return cache_file(config, str(data_dir) if data_dir is not None else None)
+    except Exception:
+        return None
+
+
+
+
+def _spatial_learning_snapshot(store):
+    """The /state block for the learner (never raises)."""
+    if _learning is None:
+        return None
+    try:
+        flags = _effective_switches(store, None)
+        data_dir = _store_data_dir(store) if store else None
+        return _learning.learning_view(data_dir, flags, os.environ)
+    except Exception:
+        return None
+
+
+def _spatial_feedback_rows(store, limit=20):
+    """The newest usage rows, for the debug action."""
+    if _learning is None:
+        return []
+    try:
+        data_dir = _store_data_dir(store) if store else None
+        return _learning.load_rows(_learning.feedback_path(data_dir),
+                                   limit=limit)
+    except Exception:
+        return []
+
+
+def _collect_spatial_feedback(store, session_id, data, reply_text):
+    """Judge which recalled entries the reply used; append, then learn.
+
+    Rule based and free: the reply is checked against the entities, tags, cue
+    slots, numbers and long tokens the entry already carries. Nothing is
+    called and nothing is written outside the store data dir.
+    """
+    if _learning is None or not isinstance(data, dict):
+        return None
+    try:
+        flags = _effective_switches(store, None)
+    except Exception:
+        flags = {}
+    if not _learning.feedback_enabled(flags, os.environ):
+        return None
+    data_dir = _store_data_dir(store) if store else None
+    if data_dir is None:
+        return None
+    ids = data.get("recalled_ids")
+    if not isinstance(ids, list) or not ids:
+        return None
+    ids = [str(item)[:40] for item in ids][:20]
+    query = str(data.get("user_text") or "")[:200]
+    now = _num(data.get("now"), time.time())
+    entries = _visible(load_memory(store, session_id).get("entries"))
+    by_id = {str(entry.get("id") or ""): entry for entry in entries}
+    rows = []
+    used_count = 0
+    for entry_id in ids:
+        entry = by_id.get(entry_id)
+        if not isinstance(entry, dict):
+            continue
+        used = _learning.judge_used(entry, reply_text)
+        rows.append({"query": query, "id": entry_id, "used": bool(used),
+                     "ts": round(now, 3),
+                     "d": _learning.distance_block(query, entry, now=now)})
+        used_count += 1 if used else 0
+    if not rows:
+        return None
+    _learning.append_rows(_learning.feedback_path(data_dir), rows)
+    out = {"rows": len(rows), "used": used_count}
+    if _learning.learn_enabled(flags, os.environ):
+        all_rows = _learning.load_rows(_learning.feedback_path(data_dir),
+                                       limit=_learning.FEEDBACK_READ_LIMIT)
+        if len(all_rows) >= _learning.MIN_SAMPLES:
+            state = _learning.learn_and_save(
+                _learning.weights_path(data_dir), all_rows,
+                _learning.eta(flags, os.environ), now=now)
+            out["weights"] = state.get("weights")
+            out["samples"] = state.get("samples")
+    return out
+
+
+
+
+
+def _event_expand_on(store, payload=None):
+    """spatial_event_expand: payload flag > switches/config > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("event_expand"), bool):
+        return bool(data["event_expand"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return bool(switches.get("spatial_event_expand"))
+
+
+def _event_extra(entries, pool, rows, limit=3):
+    """Rows a hit's own event segment brings along (never duplicates a hit)."""
+    if _segment is None or not rows:
+        return []
+    by_id = {str(entry.get("id") or ""): entry for entry in pool or []
+             if isinstance(entry, dict)}
+    by_event = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict) or entry.get("deleted"):
+            continue
+        event_id = str(entry.get("event_id") or "")
+        if event_id:
+            by_event.setdefault(event_id, []).append(entry)
+    for bucket in by_event.values():
+        bucket.sort(key=lambda item: _num(item.get("event_index"), 0))
+    present = {str(row.get("id") or "") for row in rows}
+    extra = []
+    cap = max(0, 2 * max(1, int(limit)))
+    for row in list(rows):
+        hit = by_id.get(str(row.get("id") or ""))
+        if not isinstance(hit, dict):
+            continue
+        index = int(_num(hit.get("event_index"), 0))
+        for neighbour in by_event.get(str(hit.get("event_id") or ""), []):
+            if len(extra) >= cap:
+                return extra
+            neighbour_id = str(neighbour.get("id") or "")
+            if neighbour_id in present:
+                continue
+            if abs(int(_num(neighbour.get("event_index"), 0)) - index) > 1:
+                continue
+            item = _compact(neighbour)
+            item["score"] = 0.0
+            item["mode"] = "event_expand"
+            item["event_expand"] = True
+            extra.append(item)
+            present.add(neighbour_id)
+    return extra
+
+
+def _near_dup_flags(store):
+    """Effective switches plus the numeric near-dup threshold.
+
+    _effective_switches keeps booleans only, so a float such as
+    near_dup_cosine has to come from the runtime config directly.
+    """
+    try:
+        flags = dict(_effective_switches(store, None))
+    except Exception:
+        flags = {}
+    try:
+        cfg = _load_runtime_config(store)
+    except Exception:
+        cfg = {}
+    if isinstance(cfg, dict):
+        for key in ("near_dup_cosine", "near_dup_jaccard"):
+            value = cfg.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                flags[key] = float(value)
+    data_dir = _store_data_dir(store) if store else None
+    if data_dir is not None:
+        stored = _load_json(Path(data_dir) / "flags.json", {})
+        for key in ("near_dup_cosine", "near_dup_jaccard"):
+            value = stored.get(key) if isinstance(stored, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                flags[key] = float(value)
+    return flags
+
+
+def _space_stats_snapshot(entries):
+    """Per-axis spread + dead axes for /state (read-only, never raises)."""
+    try:
+        from biocore_memory import space as _space
+    except Exception:
+        return None
+    try:
+        stats = _space.axis_stats(entries)
+        if not stats:
+            return {"mode": "raw", "reason": "small_sample", "dead_axes": [],
+                    "entries": len([row for row in (entries or [])
+                                   if isinstance(row, dict)])}
+        return {"mode": "zscore", "dead_axes": _space.dead_axes(stats),
+                "entries": stats.get("entries"),
+                "sample": stats.get("sample"),
+                "axis_std": {axis: (stats["axes"].get(axis) or {}).get("std")
+                             for axis in _space.AXES}}
+    except Exception:
+        return None
+
+
+def _embedding_cache_snapshot(store):
+    """hit / miss / size for /state; counters may come from the stats file."""
+    info = {"hit": 0, "miss": 0, "size": 0, "hit_rate": 0.0,
+            "file": "", "corrupt": 0}
+    try:
+        from biocore_memory.recall.embedding import cache_summary
+        info.update(cache_summary(path=_embed_cache_path(store)))
+    except Exception:
+        pass
+    stats = _embed_stats_snapshot()
+    hit = int(stats.get("hit", 0) or 0) + int(stats.get("disk_hit", 0) or 0)
+    miss = int(stats.get("miss", 0) or 0)
+    if hit or miss:
+        info["hit"], info["miss"] = hit, miss
+        info["hit_rate"] = round(hit / float(hit + miss), 4)
+    return info
+
+
 def _data_flags(store):
     """<dataDir>/flags.json booleans (learning switches live next to memory/).
 
@@ -925,8 +1229,9 @@ def _inject_engine(store, entries):
     try:
         memory = MemoryStore(doc={"entries": [dict(item) for item in entries
                                               if isinstance(item, dict)]})
-        return MemoryEngine(store=memory, embedder=embedder,
-                            config={"flags": _data_flags(store)})
+        config = {"flags": _data_flags(store),
+                  "embedding": {**emb, "cache_file": _embed_cache_path(store)}}
+        return MemoryEngine(store=memory, embedder=embedder, config=config)
     except Exception:
         return None
 
@@ -958,15 +1263,30 @@ def _rerank_entries(query, entries, rerank_config):
     return ordered or None
 
 
-def _query_entries(store, session_id, query, top_k, rerank_config):
-    """engine.recall(query) over the injected candidates; None means fallback."""
+def _query_entries(store, session_id, query, top_k, rerank_config,
+                   now=None, include_superseded=False):
+    """engine.recall(query) over the injected candidates; None means fallback.
+
+    now anchors retrieval to the moment the question was asked (Howard &
+    Kahana 2002); include_superseded=True is the historical question.
+    """
     entries = _visible(load_memory(store, session_id).get("entries"))
+    if not entries:
+        return None
+    if _versioning is not None:
+        try:
+            entries = _versioning.visible(
+                entries, include_superseded=bool(include_superseded))
+        except Exception:
+            pass
     if not entries:
         return None
     engine = _inject_engine(store, entries)
     if engine is None:
         return None
-    rows = engine.recall(str(query)[:MAX_TEXT_CHARS], budget=top_k)
+    rows = engine.recall(str(query)[:MAX_TEXT_CHARS], budget=top_k,
+                         query_ts=now,
+                         include_superseded=bool(include_superseded))
     if not isinstance(rows, list) or not rows:
         return None
     picked = [row.get("entry") for row in rows
@@ -1038,8 +1358,572 @@ def _query_entries(store, session_id, query, top_k, rerank_config):
     return picked[:top_k]
 
 
+DATE_PREFIX_KEY = "memory_date_prefix"
+
+
+def _date_prefix_on(store, payload=None):
+    """memory_date_prefix: payload flag > switches/config > default ON."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get(DATE_PREFIX_KEY), bool):
+        return data[DATE_PREFIX_KEY]
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return bool(switches.get(DATE_PREFIX_KEY, True))
+
+
+def _memory_date(entry):
+    """YYYY-MM-DD HH:MM for the entry's ts in the local zone; "" without ts."""
+    raw = (entry or {}).get("ts")
+    try:
+        stamp = float(raw)
+    except Exception:
+        return ""
+    if stamp != stamp or stamp <= 0:
+        return ""
+    try:
+        from datetime import datetime
+        return datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
+POINT_STATE_FILE = "point_expand.json"
+
+
+def _point_expand_on(store, payload=None):
+    """point_expand: payload flag > switches/config > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("point_expand"), bool):
+        return bool(data["point_expand"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return bool(switches.get("point_expand"))
+
+
+def _point_expand_flags(store):
+    """Switches plus the numeric radius/token budget (switches keep bools)."""
+    try:
+        flags = dict(_effective_switches(store, None))
+    except Exception:
+        flags = {}
+    try:
+        cfg = _load_runtime_config(store)
+    except Exception:
+        cfg = {}
+    sources = [cfg]
+    data_dir = _store_data_dir(store) if store else None
+    if data_dir is not None:
+        sources.append(_load_json(Path(data_dir) / "flags.json", {}))
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("point_expand_radius", "point_expand_tokens"):
+            value = source.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                flags[key] = value
+    return flags
+
+
+def _point_state_path(store):
+    data_dir = _store_data_dir(store) if store else None
+    return (Path(data_dir) / POINT_STATE_FILE) if data_dir else None
+
+
+def _record_point_state(store, stats):
+    path = _point_state_path(store)
+    if path is None or not isinstance(stats, dict):
+        return False
+    try:
+        payload = dict(stats)
+        payload["ts"] = round(time.time(), 3)
+        _atomic_write(path, payload)
+        return True
+    except Exception:
+        return False
+
+
+def _point_expand_snapshot(store):
+    """The /state block: {hits, expanded, lines, tokens, dropped_expanded}."""
+    enabled = _point_expand_on(store, None)
+    base = {"enabled": bool(enabled), "hits": 0, "expanded": 0, "lines": 0,
+            "tokens": 0, "dropped_expanded": 0, "ts": 0.0}
+    path = _point_state_path(store)
+    if path is not None and path.exists():
+        stored = _load_json(path, {})
+        if isinstance(stored, dict):
+            base.update(stored)
+    base["last_run"] = bool(base.get("ts"))
+    if not enabled and not base["last_run"]:
+        base["reason"] = "switch_off"
+    return base
+
+COVER_STATE_FILE = "cover_select.json"
+
+
+def _cover_on(store, payload=None):
+    """spatial_cover_select: payload flag > switches/config > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("spatial_cover_select"), bool):
+        return bool(data["spatial_cover_select"])
+    if _cover is None:
+        return False
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return _cover.enabled(switches, os.environ)
+
+
+def _cover_flags(store):
+    """Switches plus the numeric lambda and pool depth."""
+    try:
+        flags = dict(_effective_switches(store, None))
+    except Exception:
+        flags = {}
+    try:
+        cfg = _load_runtime_config(store)
+    except Exception:
+        cfg = {}
+    sources = [cfg]
+    data_dir = _store_data_dir(store) if store else None
+    if data_dir is not None:
+        sources.append(_load_json(Path(data_dir) / "flags.json", {}))
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("spatial_cover_lambda", "spatial_cover_pool"):
+            value = source.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                flags[key] = value
+    return flags
+
+
+def _cover_state_path(store):
+    data_dir = _store_data_dir(store) if store else None
+    return (Path(data_dir) / COVER_STATE_FILE) if data_dir else None
+
+
+def _record_cover_state(store, stats):
+    path = _cover_state_path(store)
+    if path is None or not isinstance(stats, dict):
+        return False
+    try:
+        payload = dict(stats)
+        payload["ts"] = round(time.time(), 3)
+        _atomic_write(path, payload)
+        return True
+    except Exception:
+        return False
+
+
+def _cover_snapshot(store):
+    """The /state block: {pool, kept, lambda, avg_pairwise_dist, dropped_by_cover}."""
+    enabled = _cover_on(store, None)
+    base = {"enabled": bool(enabled), "pool": 0, "kept": 0, "lambda": 0.0,
+            "avg_pairwise_dist": 0.0, "dropped_by_cover": 0, "ts": 0.0}
+    path = _cover_state_path(store)
+    if path is not None and path.exists():
+        stored = _load_json(path, {})
+        if isinstance(stored, dict):
+            base.update(stored)
+    base["last_run"] = bool(base.get("ts"))
+    if not enabled and not base["last_run"]:
+        base["reason"] = "switch_off"
+    return base
+
+
+def _cover_distances(store, pool):
+    """Five-axis weighted distance between pool entries (standardize aware)."""
+    if _space is None:
+        return lambda left, right: 0.0
+    flags = _cover_flags(store)
+    try:
+        weights_map = _space.weights(flags, os.environ)
+    except Exception:
+        weights_map = None
+    spaces = []
+    for entry in pool:
+        try:
+            spaces.append(_space.build(entry, now=time.time()))
+        except Exception:
+            spaces.append({})
+    stats = None
+    try:
+        if _space.standardize_enabled(flags, os.environ):
+            stats = _space.stats_of_spaces(spaces)
+    except Exception:
+        stats = None
+    by_id = {str((entry or {}).get("id") or ""): space
+             for entry, space in zip(pool, spaces)}
+
+    def distance(left, right):
+        a = by_id.get(str((left or {}).get("id") or ""))
+        b = by_id.get(str((right or {}).get("id") or ""))
+        if not a or not b:
+            return 0.0
+        try:
+            raw = _space.distance(a, b)
+            if stats is not None:
+                return float(_space.standardized_distance(raw, stats, weights_map))
+            return float(_space.weighted_distance(raw, weights_map))
+        except Exception:
+            return 0.0
+
+    return distance
+
+
+def _cover_pick(store, session_id, query, limit, now=None, rerank_config=None,
+                payload=None):
+    """Pool -> rerank scores -> MMR pick -> (ordered entries, stats, pool ids)."""
+    if _cover is None:
+        return [], {}, []
+    flags = _cover_flags(store)
+    depth = _cover.pool_depth(flags)
+    pool = []
+    if query:
+        try:
+            pool = list(_query_entries(store, session_id, query, depth,
+                                       rerank_config, now=now) or [])
+        except Exception:
+            pool = []
+    if not pool:
+        pool = sorted(_visible(load_memory(store, session_id).get("entries")),
+                      key=lambda entry: (1 if entry.get("pin") else 0,
+                                         _num(entry.get("ts"), 0.0)),
+                      reverse=True)[:depth]
+    if not pool:
+        return [], {}, []
+    rel = None
+    scores = None
+    if query:
+        try:
+            scores = _rerank_scores(store, query, pool, rerank_config)
+        except Exception:
+            scores = None
+    if scores:
+        rel = [float(scores.get(str((entry or {}).get("id") or ""), 0.0))
+               for entry in pool]
+    else:
+        count = max(1, len(pool))
+        rel = [1.0 - (index / float(count)) for index in range(len(pool))]
+
+    picked, stats = _cover.select(pool, rel, limit,
+                                  _cover.lam(flags), _cover_distances(store, pool))
+    _record_cover_state(store, stats)
+    ordered = _cover.order(picked)
+    return ordered, stats, [str((entry or {}).get("id") or "") for entry in pool]
+
+SEGMENT_STATE_FILE = "segment_recall.json"
+
+
+def _segment_recall_on(store, payload=None):
+    """segment_recall: payload flag > switches/config > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("segment_recall"), bool):
+        return bool(data["segment_recall"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return bool(switches.get("segment_recall"))
+
+
+def _segment_state_path(store):
+    data_dir = _store_data_dir(store) if store else None
+    return (Path(data_dir) / SEGMENT_STATE_FILE) if data_dir else None
+
+
+def _record_segment_state(store, stats):
+    """Persist the last segment recall so /state (another process) sees it."""
+    path = _segment_state_path(store)
+    if path is None or not isinstance(stats, dict):
+        return False
+    try:
+        payload = dict(stats)
+        payload["ts"] = round(time.time(), 3)
+        _atomic_write(path, payload)
+        return True
+    except Exception:
+        return False
+
+
+def _segment_recall_snapshot(store):
+    """The /state block: {segments, lines, dropped_segments, avg_len}."""
+    enabled = _segment_recall_on(store, None)
+    base = {"enabled": bool(enabled), "segments": 0, "lines": 0,
+            "dropped_segments": 0, "avg_len": 0.0, "ts": 0.0}
+    path = _segment_state_path(store)
+    if path is not None and path.exists():
+        stored = _load_json(path, {})
+        if isinstance(stored, dict):
+            base.update(stored)
+    base["last_run"] = bool(base.get("ts"))
+    if not enabled and not base["last_run"]:
+        base["reason"] = "switch_off"
+    return base
+
+def _segment_line(entry, use_date):
+    """One rendered line: date prefix (optional) + text, no clipping yet."""
+    content = clean_text(entry.get("text"), 500)
+    if not content:
+        return ""
+    prefix = ""
+    if use_date:
+        day = _memory_date(entry)
+        if day:
+            prefix = "[" + day + "] "
+    return "\n- " + prefix + content
+
+
+def _inject_segments(session_id, store, query, limit, budget, header, use_date):
+    """Segment-mode injection: whole events, best-first, time inside."""
+    if _segments is None:
+        return None
+    entries = _visible(load_memory(store, session_id).get("entries"))
+    if _versioning is not None:
+        try:
+            entries = _versioning.visible(entries, include_superseded=False)
+        except Exception:
+            pass
+    zero = {"segments": 0, "lines": 0, "dropped_segments": 0, "avg_len": 0.0}
+    if budget <= len(header) + 3:
+        return {"text": "", "chars": 0, "ids": [], "segment": zero}
+    grouped = _segments.group(entries)
+    if not grouped:
+        return {"text": "", "chars": 0, "ids": [], "segment": zero}
+
+    def score_of(entry):
+        return _score(query, entry.get("text")) if query else 0.0
+
+    ranked = _segments.rank(grouped, score_of)
+    kept = []
+    dropped = 0
+    lines = 0
+    chars = len(header)
+    rendered_rows = []
+    for row in ranked:
+        members = row["segment"]["members"]
+        rendered = []
+        for member in members:
+            line = _segment_line(member, use_date)
+            if line:
+                rendered.append(line)
+        if not rendered:
+            continue
+        if lines + len(rendered) > limit:
+            dropped += 1
+            continue
+        cost = sum(len(line) for line in rendered)
+        if chars + cost > budget:
+            dropped += 1
+            continue
+        kept.append(row)
+        rendered_rows.append((row, rendered))
+        lines += len(rendered)
+        chars += cost
+    text = header
+    ids = []
+    for row, rendered in rendered_rows:
+        for index, line in enumerate(rendered):
+            if len(text) + len(line) > budget:
+                break
+            text += line
+            ids.append(str(row["segment"]["members"][index].get("id") or ""))
+    stats = _segments.stats(kept, lines, dropped)
+    _record_segment_state(store, stats)
+    if len(text) <= len(header) + 2:
+        return {"text": "", "chars": 0, "ids": [], "segment": stats}
+    return {"text": text, "chars": len(text), "ids": ids, "segment": stats}
+
+def _point_rerank_on(store, payload=None):
+    """point_expand_rerank: payload flag > switches/config > default ON."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("point_expand_rerank"), bool):
+        return bool(data["point_expand_rerank"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return bool(switches.get("point_expand_rerank", True))
+
+
+def _rerank_ready(store, rerank_config=None):
+    """The existing rerank client config, or None when nothing is set up."""
+    if _rerank_mod is None:
+        return None
+    try:
+        base = dict(rerank_config) if isinstance(rerank_config, dict) else {}
+    except Exception:
+        base = {}
+    if not base.get("rerank_enabled"):
+        try:
+            merged = dict(_rerank_config(store, {}))
+        except Exception:
+            merged = {}
+        merged.update(base)
+        base = merged
+    if not base.get("rerank_enabled"):
+        return None
+    if not (base.get("base_url") or base.get("url") or base.get("endpoint")
+            or base.get("model")):
+        return None
+    base["rerank_enabled"] = True
+    return base
+
+
+def _rerank_scores(store, query, entries, rerank_config=None):
+    """{entry_id: score} from the existing client, or None when unavailable."""
+    config = _rerank_ready(store, rerank_config)
+    if config is None or not entries:
+        return None
+    texts = [str((entry or {}).get("text") or "") for entry in entries]
+    try:
+        ranked = _rerank_mod.rerank_documents(query, texts, config)
+    except Exception:
+        return None
+    if not ranked:
+        return None
+    scores = {}
+    for item in ranked:
+        try:
+            index = int(item.get("index", -1))
+        except Exception:
+            continue
+        if not 0 <= index < len(entries):
+            continue
+        entry_id = str((entries[index] or {}).get("id") or "")
+        value = item.get("relevance_score")
+        if value is None:
+            value = item.get("score")
+        try:
+            scores[entry_id] = float(value)
+        except Exception:
+            scores[entry_id] = 1.0 / (len(scores) + 1.0)
+    return scores or None
+
+def _inject_point_expand(session_id, store, hits, header, use_date, flags=None,
+                         query="", limit=None, rerank_config=None):
+    """Hits union neighbours -> rerank the pool -> hits guaranteed -> order.
+
+    The neighbour is a *candidate*, not a fact: it only enters the block after
+    the same reranker that scored the hits has scored it too. Without a
+    reranker the block falls back to the hits only (the v9 behaviour).
+    """
+    if _point_expand is None:
+        return None
+    span = _point_expand.radius(flags)
+    budget = _point_expand.token_budget(flags)
+    entries = _visible(load_memory(store, session_id).get("entries"))
+    if _versioning is not None:
+        try:
+            entries = _versioning.visible(entries, include_superseded=False)
+        except Exception:
+            pass
+    extra = _point_expand.neighbours(hits, entries, span)
+    hit_ids = {str((hit or {}).get("id") or "") for hit in hits or []}
+    reranked = {"pool": 0, "kept": len(hits or []), "dropped": 0}
+    policy = None
+    if isinstance(flags, dict) and isinstance(flags.get("point_expand_rerank"), bool):
+        policy = bool(flags["point_expand_rerank"])
+    use_rerank = _point_rerank_on(store, None) if policy is None else policy
+    rows = []
+    if use_rerank:
+        pool = list(hits or []) + [entry for entry in extra
+                                   if str(entry.get("id") or "") not in hit_ids]
+        scores = (_rerank_scores(store, query, pool, rerank_config)
+                  if query else None)
+        reranked["pool"] = len(pool)
+        if not scores:
+            # no reranker configured: neighbours cannot be scored, so they do
+            # not go in; only the hits (v9 behaviour).
+            rows = [{"entry": hit, "hit": True, "score": 0.0} for hit in hits or []]
+            reranked["kept"] = len(rows)
+            reranked["dropped"] = len(extra)
+        else:
+            slots = max(0, int(limit or len(hits) or 1) - len(hit_ids))
+            others = [entry for entry in pool
+                      if str(entry.get("id") or "") not in hit_ids]
+            others.sort(key=lambda entry: (
+                -float(scores.get(str(entry.get("id") or ""), 0.0)),
+                -_num(entry.get("ts"), 0.0),
+                str(entry.get("id") or "")))
+            chosen = others[:slots]
+            reranked["kept"] = len(hit_ids) + len(chosen)
+            reranked["dropped"] = len(others) - len(chosen)
+            for hit in hits or []:
+                rows.append({"entry": hit, "hit": True,
+                             "score": float(scores.get(str(hit.get("id") or ""), 0.0))})
+            for entry in chosen:
+                rows.append({"entry": entry, "hit": False,
+                             "score": float(scores.get(str(entry.get("id") or ""), 0.0))})
+    else:
+        for rank, hit in enumerate(hits or []):
+            rows.append({"entry": hit, "hit": True, "score": 1.0 / (1.0 + rank)})
+        for entry in extra:
+            rows.append({"entry": entry, "hit": False, "score": 0.0})
+    ordered = _point_expand.order(rows)
+    prepared = []
+    for row in ordered:
+        line = _segment_line(row["entry"], use_date)
+        if line:
+            prepared.append((row, line))
+    used = _point_expand.tokens(header)
+    keep = []
+    for row, line in prepared:
+        if not row["hit"]:
+            continue
+        keep.append((row, line))      # a hit is never dropped for budget
+        used += _point_expand.tokens(line)
+    dropped = 0
+    for row, line in prepared:
+        if row["hit"]:
+            continue
+        cost = _point_expand.tokens(line)
+        if used + cost <= budget:
+            keep.append((row, line))
+            used += cost
+        else:
+            dropped += 1
+    keep_ids = {str((row.get("entry") or {}).get("id") or "")
+                for row, _ in keep}
+    text = header
+    ids = []
+    for row, line in prepared:
+        entry_id = str((row.get("entry") or {}).get("id") or "")
+        if entry_id not in keep_ids:
+            continue
+        text += line
+        ids.append(entry_id)
+    stats = {"hits": len(hits or []),
+             "expanded": len([row for row in rows if not row["hit"]]),
+             "lines": len(ids), "tokens": used, "dropped_expanded": dropped,
+             "reranked": reranked}
+    _record_point_state(store, stats)
+    if len(text) <= len(header) + 2:
+        return {"text": "", "chars": 0, "ids": [], "point": stats}
+    return {"text": text, "chars": len(text), "ids": ids, "point": stats}
+
+def _render_cover(entries, header, use_date, stats):
+    """Render the cover-selected entries with the existing line format."""
+    text = header
+    ids = []
+    for entry in entries:
+        line = _segment_line(entry, use_date)
+        if not line:
+            continue
+        text += line
+        ids.append(str((entry or {}).get("id") or ""))
+    if len(text) <= len(header) + 2:
+        return {"text": "", "chars": 0, "ids": [], "cover": stats}
+    return {"text": text, "chars": len(text), "ids": ids, "cover": stats}
+
 def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
-                 query="", mode="query", rerank_config=None):
+                 query="", mode="query", rerank_config=None, now=None,
+                 include_superseded=False, payload=None):
     """Top-k session memories as one bounded Chinese prompt block.
 
     mode="query"  recall this turn's words (engine.recall + env embedder,
@@ -1051,22 +1935,31 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
+    if _segment_recall_on(store, payload) and _segments is not None:
+        segmented = _inject_segments(
+            session_id, store, text_query, limit, budget,
+            "你记得这些事：", _date_prefix_on(store, payload))
+        if segmented is not None:
+            return segmented
     entries = []
     query_used = False
     if chosen == "query" and text_query:
         try:
             picked = _query_entries(store, session_id, text_query, limit,
-                                    rerank_config)
+                                    rerank_config, now=now,
+                                    include_superseded=include_superseded)
         except Exception:
             picked = None
         if picked:
             entries = list(picked)
             query_used = True
     if not entries:
+        # fetch a wider window so the answer-type bias has room to lift a
+        # memory that the recent order alone would have cut
         entries = sorted(_visible(load_memory(store, session_id).get("entries")),
                          key=lambda entry: (1 if entry.get("pin") else 0,
                                             _num(entry.get("ts"), 0.0)),
-                         reverse=True)[:limit]
+                         reverse=True)[:max(limit, 20)]
     if (query_used and text_query and entries and _extensions is not None):
         try:
             all_entries = _visible(load_memory(store, session_id).get("entries"))
@@ -1079,24 +1972,51 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
             entries = entries[:max(limit, min(limit + 2, INJECT_MAX_K))]
         except Exception:
             pass
+    entries = entries[:limit]
     header = "你记得这些事："
     ids = []
     if not entries or budget <= len(header) + 3:
         return {"text": "", "chars": 0, "ids": []}
+    use_date = _date_prefix_on(store, payload)
+    if _point_expand_on(store, payload) and _point_expand is not None:
+        point_flags = _point_expand_flags(store)
+        if (isinstance(payload, dict)
+                and isinstance(payload.get("point_expand_rerank"), bool)):
+            point_flags = dict(point_flags)
+            point_flags["point_expand_rerank"] = payload["point_expand_rerank"]
+        expanded = _inject_point_expand(session_id, store, entries[:limit],
+                                        header, use_date, point_flags,
+                                        query=text_query, limit=limit,
+                                        rerank_config=rerank_config)
+        if expanded is not None:
+            return expanded
+    if _cover_on(store, payload) and _cover is not None:
+        picked, cover_stats, _pool_ids = _cover_pick(
+            store, session_id, text_query, limit, now=now,
+            rerank_config=rerank_config, payload=payload)
+        if picked:
+            rendered = _render_cover(picked, header, use_date, cover_stats)
+            if rendered["text"]:
+                return rendered
     text = header
     for entry in entries:
         content = clean_text(entry.get("text"), 500)
         if not content:
             continue
+        prefix = ""
+        if use_date:
+            day = _memory_date(entry)
+            if day:
+                prefix = "[" + day + "] "
         room = budget - len(text)
         if room <= 2:
             break
-        line = "\n- " + content
+        line = "\n- " + prefix + content
         if len(line) > room:
-            clipped = room - 4
+            clipped = room - 4 - len(prefix)
             if clipped <= 1:
                 break
-            line = "\n- " + content[:clipped] + "…"
+            line = "\n- " + prefix + content[:clipped] + "…"
         text += line
         ids.append(str(entry.get("id") or ""))
     if len(text) <= len(header) + 2:
@@ -1328,6 +2248,75 @@ def _space_switch(store, payload=None):
     return False
 
 
+def _select_switch(store, payload=None):
+    """spatial_select: payload flag > switches/config > core default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("spatial_select"), bool):
+        return bool(data["spatial_select"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    if isinstance(switches.get("spatial_select"), bool):
+        return bool(switches["spatial_select"])
+    if _space is not None:
+        return _space.select_enabled(flags=data, env=os.environ)
+    return False
+
+
+def _reconsolidate_switch(store, payload=None):
+    """spatial_reconsolidate: payload flag > switches/config > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("reconsolidate"), bool):
+        return bool(data["reconsolidate"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    if isinstance(switches.get("spatial_reconsolidate"), bool):
+        return switches["spatial_reconsolidate"]
+    if _space is not None:
+        return _space.reconsolidate_enabled(flags=data, env=os.environ)
+    return False
+
+
+def _refresh_hit_space(store, session_id, doc, entries, rows, payload=None):
+    """Nader 2000 on the host path: every hit rewrites its own coordinates.
+
+    Only the rows that were actually returned are rewritten, with the
+    relationship that is current now; the doc is saved once at the end.
+    """
+    if _space is None or not rows:
+        return {"refreshed": 0, "ids": [], "drift": 0.0, "at": 0.0}
+    stamp = _num((payload or {}).get("ts"), time.time()) if isinstance(payload, dict) else time.time()
+    try:
+        relationship = relationship_read(store)["relationship"]
+    except Exception:
+        relationship = {}
+    embed = _space_embed_info(store)
+    by_id = {str(entry.get("id") or ""): entry for entry in (entries or [])
+             if isinstance(entry, dict)}
+    ids, drift = [], 0.0
+    for row in rows:
+        entry = by_id.get(str((row or {}).get("id") or ""))
+        if not isinstance(entry, dict):
+            continue
+        fresh = _space.refresh(entry, relationship, now=stamp, embed=embed)
+        if not isinstance(fresh, dict):
+            continue
+        entry["space"] = fresh
+        ids.append(str(entry.get("id") or ""))
+        try:
+            drift += float((fresh.get("drift") or {}).get("weighted") or 0.0)
+        except Exception:
+            pass
+    if ids and doc is not None:
+        save_memory(store, session_id, doc)
+    return {"refreshed": len(ids), "ids": ids,
+            "drift": round(drift, 6) if ids else 0.0,
+            "at": round(float(stamp), 3)}
+
+
 def _space_embed_info(store):
     """Embedding provider / model names, kept in the coordinates for auditing."""
     info = {"provider": "", "model": ""}
@@ -1342,6 +2331,40 @@ def _space_embed_info(store):
         info["model"] = str(block.get("model")
                            or block.get("embedding_model") or "")[:64]
     return info
+
+
+def _attach_displacement(entry, entries, now=None):
+    """TransE displacement from the previous memory about the same fact.
+
+    (Bordes 2013) h + r ~= t: two adjacent memories of one (subject,
+    attribute) give the relation between them; the later one carries it.
+    Nothing is written when the entry has no coordinates or no subject.
+    """
+    if _space is None or not isinstance(entry, dict):
+        return entry
+    coords = entry.get("space")
+    if not isinstance(coords, dict):
+        return entry
+    subject = str(entry.get("subject") or "").strip()
+    attribute = str(entry.get("attribute") or "").strip()
+    if not subject or not attribute:
+        return entry
+    latest = None
+    for other in (entries or []):
+        if not isinstance(other, dict) or other is entry or other.get("deleted"):
+            continue
+        if str(other.get("subject") or "").strip() != subject:
+            continue
+        if str(other.get("attribute") or "").strip() != attribute:
+            continue
+        if latest is None or _num(other.get("ts"), 0.0) > _num(latest.get("ts"), 0.0):
+            latest = other
+    if latest is None:
+        return entry
+    shift = _space.displacement(latest, entry, now=now)
+    if isinstance(shift, dict):
+        coords["displacement"] = shift
+    return entry
 
 
 def _attach_space(entry, store, session_id, payload=None, now=None):
@@ -1585,7 +2608,7 @@ def _space_vector(entry, store, payload=None):
     if provider is None:
         return entry
     try:
-        vector = _embed(text, provider)
+        vector = _embed(text, provider, path=_embed_cache_path(store))
     except Exception:
         vector = None
     if not vector:
@@ -1827,17 +2850,73 @@ def tool_call(name, args, store, session_id=None):
             return {"ok": False, "reason": "text_required"}
         if role not in ("user", "assistant"):
             role = "user"
+        now = _num(args.get("ts"), time.time())
         for existing in entries:
             if (str(existing.get("text") or "") == text
                     and str(existing.get("role") or "user") == role):
                 existing["hits"] = int(existing.get("hits", 1) or 1) + 1
+                # same rule as the engine merge: keep the coordinates written
+                # last and record the id the duplicate write would have had
+                if _space is not None and isinstance(existing.get("space"), dict):
+                    folded = hashlib.sha1(
+                        ("%s|%s|%s" % (role, text, now)).encode("utf-8")
+                    ).hexdigest()[:12]
+                    merged = _space.merge_space(
+                        existing, {"id": folded, "ts": now}, removed_id=folded)
+                    if isinstance(merged, dict):
+                        existing["space"] = merged
                 save_memory(store, sid, doc)
                 return {"ok": True, "entry": _compact(existing), "deduped": True}
-        now = _num(args.get("ts"), time.time())
         entry = _new_entry(text, role, args.get("tags"), now)
+        # explicit fact annotation only: the caller names the attribute, the
+        # core never guesses one from the text (version resolution needs it).
+        for key in ("subject", "attribute", "fact_value", "attribute_value"):
+            value = args.get(key)
+            if value not in (None, ""):
+                entry[key] = str(value)[:64]
+        # who the turn was about: the host names them, the core never guesses
+        participants = args.get("participants")
+        if isinstance(participants, str):
+            participants = [participants]
+        if isinstance(participants, list):
+            people = [str(item)[:32] for item in participants
+                      if str(item or "").strip()][:8]
+            if people:
+                entry["participants"] = people
+        social_scope = args.get("social_scope")
+        if social_scope not in (None, ""):
+            entry["social_scope"] = str(social_scope)[:32]
+        extra_meta = args.get("metadata")
+        if isinstance(extra_meta, dict) and extra_meta:
+            entry["metadata"] = {str(k): v for k, v in extra_meta.items()}
+        # the turn's own affect when the caller has it; absent = old structure
+        affect = _affect_pair_from(args.get("affect"))
+        if affect:
+            entry["affect"] = dict(affect)
+
+        if _segment is not None:
+            try:   # event segmentation runs before the coordinates are built
+                _segment.assign(entry, entries, now=now)
+            except Exception:
+                pass
         entry = _space_vector(entry, store, args)
         entry = _attach_space(entry, store, sid, args, now=now)
+        entry = _attach_displacement(entry, entries, now=now)
+        # near_dup_time: mark the older of two near-duplicate memories (the
+        # newer value wins). Identical text never reaches this branch.
+        if _near_dup is not None:
+            try:
+                _near_dup.apply(entries, entry, flags=_near_dup_flags(store),
+                                env=os.environ, now=now,
+                                data_dir=_store_data_dir(store))
+            except Exception:
+                pass
         entries.append(entry)
+        if _versioning is not None:
+            try:   # same-key resolution: the older value becomes history
+                _versioning.apply(entry, entries, now=now)
+            except Exception:
+                pass
         if len(entries) > MAX_ENTRIES:
             doc["entries"] = entries[-MAX_ENTRIES:]
         save_memory(store, sid, doc)
@@ -1847,13 +2926,64 @@ def tool_call(name, args, store, session_id=None):
         if not query:
             return {"ok": False, "reason": "query_required"}
         limit = _int_param(args.get("limit"), 3, 1, 10)
+        pool = _visible(entries)
+        if _versioning is not None:
+            try:   # superseded values are hidden unless asked for history
+                pool = _versioning.visible(
+                    pool,
+                    include_superseded=bool(args.get("include_superseded")))
+            except Exception:
+                pass
+        # spatial_select (default OFF) / mode="spatial": rank the whole visible
+        # pool by the weighted five-axis distance first and hand only the
+        # nearest candidates to the scorer below. Off: pool is untouched.
+        select_report = None
+        if (_space is not None
+                and (str(args.get("mode") or "").strip().lower() == "spatial"
+                     or _select_switch(store, args))):
+            try:
+                switches = _effective_switches(store, None)
+            except Exception:
+                switches = {}
+            flags = switches if isinstance(switches, dict) else {}
+            cap = _space.depth(flags, os.environ)
+            learned = None
+            if _learning is not None:
+                learned = _learning.active_weights(
+                    _store_data_dir(store), flags, os.environ)
+            picked = _space.select(pool, query,
+                                   query_ts=_num(args.get("ts"), time.time()),
+                                   limit=cap, flags=flags, env=os.environ,
+                                   base_weights=learned)
+            ids = [str(entry_id) for entry_id in (picked.get("ids") or [])]
+            wanted = set(ids)
+            kept = [entry for entry in pool
+                    if str(entry.get("id") or "") in wanted]
+            if kept:
+                order = {entry_id: index for index, entry_id in enumerate(ids)}
+                kept.sort(key=lambda entry: order.get(str(entry.get("id") or ""), 0))
+                pool = kept
+                select_report = {"enabled": True,
+                                 "pool": int(picked.get("pool") or 0),
+                                 "depth": cap, "selected": len(kept),
+                                 "mode": str(picked.get("mode") or "")}
+            else:
+                select_report = {"enabled": True, "pool": 0, "depth": cap,
+                                 "selected": 0, "mode": "", "reason": "empty"}
         rows = []
-        for entry in _visible(entries):
+        for entry in pool:
             score = _score(query, entry.get("text"))
             if score <= 0:
                 continue
             row = _compact(entry)
             row["score"] = score
+            if _versioning is not None:
+                try:
+                    status = _versioning.status_of(entry)
+                    if status != _versioning.ACTIVE:
+                        row["status"] = status
+                except Exception:
+                    pass
             rows.append(row)
         rows.sort(key=lambda row: (-row["score"], -_num(row.get("ts"), 0.0)))
         if _priority is not None and priority_enabled(args) and rows:
@@ -1904,8 +3034,22 @@ def tool_call(name, args, store, session_id=None):
             retrieval = {"stage": "recall", "enabled": True, "reranked": True,
                          "reason": "caller_config", "candidates": len(rows),
                          "kept": len(rows)}
-        return {"ok": True, "count": min(limit, len(rows)),
-                "results": rows[:limit], "retrieval": retrieval}
+        space_refresh = None
+        if (_space is not None and rows
+                and _reconsolidate_switch(store, args)):
+            space_refresh = _refresh_hit_space(store, sid, doc, entries,
+                                               rows[:limit], args)
+        final_rows = list(rows[:limit])
+        if _event_expand_on(store, args):
+            final_rows = final_rows + _event_extra(entries, pool, final_rows,
+                                                    limit)
+        result = {"ok": True, "count": len(final_rows),
+                  "results": final_rows, "retrieval": retrieval}
+        if select_report is not None:   # off: the payload stays as it was
+            result["spatial_select"] = select_report
+        if space_refresh and space_refresh.get("refreshed"):
+            result["space_refresh"] = space_refresh
+        return result
     target = str(args.get("id") or args.get("query") or "").strip()
     if not target:
         return {"ok": False, "reason": "id_or_query_required"}
@@ -3335,6 +4479,25 @@ CORE_DEFAULTS = {
     "crisis_safety_enabled": False,
     "proactive_send": False,
     "recall_mode": "query",
+    # A date prefix on each injected memory (default ON).
+    "memory_date_prefix": True,
+    # Recall by event segment instead of by entry (default OFF).
+    "segment_recall": False,
+    # Point-expand: hits first, then the neighbours of each hit (default OFF).
+    "point_expand": False,
+    # point_expand_rerank: expand, then rerank the pool (ON); OFF is the v11
+    # order where neighbours are injected without a score.
+    "point_expand_rerank": True,
+    # Coverage select: pick k by five-axis spread instead of rank (default OFF).
+    "spatial_cover_select": False,
+
+
+    # spatial_select: full-store candidate stage in front of the scorer
+    # (default OFF; the host turns it on per store, mode="spatial" per call).
+    "spatial_select": False,
+    # spatial_reconsolidate: a recall hit rewrites its own coordinates
+    # (default OFF; recall never mutates the store unless asked).
+    "spatial_reconsolidate": False,
 }
 
 
@@ -3457,6 +4620,21 @@ def _ui_state_body(store, session_id, data):
                        "text": text[:80],
                        "source": str(entry.get("memory_source") or "direct"),
                        "kind": str(entry.get("kind") or "")})
+    memory_versions = None
+    memory_conflicts = None
+    if _versioning is not None:
+        try:   # arXiv 2610.36308: {active, superseded, disputed} + last five
+            memory_versions = _versioning.summary(entries)
+            memory_conflicts = _versioning.conflicts(entries)
+        except Exception:
+            memory_versions, memory_conflicts = None, None
+    if isinstance(memory_versions, dict) and _near_dup is not None:
+        try:   # near_dup_time: what the newer-wins rule marked on this store
+            memory_versions["near_dup"] = _near_dup.state_of(
+                entries, _store_data_dir(store),
+                _near_dup_flags(store), os.environ)
+        except Exception:
+            pass
     rel_metrics = {"closeness": round(_num(relationship.get("closeness"), 0.5), 2),
                    "trust": round(_num(relationship.get("trust"), 0.5), 2),
                    "conflict": round(_num(relationship.get("conflict"), 0.0), 2),
@@ -3545,6 +4723,11 @@ def _ui_state_body(store, session_id, data):
                 "memory_count": len(entries),
                 "memory": {"count": len(entries)},
                 "memory_recent": recent,
+                "memory_versions": memory_versions,
+                "segment_recall": _segment_recall_snapshot(store),
+                "point_expand": _point_expand_snapshot(store),
+                "cover_select": _cover_snapshot(store),
+                "memory_conflicts": memory_conflicts,
                 "relationship_metrics": rel_metrics,
                 "body_metrics": body,
                 "narrative": {"intent": intent, "length_factor": 1.0,
@@ -3560,6 +4743,9 @@ def _ui_state_body(store, session_id, data):
                 "governance_numbers": (governance_summary or {}),
                 "proactive_sent_today": _proactive_sent_today(store),
                 "core": core,
+                "embedding_cache": _embedding_cache_snapshot(store),
+                "space": _space_stats_snapshot(entries),
+                "spatial_learning": _spatial_learning_snapshot(store),
                 "source": "core"}
     return identity
 
@@ -3870,11 +5056,15 @@ def dispatch(action, payload=None):
             capture_enabled = _as_bool(data.get("capture"), True)
             captured_user = {"captured": False, "entry_id": "", "reason": "disabled"}
             capture_store = data.get("store")
+            # the turn opens on the state this handler just assembled
+            affect_now = _affect_from_state(session_state)
             if capture_enabled and capture_store:
                 user_capture = capture(session_id, "user", user_text, capture_store, {
                     "enabled": _as_bool(data.get("memoryEnabled", True), True),
                     "hourly_cap": data.get("hourly_cap", HOURLY_CAP),
                     "min_chars": data.get("min_chars", MIN_CHARS),
+                    "affect": affect_now,
+                    "participants": data.get("participants"),
                 })
                 decision = user_capture.get("decision") or {}
                 entry = user_capture.get("entry") or {}
@@ -3949,27 +5139,13 @@ def dispatch(action, payload=None):
                     pass
             capture_enabled = _as_bool(data.get("capture"), True)
             capture_store = data.get("store")
-            if capture_enabled and capture_store:
-                captured = capture(session_id, "assistant", assistant_text,
-                                   capture_store, {
-                    "enabled": _as_bool(data.get("memoryEnabled",
-                                                 switches.get("memoryEnabled", True)),
-                                        True),
-                    "hourly_cap": data.get("hourly_cap", HOURLY_CAP),
-                    "min_chars": data.get("min_chars", MIN_CHARS),
-                })
-            else:
-                captured = {"ok": True, "decision": {
-                    "capture": False,
-                    "reason": "disabled" if not capture_enabled else "no_store",
-                }, "entry": None}
+            session_doc = (_load_session_state(store, session_id)
+                           if store is not None else {})
             merge_state_relationship_into_shared(session_id, data)
             core_snapshot = None
             core_path = _core_state_path(data)
             if _core_state is not None and core_path is not None:
                 deltas = _state_deltas(data)
-                session_doc = (_load_session_state(store, session_id)
-                               if store is not None else {})
                 legacy_core = session_doc.get("core")
                 legacy_core = legacy_core if isinstance(legacy_core, dict) else {}
                 if not _core_state.exists(core_path):
@@ -3999,6 +5175,32 @@ def dispatch(action, payload=None):
                     if store is not None:
                         _save_session_state(store, session_id, session_doc)
                     core_snapshot = _core_state.snapshot(core_path)
+            # the turn's affect is the state this handler just settled on,
+            # captured here so the entry carries the value that was current
+            # at the end of the turn (no extra read: session_doc is in hand)
+            affect_now = (_affect_from_state({"core": session_doc.get("core")})
+                          or _affect_from_state(data.get("state")))
+            if capture_enabled and capture_store:
+                captured = capture(session_id, "assistant", assistant_text,
+                                   capture_store, {
+                    "enabled": _as_bool(data.get("memoryEnabled",
+                                                 switches.get("memoryEnabled", True)),
+                                        True),
+                    "hourly_cap": data.get("hourly_cap", HOURLY_CAP),
+                    "min_chars": data.get("min_chars", MIN_CHARS),
+                    "affect": affect_now,
+                    "participants": data.get("participants"),
+                })
+            else:
+                captured = {"ok": True, "decision": {
+                    "capture": False,
+                    "reason": "disabled" if not capture_enabled else "no_store",
+                }, "entry": None}
+            # spatial_feedback: judge the recalled entries against the reply
+            # this turn actually sent, append the rows and (when enough of
+            # them exist) move the axis weights. Read-only for the memory.
+            feedback = _collect_spatial_feedback(store, session_id, data,
+                                                 assistant_text)
             governance_info = _governance_tick(store, now=time.time())
             relationship_info = _relationship_tick(
                 store, data.get("user_text"), now=time.time())
@@ -4116,6 +5318,7 @@ def dispatch(action, payload=None):
                 "batches": batch_view,
                 "dimensions": dimensions_out,
                 "timescales": timescale_view,
+                "spatial_feedback": feedback,
                 "core_state": core_pushed or core_snapshot,
                 "governance": governance_info,
                 "relationship": relationship_info,
@@ -4183,7 +5386,9 @@ def dispatch(action, payload=None):
                     signals_info = _signals.summary(store)
                 except Exception:
                     signals_info = None
-            return {"ok": True, "embed": embed, "switches": out,
+            return {"ok": True, "embed": embed,
+                    "embedding_cache": _embedding_cache_snapshot(store),
+                    "switches": out,
                     "governance": governance_info,
                     "relationship": relationship_info,
                     "identity": identity_info,
@@ -4377,16 +5582,52 @@ def dispatch(action, payload=None):
         if action == "gate":
             reply = data.get("reply", data.get("reply_text", ""))
             return gate_reply(reply, data)
+        if action == "near_dup":
+            sid = str(data.get("session_id") or "s1")
+            entries_now = _visible(load_memory(store, sid).get("entries"))
+            block = (_near_dup.state_of(entries_now, _store_data_dir(store),
+                                        _near_dup_flags(store),
+                                        os.environ)
+                     if _near_dup is not None else {})
+            return {"ok": True, "threshold": block.get("threshold"),
+                    "marked": block.get("marked", 0),
+                    "pairs": block.get("pairs") or [],
+                    "last_pair": block.get("last_pair") or {}}
+        if action == "cover_select":
+            sid = str(data.get("session_id") or "s1")
+            query = str(data.get("query") or "").strip()
+            limit = _int_param(data.get("limit"), TOP_K, 1, INJECT_MAX_K)
+            old = []
+            if query:
+                try:
+                    old = list(_query_entries(store, sid, query, limit,
+                                             None, now=data.get("now")) or [])
+                except Exception:
+                    old = []
+            picked, stats, pool_ids = _cover_pick(
+                store, sid, query, limit, now=data.get("now"),
+                rerank_config=data.get("rerank_config"))
+            return {"ok": True, "query": query, "limit": limit,
+                    "old": [str((entry or {}).get("id") or "") for entry in old],
+                    "cover": [str((entry or {}).get("id") or "") for entry in picked],
+                    "pool": pool_ids, "stats": stats}
+        if action == "spatial_feedback":
+            rows = _spatial_feedback_rows(store, limit=20)
+            return {"ok": True, "count": len(rows), "rows": rows,
+                    "learning": _spatial_learning_snapshot(store)}
         if action == "capture":
             session_id = data.get("session_id") or data.get("session") or "default"
             switches = data.get("switches") if isinstance(data.get("switches"), dict) else {}
             enabled = _as_bool(switches.get("memoryEnabled", True), True)
+            affect = (_affect_from_state(data.get("state"))
+                      or _affect_pair_from(data.get("affect")))
             result = capture(session_id, data.get("role", "user"),
                              data.get("text", ""), store,
                              {"enabled": enabled,
                               "hourly_cap": data.get("hourly_cap", HOURLY_CAP),
                               "min_chars": data.get("min_chars", MIN_CHARS),
-                              "now": data.get("now")})
+                              "now": data.get("now"),
+                              "affect": affect})
             decision = result.get("decision") or {}
             entry = result.get("entry") or {}
             return {"ok": True, "captured": bool(decision.get("capture")),
@@ -4418,9 +5659,13 @@ def dispatch(action, payload=None):
                 top_k=data.get("top_k", TOP_K),
                 query=data.get("query") or data.get("user_text") or "",
                 mode=_recall_mode(store, data.get("mode")),
+                now=(float(data["now"]) if isinstance(data.get("now"), (int, float))
+                     else time.time()),
+                include_superseded=bool(data.get("include_superseded")),
                 rerank_config=(data.get("rerank_config")
                                or _rerank_config_from(
-                                   _load_runtime_config(store).get("rerank"))))
+                                   _load_runtime_config(store).get("rerank"))),
+                payload=data)
             return {"ok": True, **result}
         if action == "configure":
             return configure(data)
