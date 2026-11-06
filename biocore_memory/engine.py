@@ -1096,7 +1096,7 @@ class MemoryEngine:
         return report
 
     # -- remember ---------------------------------------------------------
-    def remember(self, event, scope=None):
+    def remember(self, event, scope=None, affect=None):
         raw_event = event
         ev = event_from_any(event)
         text = str(getattr(ev, "text", "") or "").strip()
@@ -1198,7 +1198,9 @@ class MemoryEngine:
             "scope": entry_scope,
         }
         entry.update({k: v for k, v in meta.items() if k not in entry})
-        _affect_source = (meta.get("affect") if isinstance(meta.get("affect"), dict)
+        _affect_source = (affect if isinstance(affect, dict)
+                          else meta.get("affect")
+                          if isinstance(meta.get("affect"), dict)
                           else self._affect_source())
         _mv, _ma = _affect_pair(_affect_source)
         entry["affect"] = {"valence": round(_mv, 4), "arousal": round(_ma, 4)}

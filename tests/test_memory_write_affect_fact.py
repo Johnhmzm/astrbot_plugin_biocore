@@ -123,18 +123,33 @@ class AffectTest(unittest.TestCase):
 class FactExtractionTest(unittest.TestCase):
     """The existing extractor turns a fact into a key; nothing else does."""
 
-    def test_the_extractor_fills_the_key_slots(self):
+    def test_explicit_metadata_fills_the_key_slots(self):
         engine = make_engine()
-        entry = engine.remember({"text": OLD_FACT, "role": "user", "ts": NOW - DAY})
-        self.assertEqual(entry["subject"], "\u6211\u751f\u65e5\u6539\u6210")
+        entry = engine.remember({"text": OLD_FACT, "role": "user", "ts": NOW - DAY,
+                                 "metadata": {"subject": "\u6211",
+                                              "attribute": "\u751f\u65e5",
+                                              "fact_value": "4\u67083\u65e5"}})
+        self.assertEqual(entry["subject"], "\u6211")
         self.assertEqual(entry["attribute"], "\u751f\u65e5")
-        self.assertEqual(entry["fact_value"], "\u6539\u62104\u67083\u65e5")
+        self.assertEqual(entry["fact_value"], "4\u67083\u65e5")
         self.assertIn("version_key", entry)
+
+    def test_a_text_alone_creates_no_key(self):
+        engine = make_engine()
+        entry = engine.remember({"text": OLD_FACT, "role": "user", "ts": NOW})
+        for key in ("subject", "attribute", "fact_value", "version_key",
+                    "status"):
+            self.assertNotIn(key, entry)
 
     def test_a_changed_fact_supersedes_the_stored_one(self):
         engine = make_engine()
-        first = engine.remember({"text": OLD_FACT, "role": "user", "ts": NOW - DAY})
-        second = engine.remember({"text": NEW_FACT, "role": "user", "ts": NOW})
+        key = {"subject": "\u6211", "attribute": "\u751f\u65e5"}
+        first = engine.remember({"text": OLD_FACT, "role": "user",
+                                 "ts": NOW - DAY,
+                                 "metadata": dict(key, fact_value="4\u67083\u65e5")})
+        second = engine.remember({"text": NEW_FACT, "role": "user", "ts": NOW,
+                                  "metadata": dict(key,
+                                                   fact_value="5\u670830\u65e5")})
         self.assertEqual(first["status"], v.SUPERSEDED)
         self.assertEqual(first["superseded_by"], second["id"])
         self.assertEqual(second["status"], v.ACTIVE)
@@ -152,11 +167,9 @@ class FactExtractionTest(unittest.TestCase):
         self.assertEqual(entry["attribute"], "\u7231\u597d")
         self.assertEqual(entry["fact_value"], "\u4e0b\u68cb")
 
-    def test_a_broken_extractor_never_blocks_the_write(self):
+    def test_a_write_without_metadata_never_fails(self):
         engine = make_engine()
-        with mock.patch.object(dedupe, "extract_fact",
-                               side_effect=RuntimeError("boom")):
-            entry = engine.remember({"text": OLD_FACT, "role": "user", "ts": NOW})
+        entry = engine.remember({"text": OLD_FACT, "role": "user", "ts": NOW})
         self.assertIsNotNone(entry)
         self.assertIn("text", entry)
         self.assertNotIn("attribute", entry)
@@ -167,16 +180,21 @@ class FactExtractionTest(unittest.TestCase):
         self.assertNotIn("attribute", entry)
         self.assertNotIn("version_key", entry)
 
-    def test_the_host_path_resolves_the_same_way(self):
+    def test_the_host_path_resolves_with_explicit_metadata(self):
         with Store() as store:
-            pipeline.tool_call("remember", {"text": OLD_FACT, "ts": NOW - DAY},
+            meta = {"subject": "\u6211", "attribute": "\u751f\u65e5"}
+            pipeline.tool_call("remember", {"text": OLD_FACT, "ts": NOW - DAY,
+                                            "metadata": dict(meta,
+                                                             fact_value="4\u67083\u65e5")},
                                store, session_id="s1")
-            pipeline.tool_call("remember", {"text": NEW_FACT, "ts": NOW},
+            pipeline.tool_call("remember", {"text": NEW_FACT, "ts": NOW,
+                                            "metadata": dict(meta,
+                                                             fact_value="5\u670830\u65e5")},
                                store, session_id="s1")
             rows = stored(store)
             self.assertEqual(rows[0]["status"], v.SUPERSEDED)
             self.assertEqual(rows[0]["superseded_by"], rows[1]["id"])
-            self.assertEqual(rows[1]["attribute"], "\u751f\u65e5")
+            self.assertEqual(rows[1]["metadata"]["attribute"], "\u751f\u65e5")
 
     def test_the_host_path_keeps_an_explicit_attribute(self):
         with Store() as store:
