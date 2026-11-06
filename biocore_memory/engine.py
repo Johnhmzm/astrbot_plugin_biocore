@@ -43,7 +43,7 @@ from .thread import expire_threads, thread_card as _thread_card, update_thread
 # these keys are numeric (the rest stay strictly boolean).
 NUMERIC_FLAGS = ("consolidate_auto_turns", "spatial_depth",
                   "spatial_index_threshold", "spatial_learn_eta",
-                  "near_dup_cosine", "event_window")
+                  "near_dup_cosine", "event_window", "recall_depth")
 
 _EMPTY_INDEX = ("entities", "place", "time_coarse", "event_name", "id")
 _SUMMARY_SOURCES = ("consolidate", "ti_mem", "reflection")
@@ -193,6 +193,7 @@ class MemoryEngine:
         self._last_spatial_select = None
         self._last_space_refresh = None
         self._last_activation = None
+        self._last_recall_stage = None
         self._last_source_consistency = None
         self._last_narrative = None
         self._remember_turns = 0
@@ -246,7 +247,7 @@ class MemoryEngine:
         if isinstance(overrides, dict):
             for key, value in overrides.items():
                 if isinstance(value, bool) or (
-                        str(key) == "consolidate_auto_turns"
+                        str(key) in NUMERIC_FLAGS
                         and isinstance(value, (int, float))
                         and not isinstance(value, bool)):
                     self.flags[str(key)] = value
@@ -1441,7 +1442,8 @@ class MemoryEngine:
         rows = recall_entries(pool, query, budget=fetch, vector=vector,
                               embedder=self.embedder,
                               three_channel=self.three_channel,
-                              now=float(self.now()), cue_scorer=cue_score)
+                              now=float(self.now()), cue_scorer=cue_score,
+                              cap=fetch)
         self._last_recall_stage = {"pool": len(rows), "depth": depth,
                                    "after_activation": len(rows),
                                    "after_rerank": len(rows), "after_mmr": 0}
@@ -3002,6 +3004,9 @@ class MemoryEngine:
         """Read-only module health snapshot (no defaults/behaviour change)."""
         out = self._stats_snapshot()
         out["embedding_cache"] = self.embedding_cache()
+        out["recall_stage"] = self._last_recall_stage or {
+            "pool": 0, "depth": self._recall_depth(),
+            "after_activation": 0, "after_rerank": 0, "after_mmr": 0}
         out["activation_rank"] = self._last_activation or {
             "enabled": self._flag("activation_rank", False), "terms": {},
             "d": None, "lambda": None, "mu": None}

@@ -1113,6 +1113,22 @@ def _event_extra(entries, pool, rows, limit=3):
     return extra
 
 
+def _recall_stage_snapshot(store, entries):
+    """recall_stage: pool size, depth and the per-stage counts of the last recall."""
+    try:
+        from biocore_memory.core.config import RECALL_DEPTH_DEFAULT, RECALL_DEPTH_MAX
+        raw = _load_runtime_config(store).get("recall_depth")
+        depth = int(float(raw)) if raw is not None else RECALL_DEPTH_DEFAULT
+    except Exception:
+        depth = 5
+        RECALL_DEPTH_MAX = 40
+    depth = max(1, min(RECALL_DEPTH_MAX, depth))
+    pool = len([row for row in entries or [] if isinstance(row, dict)])
+    return {"pool": pool, "depth": depth, "after_activation": 0,
+            "after_rerank": 0, "after_mmr": 0,
+            "source": "host", "ts": round(time.time(), 3)}
+
+
 def _activation_snapshot(store, entries):
     """activation_rank: the switch, the weights and the term presence."""
     from biocore_memory.recall import activation as _act
@@ -4764,6 +4780,7 @@ def _ui_state_body(store, session_id, data):
                 "space": _space_stats_snapshot(entries),
                 "spatial_learning": _spatial_learning_snapshot(store),
                 "activation_rank": _activation_snapshot(store, entries),
+                "recall_stage": _recall_stage_snapshot(store, entries),
                 "source": "core"}
     return identity
 

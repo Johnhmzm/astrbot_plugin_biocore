@@ -10,7 +10,7 @@ from ..core.config import (CUE_WEIGHT, IMPORTANCE_WEIGHT, SEM_WEIGHT,
 
 def recall_entries(entries, query, budget=DEFAULT_BUDGET, vector=None,
                    embedder=None, three_channel=False, now=None,
-                   cue_scorer=None):
+                   cue_scorer=None, cap=None):
     qvec = list(vector) if isinstance(vector, (list, tuple)) else _embed(embedder, query)
     rows = []
     for e in entries or []:
@@ -58,8 +58,11 @@ def recall_entries(entries, query, budget=DEFAULT_BUDGET, vector=None,
         rows.append({"entry": e, "score": round(float(score), 6),
                      "mode": mode, "reasons": reasons})
     rows.sort(key=lambda x: x["score"], reverse=True)
+    # recall_depth may ask for more than the historical cap; the caller says so
+    # with cap=, and the old 5-row cap stays the default.
     try:
-        limit = max(1, min(MAX_BUDGET, int(budget or DEFAULT_BUDGET)))
+        ceiling = max(MAX_BUDGET, int(cap or MAX_BUDGET))
+        limit = max(1, min(ceiling, int(budget or DEFAULT_BUDGET)))
     except Exception:
         limit = DEFAULT_BUDGET
     return rows[:limit]
