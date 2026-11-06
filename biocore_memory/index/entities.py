@@ -29,35 +29,9 @@ def extract_places(text, limit=4) -> list:
 
 
 def normalize_time(text, ref_ts=None) -> str:
-    """Coarse deterministic date (YYYY-MM-DD / YYYY-MM) from relative or absolute cues."""
-    value = str(text or "")
-    try:
-        base = _dt.datetime.fromtimestamp(float(ref_ts)) if ref_ts else _dt.datetime.now()
-    except Exception:
-        base = _dt.datetime.now()
-    rel = {"今天": 0, "昨天": -1, "前天": -2, "明天": 1, "后天": 2}
-    for word, delta in rel.items():
-        if word in value:
-            return (base + _dt.timedelta(days=delta)).strftime("%Y-%m-%d")
-    m = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", value)
-    if m:
-        try:
-            return _dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3))).isoformat()
-        except Exception:
-            pass
-    m = re.search(r"(\d{1,2})月(\d{1,2})日", value)
-    if m:
-        try:
-            return _dt.date(base.year, int(m.group(1)), int(m.group(2))).strftime("%Y-%m-%d")
-        except Exception:
-            pass
-    if "今年" in value:
-        return base.strftime("%Y")
-    if "去年" in value:
-        return str(base.year - 1)
-    if "上个月" in value:
-        return (base.replace(day=1) - _dt.timedelta(days=1)).strftime("%Y-%m")
+    """No date parsing: the caller supplies ts / valid_from / valid_to."""
     return ""
+
 
 
 def cues(text, ref_ts=None) -> dict:
