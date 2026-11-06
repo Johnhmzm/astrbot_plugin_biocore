@@ -192,6 +192,7 @@ class MemoryEngine:
         self._last_spatial = None
         self._last_spatial_select = None
         self._last_space_refresh = None
+        self._last_activation = None
         self._last_source_consistency = None
         self._last_narrative = None
         self._remember_turns = 0
@@ -1532,6 +1533,8 @@ class MemoryEngine:
         # rewritten by the act of recalling it (Nader 2000) -- the coordinates
         # are re-sampled with today's relationship and affect.
         self._refresh_space(rows, at, reconsolidate)
+        if self._flag("activation_rank"):
+            rows = self._apply_activation_rank(rows, query, at, vector)
         if self._flag("spatial_event_expand") and rows:
             try:
                 from .event import segment as _segment
@@ -1543,6 +1546,47 @@ class MemoryEngine:
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
         self._flush_stats()
         return rows
+
+    def _apply_activation_rank(self, rows, query, at, vector=None):
+        """ACT-R activation as the sort key (sorting only; tiers untouched)."""
+        if not rows:
+            return rows
+        try:
+            from .recall import activation as act
+            from .core.config import ACTIVATION_SEEDS
+            entries = [e for e in self.store.entries
+                       if isinstance(e, dict) and not e.get("deleted")]
+            vectors = [list(e.get("vector") or []) for e in entries]
+            seeds = [str((row.get("entry") or {}).get("id") or "")
+                     for row in rows[:ACTIVATION_SEEDS]]
+            edges = [edge for entry in entries
+                     for edge in (entry.get("edges") or [])]
+            ppr_map = act.ppr_scores(seeds, edges)
+            qvec = vector if isinstance(vector, (list, tuple)) and vector \
+                else self._query_vector(query)
+            queries = [list(qvec)] if qvec else []
+            d = act.decay(self.flags)
+            lam, mu = act.weights_for(self.flags).values()
+            for row in rows:
+                item = row.get("entry") or {}
+                evec = item.get("vector")
+                terms = {"B": act.base_level(item, at, d),
+                         "sem": act.semantic_term(queries, [1.0], evec),
+                         "ppr": float(ppr_map.get(str(item.get("id") or ""), 0.0)),
+                         "spec": act.specificity_term(evec, vectors)}
+                row["activation_terms"] = terms
+                row["activation_score"] = act.combine(
+                    terms["B"], terms["sem"], terms["ppr"], terms["spec"],
+                    lam, mu)
+            rows.sort(key=lambda row: -float(row.get("activation_score") or 0.0))
+            self._last_activation = {
+                "enabled": True, "d": round(d, 3),
+                "lambda": round(lam, 3), "mu": round(mu, 3),
+                "terms": {"B": 1, "sem": 1, "ppr": len(ppr_map), "spec": 1},
+                "ts": round(self.now(), 3)}
+            return rows
+        except Exception:
+            return rows
 
     # -- weighted five-axis ordering (spatial_weighted) --------------------
     def _apply_spatial_rank(self, rows, query, at, spatial=None, explicit=False,
@@ -2935,6 +2979,9 @@ class MemoryEngine:
         """Read-only module health snapshot (no defaults/behaviour change)."""
         out = self._stats_snapshot()
         out["embedding_cache"] = self.embedding_cache()
+        out["activation_rank"] = self._last_activation or {
+            "enabled": self._flag("activation_rank", False), "terms": {},
+            "d": None, "lambda": None, "mu": None}
         return out
 
     def embedding_cache(self):

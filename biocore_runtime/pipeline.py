@@ -1113,6 +1113,23 @@ def _event_extra(entries, pool, rows, limit=3):
     return extra
 
 
+def _activation_snapshot(store, entries):
+    """activation_rank: the switch, the weights and the term presence."""
+    from biocore_memory.recall import activation as _act
+    from biocore_memory.store import near_dup as _near
+    flags = _near_dup_flags(store) if _near is not None else {}
+    on = _act.enabled(flags, os.environ)
+    weights = _act.weights_for(flags)
+    vectors = sum(1 for row in entries or []
+                  if isinstance(row.get("vector"), (list, tuple))
+                  and row.get("vector"))
+    return {"enabled": bool(on), "terms": {"B": "hits/ts",
+            "sem": ("vectors" if vectors else "none"),
+            "ppr": "graph_edges", "spec": ("vectors" if vectors else "none")},
+            "d": _act.decay(flags), "lambda": round(weights["lambda"], 3),
+            "mu": round(weights["mu"], 3), "ts": round(time.time(), 3)}
+
+
 def _near_dup_flags(store):
     """Effective switches plus the numeric near-dup threshold.
 
@@ -4746,6 +4763,7 @@ def _ui_state_body(store, session_id, data):
                 "embedding_cache": _embedding_cache_snapshot(store),
                 "space": _space_stats_snapshot(entries),
                 "spatial_learning": _spatial_learning_snapshot(store),
+                "activation_rank": _activation_snapshot(store, entries),
                 "source": "core"}
     return identity
 
