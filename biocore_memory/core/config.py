@@ -142,6 +142,13 @@ ACTIVATION_SPEC_MU = 0.2        # engineering
 ACTIVATION_SEEDS = 5            # engineering: seeds = current top-5
 ACTIVATION_NEIGHBOURS = 5       # engineering: nearest neighbours for rho
 
+# recall_depth (default 5 = the current behaviour, byte for byte). Above 5 the
+# recall carries a wider pool through activation / rerank and only then cuts to
+# top_k and runs MMR, so the sorting stages see more than the final k.
+# 5 is the historical budget; 40 is the engineering cap the lead set.
+RECALL_DEPTH_DEFAULT = 5        # engineering: current behaviour
+RECALL_DEPTH_MAX = 40           # engineering
+
 # point_expand (default OFF): hits first, then the neighbours of each hit
 # inside its own event segment. POINT_EXPAND_RADIUS is how far +/- the hit
 # grows (1 = one memory either side); POINT_EXPAND_TOKENS is the block budget.
