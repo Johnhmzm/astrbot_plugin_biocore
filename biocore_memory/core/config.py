@@ -131,6 +131,17 @@ EVENT_WINDOW_SECONDS = 600
 NEAR_DUP_COSINE = 0.90
 NEAR_DUP_JACCARD = 0.75
 
+# activation_rank (default OFF): one retrieval score built from quantities the
+# core already has. ACT-R base-level activation (Anderson 2004):
+#   B_i = ln(sum_k (now - t_k)^(-d))
+# d = 0.5 is the classic ACT-R decay (paper); the PPR weight and the
+# specificity weight are engineering defaults (no paper fixes them).
+ACTIVATION_DECAY = 0.5          # paper: ACT-R, Anderson 2004
+ACTIVATION_PPR_LAMBDA = 0.2     # engineering
+ACTIVATION_SPEC_MU = 0.2        # engineering
+ACTIVATION_SEEDS = 5            # engineering: seeds = current top-5
+ACTIVATION_NEIGHBOURS = 5       # engineering: nearest neighbours for rho
+
 # point_expand (default OFF): hits first, then the neighbours of each hit
 # inside its own event segment. POINT_EXPAND_RADIUS is how far +/- the hit
 # grows (1 = one memory either side); POINT_EXPAND_TOKENS is the block budget.
@@ -179,6 +190,8 @@ FLAGS = {
     "spatial_learn": True,
     # Event-expanded recall: a hit also brings its segment neighbours.
     "spatial_event_expand": False,
+    # activation_rank: B_i + semantic + PPR + specificity (default OFF).
+    "activation_rank": False,
     # Near-duplicate, newer wins (default ON; OFF marks nothing at all).
     "near_dup_time": True,
     # Date prefix on injected memories (default ON; OFF is the old text).
