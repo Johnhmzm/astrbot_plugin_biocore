@@ -1268,6 +1268,31 @@ class MemoryEngine:
                     entry["space"] = _coords
             except Exception:      # a coordinate is a shadow, never a failure
                 pass
+        # displacement: the move from the previous memory about the same
+        # explicit (subject, attribute) -- h + r ~= t for later reads.
+        if isinstance(entry.get("space"), dict) and entry.get("attribute"):
+            try:
+                from . import space
+                subject = str(entry.get("subject") or "")
+                attribute = str(entry.get("attribute") or "")
+                previous = None
+                for other in self.store.entries:
+                    if not isinstance(other, dict) or other.get("deleted"):
+                        continue
+                    if str(other.get("scope") or "default") != entry_scope:
+                        continue
+                    if (str(other.get("subject") or "") != subject
+                            or str(other.get("attribute") or "") != attribute):
+                        continue
+                    if (previous is None
+                            or _num(other.get("ts")) > _num(previous.get("ts"))):
+                        previous = other
+                if previous is not None:
+                    shift = space.displacement(previous, entry, now=stamp)
+                    if isinstance(shift, dict):
+                        entry["space"]["displacement"] = shift
+            except Exception:
+                pass
         # near_dup_time: a changed value usually arrives as a near duplicate of
         # the stored memory; the older one is marked superseded, the newer kept.
         try:
@@ -1747,6 +1772,21 @@ class MemoryEngine:
         except Exception:
             return {"ok": False, "reason": "spatial_unavailable",
                     "results": [], "ids": []}
+
+    def displacement_similar(self, entry_id, limit=5, scope=None,
+                             base_weights=None):
+        """Entries nearest the point this memory's displacement predicts."""
+        try:
+            from . import space
+            entries = [e for e in self.store.entries
+                       if isinstance(e, dict) and not e.get("deleted")
+                       and not e.get("archived")]
+            return space.displacement_similar(
+                entries, entry_id=entry_id, limit=limit, scope=scope,
+                flags=self.flags, env=os.environ, base_weights=base_weights)
+        except Exception:
+            return {"ok": False, "reason": "spatial_unavailable",
+                    "results": []}
 
     # -- recall -> affect feedback (task-218) ------------------------------
     def _memory_feedback_on(self):
