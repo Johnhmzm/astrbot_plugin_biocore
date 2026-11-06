@@ -1,28 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Consequence-aware eviction (pure; default OFF)."""
+"""Consequence-aware eviction (pure; default OFF; no word list).
+
+Text is never scanned for promise/deadline/risk words: the caller states those
+on the entry (promise / deadline / risk / consequence). Without them the score
+is importance only, which is the old behaviour.
+"""
 from __future__ import annotations
 
 from ..core.util import clamp01
 
 CONSEQUENCE_ENABLED = False
-PROMISE_WORDS = ("答应", "承诺", "保证", "约定", "说好", "一定会", "不再", "永远")
-DEADLINE_WORDS = ("明天", "后天", "截止", "ddl", "deadline", "之前", "周", "月", "日", "点")
-RISK_WORDS = ("危险", "风险", "生病", "医院", "药", "分手", "绝交", "吵架", "难过", "崩溃",
-              "secret", "密码", "隐私", "重要")
-
-
-def _matches(text, words):
-    value = str(text or "").lower()
-    return any(str(word).lower() in value for word in words)
+DISABLED_REASON = "no_lexicon"
 
 
 def _score(entry):
     e = entry if isinstance(entry, dict) else {}
-    text = " ".join(str(e.get(k) or "") for k in ("text", "title", "event", "big_summary"))
     importance = clamp01(e.get("importance"), 0.5)
-    promise = 0.30 if _matches(text, PROMISE_WORDS) or e.get("promise") else 0.0
-    deadline = 0.25 if _matches(text, DEADLINE_WORDS) or e.get("deadline") else 0.0
-    risk = 0.20 if _matches(text, RISK_WORDS) or e.get("risk") else 0.0
+    promise = 0.30 if e.get("promise") else 0.0
+    deadline = 0.25 if e.get("deadline") else 0.0
+    risk = 0.20 if e.get("risk") else 0.0
     explicit = 0.25 * clamp01(e.get("consequence"), 0.0) if "consequence" in e else 0.0
     return clamp01(0.35 * importance + promise + deadline + risk + explicit, 0.0)
 
