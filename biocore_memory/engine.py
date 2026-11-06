@@ -1435,10 +1435,15 @@ class MemoryEngine:
                 self._bump("spatial_select_kept", len(picked))
         else:
             self._last_spatial_select = None
-        rows = recall_entries(pool, query, budget=budget, vector=vector,
+        depth = self._recall_depth()
+        fetch = int(budget) if depth <= 5 else max(int(budget), depth)
+        rows = recall_entries(pool, query, budget=fetch, vector=vector,
                               embedder=self.embedder,
                               three_channel=self.three_channel,
                               now=float(self.now()), cue_scorer=cue_score)
+        self._last_recall_stage = {"pool": len(rows), "depth": depth,
+                                   "after_activation": len(rows),
+                                   "after_rerank": len(rows), "after_mmr": 0}
         if self._flag("bm25"):
             try:
                 from .recall.bm25 import score as _bm25
@@ -1535,6 +1540,12 @@ class MemoryEngine:
         self._refresh_space(rows, at, reconsolidate)
         if self._flag("activation_rank"):
             rows = self._apply_activation_rank(rows, query, at, vector)
+            if isinstance(self._last_recall_stage, dict):
+                self._last_recall_stage["after_activation"] = len(rows)
+        if isinstance(self._last_recall_stage, dict):
+            self._last_recall_stage["after_rerank"] = len(rows)
+        if depth > 5 and len(rows) > budget:
+            rows = rows[:int(budget)]
         if self._flag("spatial_event_expand") and rows:
             try:
                 from .event import segment as _segment
@@ -1546,6 +1557,17 @@ class MemoryEngine:
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
         self._flush_stats()
         return rows
+
+    def _recall_depth(self):
+        """recall_depth: 5 (default) keeps the old budget; max is 40."""
+        try:
+            from .core.config import RECALL_DEPTH_DEFAULT, RECALL_DEPTH_MAX
+            raw = self.flags.get("recall_depth")
+            value = int(float(raw)) if raw is not None else RECALL_DEPTH_DEFAULT
+        except Exception:
+            from .core.config import RECALL_DEPTH_DEFAULT, RECALL_DEPTH_MAX
+            value = RECALL_DEPTH_DEFAULT
+        return max(1, min(RECALL_DEPTH_MAX, value))
 
     def _apply_activation_rank(self, rows, query, at, vector=None):
         """ACT-R activation as the sort key (sorting only; tiers untouched)."""
