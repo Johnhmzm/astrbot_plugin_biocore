@@ -39,12 +39,7 @@ def cues(text, ref_ts=None) -> dict:
     value = str(text or "")
     ents = extract_entities(value)
     time_coarse = normalize_time(value, ref_ts)
-    event_name = ""
-    m = re.search(r"(?:去|在|到)([\u4e00-\u9fffA-Za-z0-9]{2,12})", value)
-    if m:
-        event_name = m.group(1)[:20]
-    elif ents:
-        event_name = ents[0][:20]
+    event_name = (ents[0][:20] if ents else "")
     return {"entities": ents, "place": extract_places(value),
             "time_coarse": time_coarse, "time": time_coarse,
             "event_name": event_name, "id": ""}
