@@ -1245,9 +1245,15 @@ class MemoryEngine:
         if self._flag("cue_writeback", True):
             try:
                 _cue = cue_extract(text, ref_ts=stamp)
-                entry["cues"] = {key: _cue.get(key) for key in
-                                 ("event_name", "entities", "place",
-                                  "time_coarse")}
+                _cues = {key: _cue.get(key) for key in
+                         ("event_name", "entities", "place",
+                          "time_coarse")}
+                # cues.py has no lexicon any more: with no signal, write no
+                # cue block at all instead of an empty one.
+                if any(_cues.values()):
+                    entry["cues"] = _cues
+                else:
+                    entry["cues_disabled_reason"] = "no_lexicon"
             except Exception:
                 pass
         # spatial_recall (default OFF): the engine's own write path carries the

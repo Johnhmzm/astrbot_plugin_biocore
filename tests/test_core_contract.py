@@ -40,12 +40,7 @@ DISPLAY_ONLY = {
     os.path.join("biocore_runtime", "relationship_state.py"),
     os.path.join("biocore_runtime", "standby.py"),
 }
-# Real semantic word lists that are NOT yet removed: listed so the failure is
-# visible in the report instead of hidden. Each line here must be deleted or
-# rewritten in the next pass; nothing else may be added.
-PENDING_CLEANUP = {
-    os.path.join("biocore_memory", "index", "entities.py"),
-}
+
 DOMAIN_WORDS = ("\u751f\u65e5", "\u804c\u4e1a", "\u57ce\u5e02", "\u89c1\u95fb",
                 "\u559c\u6b22", "\u8ba8\u538c", "\u4f53\u6e29", "\u4f53\u91cd",
                 "\u627f\u8bfa", "\u622a\u6b62", "\u4eca\u5929", "\u660e\u5929")
@@ -109,7 +104,7 @@ def repo_violations(root=ROOT):
     rows = []
     for path in source_files(root):
         rel = os.path.relpath(path, root)
-        if rel in EXEMPT or rel in DISPLAY_ONLY or rel in PENDING_CLEANUP:
+        if rel in EXEMPT or rel in DISPLAY_ONLY:
             continue
         for line, kind, text in violations(path):
             rows.append((rel, line, kind, text))
