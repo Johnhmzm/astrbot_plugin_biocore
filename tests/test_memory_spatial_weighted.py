@@ -96,49 +96,19 @@ class WeightTest(unittest.TestCase):
 
 
 class TemporalBoostTest(unittest.TestCase):
-    """temporal_boost is OFF by default; the cue list lives in the config."""
+    """The cue list is gone: wording never moves the axes."""
 
-    def test_boost_is_off_by_default(self):
-        self.assertFalse(sp.temporal_boost_enabled({}))
-        self.assertFalse(sp.temporal_boost_enabled({}, {"BIOCORE_TEMPORAL_BOOST": "off"}))
+    def test_no_time_cue_machinery_exists(self):
+        self.assertFalse(hasattr(sp, "has_time_cue"))
+        self.assertFalse(hasattr(sp, "temporal_cues"))
+        self.assertFalse(hasattr(sp, "cue_weights"))
+        self.assertFalse(hasattr(sp, "temporal_boost_enabled"))
+        self.assertFalse(hasattr(config, "TEMPORAL_CUES"))
 
-    def test_no_cue_detection_when_boost_is_off(self):
-        for query in ("上次说的", "之前那次", "改到几号", "几天前的"):
-            self.assertFalse(sp.has_time_cue(query), query)
-
-    def test_boost_on_uses_the_configured_list(self):
-        flags = {"temporal_boost": True}
-        for query in ("上次说的", "之前那次", "改到几号"):
-            self.assertTrue(sp.has_time_cue(query, flags), query)
-        self.assertFalse(sp.has_time_cue(PLAIN_QUERY, flags))
-        self.assertEqual(sp.temporal_cues(flags),
-                         tuple(config.TEMPORAL_CUES))
-
-    def test_cue_list_can_be_overridden_by_config(self):
-        flags = {"temporal_boost": True, "temporal_cues": ["那天"]}
-        self.assertTrue(sp.has_time_cue("那天的照片", flags))
-        self.assertFalse(sp.has_time_cue("上次说的", flags))
-        env = {"BIOCORE_TEMPORAL_CUES": json.dumps(["刚刚"])}
-        self.assertEqual(sp.temporal_cues({"temporal_boost": True}, env),
-                         ("刚刚",))
-
-    def test_boost_off_never_moves_the_weights(self):
-        base = sp.weights({})
-        self.assertEqual(sp.cue_weights(base, CUE_QUERY), base)
-        self.assertEqual(sp.cue_weights(base, PLAIN_QUERY), base)
-
-    def test_boost_on_moves_time_and_semantic(self):
-        flags = {"temporal_boost": True}
-        base = sp.weights({})
-        cued = sp.cue_weights(base, CUE_QUERY, flags)
-        self.assertAlmostEqual(cued["time"],
-                               base["time"] * config.TEMPORAL_TIME_MULT,
-                               places=6)
-        self.assertAlmostEqual(cued["semantic"],
-                               base["semantic"] * config.TEMPORAL_SEMANTIC_MULT,
-                               places=6)
-        self.assertEqual(sp.cue_weights(base, PLAIN_QUERY, flags), base)
-
+    def test_the_question_wording_never_moves_the_weights(self):
+        self.assertEqual(sp.weights({"temporal_boost": True}), sp.weights({}))
+        self.assertEqual(sp.weights({"temporal_cues": ["\u90a3\u5929"]}),
+                         sp.weights({}))
 
 class QueryTsTest(unittest.TestCase):
     """Retrieval is anchored to the question time, not to now."""
@@ -171,8 +141,8 @@ class QueryTsTest(unittest.TestCase):
                       vector=QUERY_VECTOR)
         self.assertTrue(out["ok"])
         self.assertEqual(out["mode"], "weighted")
-        self.assertFalse(out["time_cue"])
-        self.assertFalse(out["temporal_boost"])
+        self.assertNotIn("time_cue", out)
+        self.assertNotIn("temporal_boost", out)
         self.assertEqual(out["weights"], sp.weights({}))
         self.assertEqual(out["count"], 2)
         self.assertIn("lexicographic", out["results"][0])
@@ -207,7 +177,7 @@ class EqualWeightOrderingTest(unittest.TestCase):
         rows = engine([far, near]).recall(PLAIN_QUERY, budget=5, query_ts=NOW,
                                           vector=QUERY_VECTOR)
         self.assertEqual(rows[0]["entry"]["id"], "near")
-        self.assertFalse(rows[0]["space_cue"])
+        self.assertNotIn("space_cue", rows[0])
         self.assertAlmostEqual(
             rows[0]["space_weighted"],
             sp.weighted_distance(rows[0]["space_distance"], sp.weights({})),
