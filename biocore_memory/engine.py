@@ -1252,6 +1252,11 @@ class MemoryEngine:
         # same five-axis coordinates the host pipeline writes, so an entry made
         # here is rankable by spatial_select without a backfill. Gated by the
         # same switch: off writes exactly the old entry, byte for byte.
+        try:
+            from .event import segment as _segment
+            _segment.assign(entry, self.store.entries, now=stamp)
+        except Exception:      # a segment is a shadow, never a failure
+            pass
         if self._space_enabled():
             try:
                 from . import space
@@ -1494,6 +1499,12 @@ class MemoryEngine:
         # rewritten by the act of recalling it (Nader 2000) -- the coordinates
         # are re-sampled with today's relationship and affect.
         self._refresh_space(rows, at, reconsolidate)
+        if self._flag("spatial_event_expand") and rows:
+            try:
+                from .event import segment as _segment
+                rows = _segment.expand(rows, entries, limit=budget)
+            except Exception:
+                pass
         self._bump("recall_count")
         self._audit_write("recall", "", "recall",
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
