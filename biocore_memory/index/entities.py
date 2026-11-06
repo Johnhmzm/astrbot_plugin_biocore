@@ -4,12 +4,10 @@ from __future__ import annotations
 import datetime as _dt
 import re
 
-_ENTITY = re.compile(r"@[A-Za-z0-9_\-]{1,30}|[A-Za-z][A-Za-z0-9_'-]{1,30}|[\u4e00-\u9fff]{2,8}")
-_PLACE = re.compile(r"(家|公司|学校|医院|咖啡馆|餐厅|公园|车站|机场|商场|宿舍|图书馆|办公室|教室|超市)")
-_TIME = re.compile(r"(今天|昨天|前天|明天|后天|上周|下周|上个月|今年|去年|"
-                   r"\d{4}-\d{1,2}-\d{1,2}|\d{1,2}月\d{1,2}日|\d{1,2}:\d{2})")
-_STOP = {"今天", "昨天", "明天", "我们", "你们", "他们", "这个", "那个", "什么", "怎么",
-         "因为", "所以", "但是", "然后", "如果", "就是", "不是", "没有", "可以", "一个"}
+# Latin handles and @mentions only: a CJK run is not an entity without a model,
+# and the place/time/stop-word lexicons that used to sit here are gone.
+_ENTITY = re.compile(r"@[A-Za-z0-9_\-]{1,30}|[A-Za-z][A-Za-z0-9_'-]{1,30}")
+DISABLED_REASON = "no_lexicon"
 
 
 def extract_entities(text, limit=8) -> list:
