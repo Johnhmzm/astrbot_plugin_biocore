@@ -194,6 +194,7 @@ class MemoryEngine:
         self._last_space_refresh = None
         self._last_activation = None
         self._last_recall_stage = None
+        self._last_activation_update = None
         self._last_source_consistency = None
         self._last_narrative = None
         self._remember_turns = 0
@@ -1555,10 +1556,49 @@ class MemoryEngine:
                 rows = _segment.expand(rows, entries, limit=budget)
             except Exception:
                 pass
+        if self._flag("activation_update") and rows:
+            rows = self._apply_activation_update(rows, at)
         self._bump("recall_count")
         self._audit_write("recall", "", "recall",
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
         self._flush_stats()
+        return rows
+
+    def _apply_activation_update(self, rows, at):
+        """A returned hit is an access: hits / last_hit / retrieval_count."""
+        seen = set()
+        updated = 0
+        for row in rows or []:
+            item = row.get("entry") if isinstance(row, dict) else None
+            if not isinstance(item, dict):
+                continue
+            entry_id = str(item.get("id") or "")
+            if not entry_id or entry_id in seen:
+                continue
+            seen.add(entry_id)
+            current = self.store.find(entry_id)
+            if current is None:
+                continue
+            try:
+                hits = int(current.get("hits", 1) or 1) + 1
+                count = int(current.get("retrieval_count", 0) or 0) + 1
+            except Exception:
+                hits, count = 1, 1
+            fields = {"hits": hits, "last_hit": round(float(at), 3),
+                      "retrieval_count": count}
+            space_block = current.get("space")
+            if isinstance(space_block, dict):
+                block = dict(space_block)
+                block["activation"] = {"importance": current.get("importance", 0.5),
+                                       "hits": hits, "last_hit": fields["last_hit"],
+                                       "retrieval_count": count}
+                fields["space"] = block
+            if self.store.update(entry_id, **fields) is None:
+                continue
+            row["entry"] = self.store.find(entry_id) or item
+            updated += 1
+        self._last_activation_update = {"enabled": True, "updated": updated,
+                                         "last_ts": round(float(at), 3)}
         return rows
 
     def _recall_depth(self):
@@ -3004,6 +3044,9 @@ class MemoryEngine:
         """Read-only module health snapshot (no defaults/behaviour change)."""
         out = self._stats_snapshot()
         out["embedding_cache"] = self.embedding_cache()
+        out["activation_update"] = self._last_activation_update or {
+            "enabled": self._flag("activation_update", True), "updated": 0,
+            "last_ts": 0.0}
         out["recall_stage"] = self._last_recall_stage or {
             "pool": 0, "depth": self._recall_depth(),
             "after_activation": 0, "after_rerank": 0, "after_mmr": 0}
