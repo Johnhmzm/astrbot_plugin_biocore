@@ -11,11 +11,11 @@ DISABLED_REASON = "no_lexicon"
 
 
 def extract_entities(text, limit=8) -> list:
-    """Return <=limit deterministic entity strings (Chinese/Latin/@handles)."""
+    """Return <=limit entity strings (Latin handles only; no lexicon)."""
     out = []
     for m in _ENTITY.finditer(str(text or "")):
         token = m.group(0).strip()
-        if len(token) < 2 or token in _STOP or token in out:
+        if len(token) < 2 or token in out:
             continue
         out.append(token[:32])
         if len(out) >= limit:
