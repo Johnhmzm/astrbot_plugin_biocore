@@ -228,3 +228,23 @@ def apply(entries, entry, flags=None, env=None, now=None, data_dir=None):
             "marked_total": int(_num(previous.get("marked_total"), 0))
             + len(report["marked"]),
             "ts": round(_num(now, 0.0), 3)})
+    return report
+
+
+def state_of(entries, data_dir=None, flags=None, env=None):
+    """The /state.memory_versions.near_dup block."""
+    stored = load_state(data_dir)
+    pool = [entry for entry in (entries or []) if isinstance(entry, dict)]
+    marked = sum(1 for entry in pool
+                 if str(entry.get("superseded_reason") or "") == REASON)
+    last = stored.get("last_pair") if isinstance(stored.get("last_pair"), dict) else {}
+    metric = str(last.get("metric") or (stored.get("metric") or "cosine"))
+    return {"marked": marked,
+            "metric": metric,
+            "threshold": (last.get("threshold")
+                          if last.get("threshold") is not None
+                          else threshold(flags, env)),
+            "thresholds": {"cosine": threshold(flags, env)},
+            "last_pair": last,
+            "marked_total": int(_num(stored.get("marked_total"), 0)),
+            "pairs": stored.get("pairs") or []}

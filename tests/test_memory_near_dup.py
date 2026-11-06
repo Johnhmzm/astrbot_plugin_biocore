@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""near_dup_time: a changed fact arrives as a near duplicate; the newer wins.
+"""near_dup_time after the word-table removal.
 
-Similarity (cosine, lexical fallback) + topic/entity overlap + different
-numbers/dates marks the older entry superseded. It is not version resolution:
-no subject, no attribute, no keyword list.
+The judgement is the vector cosine alone: similarity >= near_dup_cosine, text
+not literally identical, and nothing else. No topic list, no number/date
+regex, no lexical fallback: without vectors the pair is reported with reason
+"no_vector" and nothing is marked.
 """
 import json
 import sys
@@ -31,223 +32,111 @@ def engine(flags=None, data_dir=None):
     return MemoryEngine(data_dir=data_dir, config=config, now=lambda: NOW)
 
 
-def remember(engine_, text, ts, tags=None, vector=None, **extra):
+def remember(engine_, text, ts, vector=None, **extra):
     event = {"text": text, "role": "user", "ts": ts}
-    if tags is not None:
-        event["tags"] = list(tags)
     if vector is not None:
         event["vector"] = list(vector)
     event.update(extra)
     return engine_.remember(event)
 
 
-class CosineRuleTest(unittest.TestCase):
-    """The four gates, checked one at a time."""
+class VectorRuleTest(unittest.TestCase):
+    """Cosine in, superseded out."""
 
-    def test_a_changed_birthday_marks_the_old_memory(self):
+    def test_a_near_duplicate_marks_the_older_memory(self):
         e = engine()
-        old = remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 60,
-                       tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        new = remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5", NOW,
-                       tags=["\u751f\u65e5"], vector=[0.99, 0.14])
+        old = remember(e, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 60, [1.0, 0.0])
+        new = remember(e, "\u4f1a\u8bae\u6539\u5230\u4e94", NOW, [0.99, 0.14])
         self.assertEqual(old["status"], "superseded")
         self.assertEqual(old["superseded_by"], new["id"])
         self.assertEqual(old["superseded_reason"], "near_dup_time")
         self.assertNotEqual(new.get("status"), "superseded")
 
-    def test_supplementary_information_keeps_both(self):
+    def test_a_below_threshold_pair_is_left_alone(self):
         e = engine()
-        remember(e, "\u5c0f\u590f\u7684\u7535\u5f71\u7968\u4e70\u597d\u4e86", NOW - 60,
-                 tags=["\u7535\u5f71"], vector=[1.0, 0.0])
-        second = remember(e, "\u5c0f\u590f\u7684\u7535\u5f71\u7968\u4e70\u597d\u4e86\uff0c\u8fd8\u52a0\u4e86\u7206\u7c73\u82b1",
-                          NOW, tags=["\u7535\u5f71"], vector=[0.98, 0.2])
-        self.assertNotEqual(second.get("status"), "superseded")
-        self.assertEqual(len([x for x in e.store.entries
-                              if x.get("status") == "superseded"]), 0)
+        old = remember(e, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 60, [1.0, 0.0])
+        new = remember(e, "\u5929\u6c14\u4e0d\u9519", NOW, [0.0, 1.0])
+        self.assertNotIn("status", old)
+        self.assertNotIn("status", new)
 
-    def test_a_different_topic_is_never_a_near_duplicate(self):
-        e = engine()
-        remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 60,
-                 tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        second = remember(e, "\u5c0f\u590f\u5de5\u4f5c\u6539\u52304\u67083\u65e5", NOW,
-                          tags=["\u5de5\u4f5c"], vector=[1.0, 0.0])
-        self.assertNotEqual(str((second).get("status") or ""), "superseded")
+    def test_identical_text_is_not_this_mechanism(self):
+        pair = nd.decide({"id": "a", "text": "\u540c\u4e00\u53e5",
+                          "vector": [1.0, 0.0], "ts": NOW},
+                         {"id": "b", "text": "\u540c\u4e00\u53e5",
+                          "vector": [1.0, 0.0], "ts": NOW})
+        self.assertEqual(pair["reason"], "identical_text")
+        self.assertEqual(pair["action"], "none")
 
-    def test_the_same_numbers_are_not_a_change(self):
+    def test_without_vectors_nothing_is_judged(self):
         e = engine()
-        remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 60,
-                 tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        second = remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5\u4e86", NOW,
-                          tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        self.assertNotEqual(str((second).get("status") or ""), "superseded")
+        remember(e, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 60)
+        second = remember(e, "\u4f1a\u8bae\u6539\u5230\u4e94", NOW)
+        self.assertNotIn("status", second)
+        pair = nd.decide({"id": "a", "text": "x", "ts": NOW},
+                         {"id": "b", "text": "y", "ts": NOW - 1})
+        self.assertEqual(pair["reason"], "no_vector")
+        self.assertEqual(pair["metric"], "none")
 
     def test_a_backdated_write_marks_the_new_entry(self):
         e = engine()
-        remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5", NOW,
-                 tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        backdated = remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 600,
-                             tags=["\u751f\u65e5"], vector=[0.99, 0.14])
+        remember(e, "\u4f1a\u8bae\u6539\u5230\u4e94", NOW, [1.0, 0.0])
+        backdated = remember(e, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 600,
+                             [0.99, 0.14])
         self.assertEqual(backdated["status"], "superseded")
         self.assertEqual(backdated["superseded_reason"], "near_dup_time")
 
     def test_the_threshold_is_configurable(self):
         strict = engine({"near_dup_cosine": 0.999})
-        remember(strict, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 60,
-                 tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        second = remember(strict, "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5", NOW,
-                          tags=["\u751f\u65e5"], vector=[0.9, 0.1])
-        self.assertNotEqual(str((second).get("status") or ""), "superseded")
+        remember(strict, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 60, [1.0, 0.0])
+        second = remember(strict, "\u4f1a\u8bae\u6539\u5230\u4e94", NOW,
+                          [0.9, 0.1])
+        self.assertNotIn("status", second)
         loose = engine({"near_dup_cosine": 0.5})
-        remember(loose, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 60,
-                 tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        marked = remember(loose, "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5", NOW,
-                          tags=["\u751f\u65e5"], vector=[0.9, 0.1])
-        self.assertNotEqual(str((marked).get("status") or ""), "superseded")
+        remember(loose, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 60, [1.0, 0.0])
+        keep = remember(loose, "\u4f1a\u8bae\u6539\u5230\u4e94", NOW, [0.9, 0.1])
+        self.assertNotIn("status", keep)
 
-
-class SwitchAndSimilarityTest(unittest.TestCase):
-    """Switch off is the old behaviour; similarity falls back to words."""
-
-    def test_switching_off_marks_nothing(self):
+    def test_the_switch_off_marks_nothing(self):
         e = engine({"near_dup_time": False})
-        remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5", NOW - 60,
-                 tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        second = remember(e, "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5", NOW,
-                          tags=["\u751f\u65e5"], vector=[1.0, 0.0])
-        self.assertNotEqual(str((second).get("status") or ""), "superseded")
-        self.assertEqual(nd.state_of(e.store.entries, None, {"near_dup_time": False})["marked"], 0)
-
-    def test_similarity_uses_words_without_vectors(self):
-        left = {"id": "a", "text": "\u5c0f\u590f\u5468\u4e94\u53bb\u533b\u9662\u590d\u67e5"}
-        same = {"id": "b", "text": "\u5c0f\u590f\u5468\u4e94\u53bb\u533b\u9662\u590d\u67e5"}
-        other = {"id": "c", "text": "\u4eca\u5929\u5929\u6c14\u4e0d\u9519"}
-        self.assertEqual(nd.similarity(left, same), 1.0)
-        self.assertLess(nd.similarity(left, other), 0.2)
-        self.assertEqual(nd.similarity({"vector": [1.0, 0.0]},
-                                       {"vector": [0.0, 1.0]}), 0.0)
-
-    def test_numbers_and_dates_are_extracted(self):
-        self.assertEqual(nd.numeric_tokens("\u751f\u65e5\u6539\u62104\u67083\u65e5"),
-                         ["4\u67083\u65e5"])
-        self.assertNotEqual(nd.numeric_tokens("\u751f\u65e5\u6539\u62104\u67083\u65e5"),
-                            nd.numeric_tokens("\u751f\u65e5\u6539\u62105\u670830\u65e5"))
-        self.assertEqual(nd.numeric_tokens("\u9884\u7ea62024-11-08\u4e0b\u5348"),
-                         ["2024-11-08"])
-
-    def test_entities_can_carry_the_overlap(self):
-        left = {"id": "a", "text": "\u5f00\u4f1a\u6539\u672c\u5468\u4e94", "entities": ["\u4f1a\u8bae\u5ba4"]}
-        right = {"id": "b", "text": "\u5f00\u4f1a\u6539\u4e0b\u5468\u4e94", "entities": ["\u4f1a\u8bae\u5ba4"]}
-        self.assertTrue(nd._entities(left) & nd._entities(right))
-
-
-class MetricTest(unittest.TestCase):
-    """One mechanism, two rulers: the bar belongs to the measure."""
-
-    def test_the_defaults_are_per_measure(self):
-        self.assertEqual(nd.threshold(metric="cosine"), 0.90)
-        self.assertEqual(nd.threshold(metric="jaccard"), 0.75)
-        self.assertEqual(nd.threshold({}), 0.90)      # historical signature
-
-    def test_each_measure_has_its_own_knob(self):
-        flags = {"near_dup_cosine": 0.95, "near_dup_jaccard": 0.6}
-        self.assertEqual(nd.threshold(flags, metric="cosine"), 0.95)
-        self.assertEqual(nd.threshold(flags, metric="jaccard"), 0.6)
-
-    def test_a_cosine_of_087_is_not_enough_any_more(self):
-        e = engine()
-        remember(e, "\u5c0f\u590f\u7684\u805a\u4f1a\u6539\u52304\u67083\u65e5", NOW - 60,
-                 tags=["\u805a\u4f1a"], vector=[1.0, 0.0])
-        second = remember(e, "\u5c0f\u590f\u7684\u805a\u4f1a\u6539\u52305\u670830\u65e5", NOW,
-                          tags=["\u805a\u4f1a"], vector=[0.87, 0.49])
-        self.assertNotEqual(second.get("status"), "superseded")
-
-    def test_the_jaccard_bar_catches_the_chinese_paraphrase(self):
-        e = engine()
-        remember(e, "\u5c0f\u590f\u7684\u805a\u4f1a\u6539\u52304\u67083\u65e5", NOW - 60,
-                 tags=["\u805a\u4f1a"])
-        second = remember(e, "\u5c0f\u590f\u7684\u805a\u4f1a\u6539\u52305\u670830\u65e5", NOW,
-                          tags=["\u805a\u4f1a"])
-        self.assertNotEqual(second.get("status"), "superseded")
-        marked = [x for x in e.store.entries if x.get("status") == "superseded"]
-        self.assertEqual(len(marked), 1)
-        self.assertEqual(marked[0]["superseded_reason"], "near_dup_time")
-
-    def test_the_decision_records_which_ruler_was_used(self):
-        with tempfile.TemporaryDirectory() as root:
-            e = engine(data_dir=root)
-            remember(e, "\u5c0f\u590f\u7684\u805a\u4f1a\u6539\u52304\u67083\u65e5", NOW - 60,
-                     tags=["\u805a\u4f1a"])
-            remember(e, "\u5c0f\u590f\u7684\u805a\u4f1a\u6539\u52305\u670830\u65e5", NOW,
-                     tags=["\u805a\u4f1a"])
-            block = nd.state_of(e.store.entries, root, {})
-            self.assertEqual(block["metric"], "jaccard")
-            self.assertEqual(block["last_pair"]["metric"], "jaccard")
-            self.assertAlmostEqual(block["last_pair"]["similarity"], 0.789474,
-                                   places=5)
+        remember(e, "\u4f1a\u8bae\u6539\u5230\u56db", NOW - 60, [1.0, 0.0])
+        second = remember(e, "\u4f1a\u8bae\u6539\u5230\u4e94", NOW, [1.0, 0.0])
+        self.assertNotIn("status", second)
 
 
 class HostTest(unittest.TestCase):
-    """The host path: marking, filtering, state and the debug action."""
+    """Host path: no vectors means no marking, and the state says so."""
 
-    def store(self, threshold=None):
-        root = tempfile.mkdtemp()
-        flags = ({"near_dup_jaccard": threshold} if threshold is not None
-                 else {})
-        if flags:
-            Path(root, "flags.json").write_text(json.dumps(flags), encoding="utf-8")
-        return root
+    def store(self):
+        return tempfile.mkdtemp()
 
-    def test_identical_text_goes_to_dedupe_not_here(self):
+    def test_a_host_write_without_vectors_is_never_marked(self):
         root = self.store()
-        first = pipeline.tool_call("remember", {"text": "\u5c0f\u590f\u5468\u4e94\u53bb\u533b\u9662\u590d\u67e5",
-                                                "ts": NOW}, root, "s1")
-        again = pipeline.tool_call("remember", {"text": "\u5c0f\u590f\u5468\u4e94\u53bb\u533b\u9662\u590d\u67e5",
-                                                "ts": NOW + 5}, root, "s1")
-        self.assertTrue(again.get("deduped"))
-        rows = json.loads((Path(root) / "sessions" / "s1" / "memory.json")
-                          .read_text(encoding="utf-8"))["entries"]
-        self.assertEqual(len(rows), 1)
-        self.assertNotEqual(str((rows[0]).get("status") or ""), "superseded")
-        self.assertEqual(rows[0]["id"], first["entry"]["id"])
+        pipeline.tool_call("remember", {"text": "\u4f1a\u8bae\u6539\u5230\u56db",
+                                        "ts": NOW - 60}, root, "s1")
+        pipeline.tool_call("remember", {"text": "\u4f1a\u8bae\u6539\u5230\u4e94",
+                                        "ts": NOW}, root, "s1")
+        rows = pipeline.load_memory(root, "s1")["entries"]
+        self.assertTrue(all(row.get("status") != "superseded" for row in rows))
 
-    def test_the_host_marks_and_filters(self):
-        root = self.store(threshold=0.3)
-        pipeline.tool_call("remember", {"text": "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5",
-                                        "ts": NOW - 60, "tags": ["\u751f\u65e5"]},
-                           root, "s1")
-        pipeline.tool_call("remember", {"text": "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5",
-                                        "ts": NOW, "tags": ["\u751f\u65e5"]},
-                           root, "s1")
-        plain = pipeline.tool_call("recall", {"query": "\u751f\u65e5", "limit": 5},
-                                   root, "s1")
-        history = pipeline.tool_call("recall", {"query": "\u751f\u65e5", "limit": 5,
-                                                "include_superseded": True},
-                                     root, "s1")
-        self.assertEqual(len(plain["results"]), 1)
-        self.assertEqual(len(history["results"]), 2)
-        statuses = {row["text"]: row.get("status") for row in history["results"]}
-        self.assertEqual(statuses["\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5"],
-                         "superseded")
-
-    def test_state_and_debug_expose_the_decision(self):
-        root = self.store(threshold=0.3)
-        pipeline.tool_call("remember", {"text": "\u5c0f\u590f\u751f\u65e5\u6539\u62104\u67083\u65e5",
-                                        "ts": NOW - 60, "tags": ["\u751f\u65e5"]},
-                           root, "s1")
-        pipeline.tool_call("remember", {"text": "\u5c0f\u590f\u751f\u65e5\u6539\u62105\u670830\u65e5",
-                                        "ts": NOW, "tags": ["\u751f\u65e5"]},
-                           root, "s1")
+    def test_state_reports_the_near_dup_block(self):
+        root = self.store()
+        pipeline.tool_call("remember", {"text": "\u4f1a\u8bae\u6539\u5230\u56db",
+                                        "ts": NOW - 60}, root, "s1")
         state = pipeline.dispatch("state", {"session_id": "s1", "store": root})
         block = state["state"]["memory_versions"]["near_dup"]
-        self.assertEqual(block["marked"], 1)
-        self.assertEqual(block["threshold"], 0.3)
-        self.assertEqual(block["metric"], "jaccard")
-        self.assertTrue(block["last_pair"])
-        debug = pipeline.dispatch("near_dup", {"store": root, "session_id": "s1"})
-        self.assertTrue(debug["ok"])
-        self.assertLessEqual(len(debug["pairs"]), 5)
-        self.assertTrue(any(pair.get("reason") == "near_dup_time"
-                            for pair in debug["pairs"]))
+        self.assertIn("marked", block)
+        self.assertIn("threshold", block)
+        self.assertEqual(block["marked"], 0)
+
+    def test_the_debug_action_exists_and_returns_pairs(self):
+        root = self.store()
+        pipeline.tool_call("remember", {"text": "\u4f1a\u8bae\u6539\u5230\u56db",
+                                        "ts": NOW - 60}, root, "s1")
+        pipeline.tool_call("remember", {"text": "\u4f1a\u8bae\u6539\u5230\u4e94",
+                                        "ts": NOW}, root, "s1")
+        out = pipeline.dispatch("near_dup", {"session_id": "s1", "store": root})
+        self.assertTrue(out["ok"])
+        self.assertIn("pairs", out)
 
 
 if __name__ == "__main__":
