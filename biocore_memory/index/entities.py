@@ -24,15 +24,8 @@ def extract_entities(text, limit=8) -> list:
 
 
 def extract_places(text, limit=4) -> list:
-    """Return <=limit place tokens from a fixed deterministic lexicon."""
-    out = []
-    for m in _PLACE.finditer(str(text or "")):
-        token = m.group(0)
-        if token not in out:
-            out.append(token)
-        if len(out) >= limit:
-            break
-    return out
+    """Places come from the caller (entry["place"]); no place lexicon here."""
+    return []
 
 
 def normalize_time(text, ref_ts=None) -> str:
