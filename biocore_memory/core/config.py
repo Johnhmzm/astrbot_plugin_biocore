@@ -199,6 +199,8 @@ FLAGS = {
     "spatial_event_expand": False,
     # activation_rank: B_i + semantic + PPR + specificity (default OFF).
     "activation_rank": False,
+    # activation_update: a returned hit bumps hits / last_hit (default ON).
+    "activation_update": True,
     # Near-duplicate, newer wins (default ON; OFF marks nothing at all).
     "near_dup_time": True,
     # Date prefix on injected memories (default ON; OFF is the old text).
