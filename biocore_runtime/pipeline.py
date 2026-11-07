@@ -2189,8 +2189,6 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                                  "text": item.get("text") or ""})
                 except Exception:
                     continue
-    import sys as _sys
-    print("DBG provider=", provider is not None, "embed_fn=", embed_fn is not None, "events=", len(events), "live=", len(live), file=_sys.stderr)
     selected = _E.event_recall(
         query, events, budget_tokens=8000, flags={_E.FLAG_KEY: True},
         embed=embed_fn, entry=("two_stage" if embed_fn is not None else "summary"),
