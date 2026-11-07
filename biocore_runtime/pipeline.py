@@ -594,6 +594,7 @@ def capture(session_id, role, text, store, config=None):
         "enabled": cfg.get("enabled", state.get("enabled", True)),
     })
     decision = capture_decision(session_id, role, text, state)
+    summarizer = cfg.get("event_summarizer")
     entry = None
     if decision["capture"]:
         result = tool_call("remember", {
@@ -611,6 +612,9 @@ def capture(session_id, role, text, store, config=None):
                 "recent": recent[-50:],
                 "updated_ts": now,
             })
+    if summarizer is not None and _store_root(store) is not None:
+        # same incremental path as injection; new entries only
+        _event_layer_block(session_id, store, "", 0, summarizer=summarizer)
     return {"ok": True, "decision": decision, "entry": entry}
 
 
@@ -1954,9 +1958,320 @@ def _render_cover(entries, header, use_date, stats):
         return {"text": "", "chars": 0, "ids": [], "cover": stats}
     return {"text": text, "chars": len(text), "ids": ids, "cover": stats}
 
+
+EVENT_STATE_DIRNAME = "events"
+
+
+def _event_layer_on(store, payload=None):
+    """event_layer: payload flag > switches/config > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get("event_layer"), bool):
+        return bool(data["event_layer"])
+    try:
+        switches = _effective_switches(store, None)
+    except Exception:
+        switches = {}
+    return bool(switches.get("event_layer"))
+
+
+def _event_state_path(store, session_id):
+    data_dir = _store_data_dir(store) if store else None
+    if not data_dir:
+        return None
+    return Path(data_dir) / EVENT_STATE_DIRNAME / (sanitize_session_id(session_id) + ".json")
+
+
+def _load_event_state(store, session_id):
+    path = _event_state_path(store, session_id)
+    blank = {"seen": 0, "events": [], "state": {}}
+    if path is None or not path.exists():
+        return blank
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return blank
+    out = dict(blank)
+    out["seen"] = int(data.get("seen") or 0)
+    out["events"] = data.get("events") if isinstance(data.get("events"), list) else []
+    out["state"] = data.get("state") if isinstance(data.get("state"), dict) else {}
+    return out
+
+
+def _save_event_state(store, session_id, state):
+    path = _event_state_path(store, session_id)
+    if path is None:
+        return False
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, state)
+        return True
+    except Exception:
+        return False
+
+
+def _entry_vector(store, entry, config=None):
+    vector = entry.get("vector")
+    if isinstance(vector, (list, tuple)) and vector:
+        return list(vector)
+    text = str(entry.get("text") or "").strip()
+    if not text:
+        return None
+    try:
+        from biocore_memory.recall.embedding import embed as _embed_fn
+        from biocore_memory.recall.embedding import load_provider as _load_prov
+        _payload_cfg = {}
+        try:
+            _pl = payload if isinstance(payload, dict) else {}
+            if _pl.get("embedding_base_url"):
+                _payload_cfg = {
+                    "embedding_mode": _pl.get("embedding_mode") or "remote",
+                    "embedding_base_url": _pl.get("embedding_base_url"),
+                    "embedding_model": _pl.get("embedding_model"),
+                    "embedding_dim": int(_pl.get("embedding_dim") or 1024),
+                    "embedding_api_key": _pl.get("embedding_api_key") or "",
+                    "embedding_timeout": 30,
+                }
+        except Exception:
+            _payload_cfg = {}
+        provider = _load_prov(_payload_cfg) if _payload_cfg else _load_prov(dict(config or {}))
+        if provider is None:
+            provider = _load_prov({})      # env-configured provider (host default)
+        if provider is None:
+            return None
+        return _embed_fn(text, provider, path=_embed_cache_path(store))
+    except Exception:
+        return None
+
+
+def _event_layer_close(events, buf, summarizer, global_state):
+    """Close one open event: one model call for state + overview."""
+    from biocore_memory.event import events as _E
+    from biocore_memory.event import rolling as _R
+    body = "\n".join("%s：%s" % (row.get("role") or "user", row.get("text") or "")
+                      for row in buf)
+    ev = {"start": int(buf[0].get("turn") or 0), "end": int(buf[-1].get("turn") or 0),
+          "members": [int(row.get("turn") or 0) for row in buf],
+          "entries": [{"turn": int(row.get("turn") or 0), "ts": float(row.get("ts") or 0.0),
+                       "role": row.get("role") or "user", "text": str(row.get("text") or ""),
+                       "vector": row.get("vector")} for row in buf],
+          "text": body, "tokens": _E._tokens(body),
+          "vector": _mean_vector([row.get("vector") for row in buf]),
+          "event_id": "EV%03d" % (len(events) + 1)}
+    overview = ""
+    if summarizer is not None:
+        # a failing summarizer must surface, so inject_block can fall back
+        prompt = _R.rolling_prompt(global_state, ev)
+        data = json.loads(summarizer(prompt) or "{}")
+        if isinstance(data.get("state"), dict) and data["state"]:
+            global_state.clear()
+            global_state.update(_R.normalize_state(data["state"]))
+        overview = str(data.get("overview") or "").strip()
+    if not overview:
+        overview = str(ev["text"]).replace("\n", " ")[:30]
+    ev["overview"] = overview
+    events.append(ev)
+
+
+def _mean_vector(vectors):
+    rows = [list(v) for v in (vectors or []) if isinstance(v, (list, tuple)) and v]
+    if not rows:
+        return []
+    dim = len(rows[0])
+    return [sum(row[i] for row in rows if len(row) == dim) / len(rows) for i in range(dim)]
+
+
+def _event_layer_block(session_id, store, query, budget, rerank_config=None,
+                       payload=None, summarizer=None, as_of=None):
+    """Incremental event maintenance + two-stage recall, rendered for injection."""
+    from biocore_memory.event import events as _E
+    if not _E.enabled({_E.FLAG_KEY: True}):
+        return None
+    if summarizer is None:
+        # no silent "no notes" degradation: the host must pass its LLM
+        raise RuntimeError("event_layer is on but event_summarizer is missing")
+    # the store keeps writes in memory (debounced); prefer it over the file
+    try:
+        live_entries = list(store.entries)
+    except Exception:
+        live_entries = []
+    if not live_entries:
+        live_entries = load_memory(store, session_id).get("entries") or []
+    entries = [row for row in _visible(live_entries)
+               if isinstance(row, dict) and str(row.get("text") or "").strip()]
+    if not entries:
+        stored0 = _load_event_state(store, session_id)
+        for ev0 in stored0.get("events") or []:
+            for item0 in ev0.get("entries") or []:
+                if isinstance(item0, dict) and str(item0.get("text") or "").strip():
+                    entries.append(item0)
+    stored = _load_event_state(store, session_id)
+    seen = min(int(stored.get("seen") or 0), len(entries))
+    events = list(stored.get("events") or [])
+    global_state = dict(stored.get("state") or {})
+    config = {}
+    try:
+        config = _load_runtime_config(store) if store else {}
+    except Exception:
+        config = {}
+    for row in events:
+        for item in row.get("entries") or []:
+            if not item.get("vector"):
+                item["vector"] = None
+    buf = []
+    new_rows = entries[seen:]
+    for offset, row in enumerate(new_rows):
+        vec = _entry_vector(store, row, config)
+        # memory entries carry ts, not turn: fall back to their position
+        turn = int(row.get("turn") or (seen + offset + 1))
+        item = {"turn": turn, "ts": float(row.get("ts") or 0.0),
+                "role": row.get("role") or "user", "text": str(row.get("text") or ""),
+                "vector": vec}
+        if buf:
+            gap = float(item["ts"]) - float(buf[-1]["ts"])
+            sim = _E._cos(_mean_vector([b.get("vector") for b in buf]), vec) if vec else 1.0
+            if sim < 0.45 or gap > 86400.0:
+                _event_layer_close(events, buf, summarizer, global_state)
+                buf = []
+        buf.append(item)
+    if buf:
+        _event_layer_close(events, buf, summarizer, global_state)
+    if new_rows or seen != len(entries):
+        _save_event_state(store, session_id,
+                          {"seen": len(entries), "events": events, "state": global_state})
+    if as_of is not None:
+        try:
+            limit = float(as_of)
+        except Exception:
+            limit = None
+        if limit is not None:
+            events = [ev for ev in events if float(ev.get("start") or 0) <= limit]
+    if not events or not str(query or "").strip():
+        return None
+    live = []
+    for ev in events:
+        for item in ev.get("entries") or []:
+            if item.get("vector"):
+                live.append({"turn": item["turn"], "vector": item["vector"],
+                             "text": item.get("text") or ""})
+    if not live:
+        return None
+    provider = None
+    embed_fn = None
+    try:
+        from biocore_memory.recall.embedding import embed as _embed_fn
+        from biocore_memory.recall.embedding import load_provider as _load_prov
+        provider = _load_prov(dict(config or {}))
+        if provider is None:
+            provider = _load_prov({})          # env-configured provider
+        if provider is not None:
+            embed_fn = lambda text: _embed_fn(str(text), provider, path=_embed_cache_path(store))
+    except Exception:
+        provider, embed_fn = None, None
+    if not live and embed_fn is not None:
+        for ev in events:
+            for item in ev.get("entries") or []:
+                if item.get("vector"):
+                    continue
+                try:
+                    item["vector"] = embed_fn(str(item.get("text") or ""))
+                    live.append({"turn": item.get("turn"), "vector": item["vector"],
+                                 "text": item.get("text") or ""})
+                except Exception:
+                    continue
+    import sys as _sys
+    print("DBG provider=", provider is not None, "embed_fn=", embed_fn is not None, "events=", len(events), "live=", len(live), file=_sys.stderr)
+    selected = _E.event_recall(
+        query, events, budget_tokens=8000, flags={_E.FLAG_KEY: True},
+        embed=embed_fn, entry=("two_stage" if embed_fn is not None else "summary"),
+        entries=live, coarse_events=30, fine_pool=100, fine_keep=30)
+    lines = []
+    try:
+        from biocore_memory.event.timerender import normalize_relative_time as _nrt
+    except Exception:
+        _nrt = None
+    try:
+        from datetime import datetime as _dt
+    except Exception:
+        _dt = None
+    def _day(ts):
+        try:
+            return _dt.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return "无时间"
+    seed_vec = None
+    if embed_fn is not None:
+        try:
+            seed_vec = embed_fn(query)
+        except Exception:
+            seed_vec = None
+    def _cos2(a, b):
+        try:
+            import math as _m
+            dot = sum(x * y for x, y in zip(a, b)); na = _m.sqrt(sum(x * x for x in a)); nb = _m.sqrt(sum(x * x for x in b))
+            return dot / (na * nb) if na and nb else 0.0
+        except Exception:
+            return 0.0
+    by_turn2 = {}
+    # memory rows carry neither turn nor ts; the event entries carry both
+    for _ev_row in events:
+        for _item in _ev_row.get("entries") or []:
+            try:
+                by_turn2.setdefault(int(_item.get("turn") or 0), []).append(_item)
+            except Exception:
+                continue
+    _ordered = list(selected)
+    if os.environ.get("BIOCORE_DEBUG_EV"):
+        print("DBG-EV selected=%d ordered=%d entries=%d bt2_keys=%s row_keys=%s"
+              % (len(selected), len(_ordered), len(entries), sorted(by_turn2)[:12],
+                 sorted(entries[0].keys()) if entries else []), file=sys.stderr)
+    if as_of is not None:
+        try:
+            _recent = [ev for ev in events
+                       if int(ev.get("end") or 0) <= int(as_of)
+                       and int(ev.get("end") or 0) > int(as_of) - 10]
+            _recent.sort(key=lambda ev: int(ev.get("end") or 0), reverse=True)
+            _have = {str(ev.get("event_id") or "") for ev in _ordered}
+            for ev in _recent[:3]:
+                if str(ev.get("event_id") or "") not in _have:
+                    _ordered.append(ev)
+                    _have.add(str(ev.get("event_id") or ""))
+        except Exception:
+            pass
+    for ev in _ordered:
+        start, end = int(ev.get("start") or 0), int(ev.get("end") or 0)
+        rows = []
+        for turn in range(start, end + 1):
+            rows.extend(by_turn2.get(turn) or [])
+        if not rows:
+            continue
+        if seed_vec is not None:
+            rows = sorted(rows, key=lambda r: _cos2(seed_vec, r.get("vector") or []), reverse=True)[:5]
+        rows.sort(key=lambda r: float(r.get("ts") or 0.0))
+        if os.environ.get("BIOCORE_DEBUG_EV"):
+            print("DBG-EV ev=%d-%d rows=%d" % (start, end, len(rows)), file=sys.stderr)
+        lines.append("【事件｜第%d-%d轮】%s" % (start, end, str(ev.get("overview") or ev.get("summary") or "")[:60]))
+        for row in rows:
+            body = str(row.get("text") or "")
+            if _nrt is not None:
+                try:
+                    body = _nrt(body, float(row.get("ts") or 0.0))
+                except Exception:
+                    pass
+            who = "用户" if str(row.get("role")) == "user" else "助手"
+            lines.append("- [%s %s] %s" % (_day(row.get("ts")), who, body))
+    if not lines:
+        return None
+    lines = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"] + lines
+    text = "你记得这些事：\n" + "\n".join(lines)
+    if budget and len(text) > budget:
+        text = text[:max(0, budget - 1)]
+    return {"text": text, "chars": len(text),
+            "ids": [str(ev.get("event_id") or "") for ev in selected]}
+
+
 def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                  query="", mode="query", rerank_config=None, now=None,
-                 include_superseded=False, payload=None):
+                 include_superseded=False, payload=None, as_of=None):
     """Top-k session memories as one bounded Chinese prompt block.
 
     mode="query"  recall this turn's words (engine.recall + env embedder,
@@ -1968,6 +2283,17 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
+    if _event_layer_on(store, payload):
+        # no fallback here: a broken event layer must fail loudly
+        event_block = _event_layer_block(
+            session_id, store, text_query, budget, rerank_config=rerank_config,
+            payload=payload,
+            summarizer=(payload.get("event_summarizer")
+                        if isinstance(payload, dict) else None),
+            as_of=as_of)
+        if not event_block or not event_block.get("text"):
+            raise RuntimeError("event_layer returned an empty block")
+        return event_block
     if _segment_recall_on(store, payload) and _segments is not None:
         segmented = _inject_segments(
             session_id, store, text_query, limit, budget,
