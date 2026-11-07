@@ -2004,12 +2004,23 @@ def _load_event_state(store, session_id):
 
 
 def _save_event_state(store, session_id, state):
+    """Structured state goes to sqlite; the json file stays as a readable mirror."""
+    payload = dict(state or {})
+    root = _store_root(store)
+    if root is not None:
+        try:
+            from biocore_memory.store import sql_store as _S
+            _S.save_event_state(root, session_id, payload.get("seen") or 0,
+                                payload.get("events") or [], payload.get("state") or {},
+                                payload.get("open") or [])
+        except Exception:
+            pass
     path = _event_state_path(store, session_id)
     if path is None:
         return False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        _atomic_write(path, state)
+        _atomic_write(path, payload)
         return True
     except Exception:
         return False
@@ -2084,7 +2095,56 @@ def _event_layer_notes(ev, buf, summarizer, global_state, chunk_tokens=400):
     return notes
 
 
-def _event_layer_close(events, buf, summarizer, global_state):
+
+
+JOURNAL_KINDS = ("capture", "event_close", "claim_merge", "inject",
+                 "trim", "audit_warning")
+JOURNAL_MAX_LINES = 2000
+
+
+def _journal(store, session_id, kind, **fields):
+    """Append one line to <store>/journal/<session>.jsonl; never raise."""
+    try:
+        root = _store_root(store)
+        if root is None:
+            return None
+        folder = Path(root) / "journal"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / (sanitize_session_id(session_id) + ".jsonl")
+        row = {"ts": round(time.time(), 3), "kind": str(kind)}
+        for key, value in fields.items():
+            if isinstance(value, (list, dict)):
+                row[key] = value
+            elif isinstance(value, (int, float, bool)) or value is None:
+                row[key] = value
+            else:
+                row[key] = str(value)[:200]
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+        try:
+            from biocore_memory.store import sql_store as _S
+            conn = _S.connect(root, session_id)
+            conn.execute("INSERT INTO journal (ts, kind, payload) VALUES (?,?,?)",
+                         (row["ts"], row["kind"], json.dumps(row, ensure_ascii=False)))
+            conn.commit()
+            conn.close()
+        except Exception:
+            pass
+        try:
+            if path.stat().st_size > 400_000:
+                lines = path.read_text(encoding="utf-8").splitlines()
+                path.write_text("\n".join(lines[-JOURNAL_MAX_LINES:]) + "\n",
+                                encoding="utf-8")
+        except Exception:
+            pass
+        return row
+    except Exception:
+        if os.environ.get("BIOCORE_JOURNAL_DEBUG"):
+            print("journal_failed kind=%s" % kind, flush=True)
+        return None
+
+def _event_layer_close(events, buf, summarizer, global_state, store=None,
+                       session_id=""):
     """Close one open event: one model call for state + overview."""
     from biocore_memory.event import events as _E
     from biocore_memory.event import rolling as _R
@@ -2113,6 +2173,16 @@ def _event_layer_close(events, buf, summarizer, global_state):
         overview = str(ev["text"]).replace("\n", " ")[:30]
     ev["overview"] = overview
     events.append(ev)
+    try:
+        _journal(store, session_id, "event_close", event=ev.get("event_id"),
+                 start=ev.get("start"), end=ev.get("end"),
+                 claims=len(ev.get("claims") or []),
+                 threads=len({c.get("thread") for c in (ev.get("claims") or [])
+                              if c.get("thread")}),
+                 overview=ev.get("overview"))
+    except Exception:
+        pass
+
 
 
 def _fold_event(dst, src):
@@ -2148,7 +2218,7 @@ def _merge_small_events(events, min_turns=2):
 
 
 def _event_layer_close_adaptive(events, buf, summarizer, global_state, embed_fn=None,
-                                 depth=0):
+                                 depth=0, store=None, session_id=""):
     """Close one buffer; bisect the span while its note does not cover the turns.
 
     The trial close is a real close (state included): when the note does not
@@ -2157,9 +2227,11 @@ def _event_layer_close_adaptive(events, buf, summarizer, global_state, embed_fn=
     """
     from biocore_memory.event import segment_adaptive as _SA
     if (embed_fn is None or depth >= 6 or len(buf) < 2 * _SA.MIN_TURNS):
-        _event_layer_close(events, buf, summarizer, global_state)
+        _event_layer_close(events, buf, summarizer, global_state,
+                           store=store, session_id=session_id)
         return
-    _event_layer_close(events, buf, summarizer, global_state)
+    _event_layer_close(events, buf, summarizer, global_state,
+                       store=store, session_id=session_id)
     ev = events[-1]
     try:
         note_vec = embed_fn(str(ev.get("overview") or ev.get("text") or ""))
@@ -2210,6 +2282,47 @@ def _event_embed_fn(store, config, payload):
         return lambda text: _embed(str(text), provider, path=_embed_cache_path(store))
     except Exception:
         return None
+
+
+
+def _rerank_fn_from(payload, config=None):
+    """(question, docs) -> scores, from payload > config > env; None when unset."""
+    import os as _os
+    src = payload if isinstance(payload, dict) else {}
+    base = src.get("rerank_base_url")
+    model = src.get("rerank_model")
+    key = src.get("rerank_api_key")
+    if not (base and model):
+        cfg = config if isinstance(config, dict) else {}
+        base = base or cfg.get("rerank_base_url") or _os.environ.get("BIOCORE_RERANK_BASE_URL") or _os.environ.get("BCMB_RERANK_BASE_URL")
+        model = model or cfg.get("rerank_model") or _os.environ.get("BIOCORE_RERANK_MODEL") or _os.environ.get("BCMB_RERANK_MODEL")
+        key = key or cfg.get("rerank_api_key") or _os.environ.get("BIOCORE_RERANK_KEY") or ""
+    if not (base and model):
+        return None
+    endpoint = str(base).rstrip("/") + "/rerank"
+
+    def _rerank(question, docs, text="sentence"):
+        import urllib.request as _rq
+        texts = [str(d.get("text") or d.get("overview") or "") if isinstance(d, dict) else str(d)
+                 for d in (docs or [])]
+        body = {"model": model, "query": str(question), "documents": texts}
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = "Bearer " + key
+        req = _rq.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers)
+        data = json.loads(_rq.urlopen(req, timeout=30).read().decode("utf-8"))
+        rows = data.get("results") or data.get("data") or []
+        scores = [0.0] * len(texts)
+        for row in rows:
+            try:
+                scores[int(row.get("index") or 0)] = float(
+                    row.get("relevance_score") if row.get("relevance_score") is not None
+                    else row.get("score") or 0.0)
+            except Exception:
+                continue
+        return scores
+
+    return _rerank
 
 
 def _event_layer_block(session_id, store, query, budget, rerank_config=None,
@@ -2281,7 +2394,8 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
     tail_closed = False
     if buf and (not new_rows or str(query or "").strip()):
         # a recall call finalises the open event; a capture call keeps it open
-        _event_layer_close_adaptive(events, buf, summarizer, global_state, _entry_embedder)
+        _event_layer_close_adaptive(events, buf, summarizer, global_state,
+                                    _entry_embedder, store=store, session_id=session_id)
         buf = []
         tail_closed = True
     if len(events) > 1:
@@ -2334,10 +2448,12 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         _save_event_state(store, session_id,
                           {"seen": int(stored.get("seen") or 0), "events": events,
                            "state": global_state})
+    rerank_fn = _rerank_fn_from(payload if isinstance(payload, dict) else {}, config)
     selected = _E.event_recall(
         query, events, budget_tokens=8000, flags={_E.FLAG_KEY: True},
         embed=embed_fn, entry=("two_stage" if embed_fn is not None else "summary"),
-        entries=live, coarse_events=30, fine_pool=100, fine_keep=30)
+        entries=live, coarse_events=30, fine_pool=100, fine_keep=30,
+        rerank=rerank_fn, rerank_text="sentence")
     lines = []
     try:
         from biocore_memory.event.timerender import normalize_relative_time as _nrt
@@ -2398,8 +2514,23 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             rows.extend(by_turn2.get(turn) or [])
         if not rows:
             continue
+        _cap = 5
+        try:
+            from biocore_memory.event import claims as _CL
+            _cap, _dens = _CL.budget_hint(ev)
+        except Exception:
+            _cap = 5
         if seed_vec is not None:
-            rows = sorted(rows, key=lambda r: _cos2(seed_vec, r.get("vector") or []), reverse=True)[:5]
+            ranked_rows = sorted(rows, key=lambda r: _cos2(seed_vec, r.get("vector") or []),
+                                 reverse=True)
+        else:
+            ranked_rows = list(rows)
+        # the note may carry a low-density event, but never at the price of the one
+        # turn that actually matches: the best row is rendered whatever the cap says
+        rows = ranked_rows[:_cap] if _cap > 0 else []
+        for row in ranked_rows[:1]:
+            if all(row is not kept for kept in rows):
+                rows.append(row)
         rows.sort(key=lambda r: float(r.get("ts") or 0.0))
         if os.environ.get("BIOCORE_DEBUG_EV"):
             print("DBG-EV ev=%d-%d rows=%d" % (start, end, len(rows)), file=sys.stderr)
@@ -2427,9 +2558,27 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             state_lines = _claims.render_claims(_claims.merge_claims(_raw), limit=8)
     except Exception:
         state_lines = []
+    _private = []
+    try:
+        from biocore_memory.event import claims as _CL2
+        _praw = []
+        for _ev in _ordered:
+            for _it in _ev.get("claims") or []:
+                if isinstance(_it, dict):
+                    _praw.append(_it)
+        if _praw:
+            _private = _CL2.private_lines(_CL2.merge_claims(_praw))
+    except Exception:
+        _private = []
     head = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"]
-    lines = head + state_lines + lines
+    lines = head + _private + state_lines + lines
     text = "你记得这些事：\n" + "\n".join(lines)
+    try:
+        _journal(store, session_id, "inject", query=str(query)[:60],
+                 events=len(_ordered), lines=len(lines),
+                 state_lines=len(state_lines), chars=len(text))
+    except Exception:
+        pass
     if budget and len(text) > budget:
         text = text[:max(0, budget - 1)]
     return {"text": text, "chars": len(text),
