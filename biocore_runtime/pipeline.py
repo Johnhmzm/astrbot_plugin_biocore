@@ -67,7 +67,8 @@ _PLUGIN_ROOT = str(Path(__file__).resolve().parents[1])
 if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
 
-MAX_CHARS = 420           # [engineering]
+MAX_CHARS = 420           # [engineering] default budget when the caller says nothing
+INJECT_MAX_CHARS = 12000  # [engineering] ceiling for an explicit caller request
 TOP_K = 5                 # [engineering]
 INJECT_MAX_K = 10          # inject_block may ask for more when rerank prunes
 INJECT_MODES = ("query", "recent")
@@ -2289,7 +2290,7 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     mode="recent" keep the pin+ts ordering.
     """
     session_id = sanitize_session_id(session_id)
-    budget = _int_param(max_chars, MAX_CHARS, 0, MAX_CHARS)
+    budget = _int_param(max_chars, MAX_CHARS, 0, max(MAX_CHARS, INJECT_MAX_CHARS))
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
