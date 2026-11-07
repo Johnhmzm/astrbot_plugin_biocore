@@ -2009,7 +2009,7 @@ def _save_event_state(store, session_id, state):
         return False
 
 
-def _entry_vector(store, entry, config=None):
+def _entry_vector(store, entry, config=None, payload=None):
     vector = entry.get("vector")
     if isinstance(vector, (list, tuple)) and vector:
         return list(vector)
@@ -2120,7 +2120,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
     buf = []
     new_rows = entries[seen:]
     for offset, row in enumerate(new_rows):
-        vec = _entry_vector(store, row, config)
+        vec = _entry_vector(store, row, config, payload)
         # memory entries carry ts, not turn: fall back to their position
         turn = int(row.get("turn") or (seen + offset + 1))
         item = {"turn": turn, "ts": float(row.get("ts") or 0.0),
@@ -2157,10 +2157,20 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         return None
     provider = None
     embed_fn = None
+    pl_cfg = {}
+    _pl = payload if isinstance(payload, dict) else {}
+    if _pl.get("embedding_base_url"):
+        # the caller's payload wins over config.json for this embedding call
+        pl_cfg = {"embedding_mode": _pl.get("embedding_mode") or "remote",
+                  "embedding_base_url": _pl.get("embedding_base_url"),
+                  "embedding_model": _pl.get("embedding_model") or "",
+                  "embedding_dim": int(_pl.get("embedding_dim") or 1024),
+                  "embedding_api_key": _pl.get("embedding_api_key") or "",
+                  "embedding_timeout": 30}
     try:
         from biocore_memory.recall.embedding import embed as _embed_fn
         from biocore_memory.recall.embedding import load_provider as _load_prov
-        provider = _load_prov(dict(config or {}))
+        provider = _load_prov(pl_cfg) if pl_cfg else _load_prov(dict(config or {}))
         if provider is None:
             provider = _load_prov({})          # env-configured provider
         if provider is not None:
