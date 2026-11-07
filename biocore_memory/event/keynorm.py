@@ -102,10 +102,13 @@ def extract_prompt(events, known_keys=None, batch=None):
     """One extraction prompt: the records plus the keys already in hand."""
     rows = [e for e in (events or []) if isinstance(e, dict)]
     names = [str(k) for k in (known_keys or []) if k]
+    field_rule = ('主体写人或物的名字；属性写被问的那一项的列名，用简短稳定的名词，'
+                  '不要把属性写进主体。')
     if names:
         key_block = '\n'.join(names[:KNOWN_KEYS_LIMIT])
         key_rule = ('能从上面选到，就照抄已有的键，主体、属性一个字都不要改；'
-                    '确实没有能对上的键，才新建。')
+                    '确实没有能对上的键，才新建。复用只限同一个属性：'
+                    '值跟那个键不是同一类东西时，另起新键，不要硬套。')
     else:
         key_block = '（暂无已有键，本次全部新建）'
         key_rule = '这一批还没有已有键，按原文说法新建。'
@@ -114,12 +117,13 @@ def extract_prompt(events, known_keys=None, batch=None):
         blocks.append('【%d-%d】\n%s' % (int(ev.get('start') or 0), int(ev.get('end') or 0),
                                       str(ev.get('text') or '').strip()))
     return ('下面有 %d 段记录，每段以“【起止轮号】”开头。'
-            '请从每段里抽取可以长期记住的事实：主体、属性、值。\n'
+            '请从每段里抽取可以长期记住的事实：主体、属性、值。'
+            '%s\n'
             '【已有键｜优先复用】\n%s\n'
             '规则：%s\n'
             '只输出 JSON 数组，元素形如 {"start": 起轮, "end": 止轮, "facts": '
             '[{"subject": "...", "attr": "...", "value": "..."}]}，不要解释。\n\n%s'
-            % (len(rows), key_block, key_rule, '\n\n'.join(blocks)))
+            % (len(rows), field_rule, key_block, key_rule, '\n\n'.join(blocks)))
 
 
 def advanced_keys(known_keys, facts):
