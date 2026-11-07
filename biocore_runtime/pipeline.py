@@ -69,6 +69,9 @@ if _PLUGIN_ROOT not in sys.path:
 
 MAX_CHARS = 420           # [engineering] default budget when the caller says nothing
 INJECT_MAX_CHARS = 12000  # [engineering] ceiling for an explicit caller request
+EVENT_SIM_CLOSE = 0.30    # [engineering] below this similarity a turn starts a new event
+EVENT_MAX_TURNS = 8       # [engineering] 0 = no hard cap; else close the event at N turns
+EVENT_GAP_S = 86400.0     # [engineering] a day of silence also splits an event
 TOP_K = 5                 # [engineering]
 INJECT_MAX_K = 10          # inject_block may ask for more when rerank prunes
 INJECT_MODES = ("query", "recent")
@@ -2130,7 +2133,8 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         if buf:
             gap = float(item["ts"]) - float(buf[-1]["ts"])
             sim = _E._cos(_mean_vector([b.get("vector") for b in buf]), vec) if vec else 1.0
-            if sim < 0.45 or gap > 86400.0:
+            if (sim < EVENT_SIM_CLOSE or gap > EVENT_GAP_S
+                    or (EVENT_MAX_TURNS and len(buf) >= EVENT_MAX_TURNS)):
                 _event_layer_close(events, buf, summarizer, global_state)
                 buf = []
         buf.append(item)
