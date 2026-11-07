@@ -69,12 +69,17 @@ if _PLUGIN_ROOT not in sys.path:
 
 MAX_CHARS = 420           # [engineering] default budget when the caller says nothing
 INJECT_MAX_CHARS = 12000  # [engineering] ceiling for an explicit caller request
-EVENT_CAP_MODE = os.environ.get("BIOCORE_EVENT_CAP_MODE") or "hint"
+EVENT_CAP_MODE = os.environ.get("BIOCORE_EVENT_CAP_MODE") or "flat"
 # [engineering] how many turns an event may render:
-#   hint = the claim-density hint decides (current default)
-#   flat = always 5, no event is ever skipped
+#   flat = always 5, no event is ever skipped (default)
+#   hint = the claim-density hint decides (off by default: P01 measured 78/88
+#          with the hint vs 79/88 flat, a difference inside the noise band, and
+#          the guard row below already keeps the best-matching turn)
 #   min3 = at least 3, so a dense-note event still shows its best turn
 EVENT_CAP_STATS = {"events": 0, "skipped": 0, "rows": 0}
+SENT_POOL = int(os.environ.get("BIOCORE_SENT_POOL") or 0)
+# [engineering] 0 = every row of the event competes for the cap; N = only the
+# N best rows by cosine do, so a long noisy event cannot flood the block
 EVENT_SIM_CLOSE = 0.30    # [engineering] below this similarity a turn starts a new event
 EVENT_MAX_TURNS = 8       # [engineering] 0 = no hard cap; else close the event at N turns
 EVENT_GAP_S = 86400.0     # [engineering] a day of silence also splits an event
@@ -2559,6 +2564,10 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                                  reverse=True)
         else:
             ranked_rows = list(rows)
+        if SENT_POOL > 0:
+            # only the best N rows compete: a long noisy event cannot flood the block
+            ranked_rows = sorted(ranked_rows,
+                                 key=lambda r: float(r.get("ts") or 0.0))[:0] + ranked_rows[:SENT_POOL]
         # the note may carry a low-density event, but never at the price of the one
         # turn that actually matches: the best row is rendered whatever the cap says
         rows = ranked_rows[:_cap] if _cap > 0 else []
