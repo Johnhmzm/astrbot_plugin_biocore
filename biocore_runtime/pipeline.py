@@ -2047,6 +2047,41 @@ def _entry_vector(store, entry, config=None, payload=None):
         return None
 
 
+def _event_layer_notes(ev, buf, summarizer, global_state, chunk_tokens=400):
+    """One note per chunk of a long span; the event boundary itself does not move."""
+    from biocore_memory.event import events as _E
+    from biocore_memory.event import rolling as _R
+    chunks, cur, used = [], [], 0
+    for row in buf:
+        size = _E._tokens(str(row.get("text") or ""))
+        if cur and used + size > chunk_tokens:
+            chunks.append(cur)
+            cur, used = [], 0
+        cur.append(row)
+        used += size
+    if cur:
+        chunks.append(cur)
+    notes = []
+    for index, part in enumerate(chunks):
+        body = "\n".join("%s：%s" % (row.get("role") or "user", row.get("text") or "")
+                         for row in part)
+        part_ev = dict(ev)
+        part_ev.update({"start": int(part[0].get("turn") or 0),
+                        "end": int(part[-1].get("turn") or 0),
+                        "text": body, "tokens": _E._tokens(body)})
+        try:
+            data = json.loads(summarizer(_R.rolling_prompt(global_state, part_ev)) or "{}")
+        except Exception:
+            continue
+        if index == 0 and isinstance(data.get("state"), dict) and data["state"]:
+            global_state.clear()
+            global_state.update(_R.normalize_state(data["state"]))
+        note = str(data.get("overview") or "").strip()
+        if note:
+            notes.append(note)
+    return notes
+
+
 def _event_layer_close(events, buf, summarizer, global_state):
     """Close one open event: one model call for state + overview."""
     from biocore_memory.event import events as _E
@@ -2062,7 +2097,9 @@ def _event_layer_close(events, buf, summarizer, global_state):
           "vector": _mean_vector([row.get("vector") for row in buf]),
           "event_id": "EV%03d" % (len(events) + 1)}
     overview = ""
-    if summarizer is not None:
+    if summarizer is not None and int(ev["tokens"]) > 800:
+        overview = "；".join(_event_layer_notes(ev, buf, summarizer, global_state))
+    elif summarizer is not None:
         # a failing summarizer must surface, so inject_block can fall back
         prompt = _R.rolling_prompt(global_state, ev)
         data = json.loads(summarizer(prompt) or "{}")
@@ -2076,12 +2113,101 @@ def _event_layer_close(events, buf, summarizer, global_state):
     events.append(ev)
 
 
+def _fold_event(dst, src):
+    """Fold src into dst: members, span, centroid, note and claims all follow."""
+    dst["entries"] = (dst.get("entries") or []) + (src.get("entries") or [])
+    dst["members"] = (dst.get("members") or []) + (src.get("members") or [])
+    dst["start"] = min(int(dst.get("start") or 0), int(src.get("start") or 0))
+    dst["end"] = max(int(dst.get("end") or 0), int(src.get("end") or 0))
+    dst["text"] = ((dst.get("text") or "") + "\n" + (src.get("text") or "")).strip()
+    dst["tokens"] = int(dst.get("tokens") or 0) + int(src.get("tokens") or 0)
+    dst["vector"] = _mean_vector([item.get("vector") for item in dst["entries"]])
+    note = str(src.get("overview") or "").strip()
+    if note and note not in str(dst.get("overview") or ""):
+        dst["overview"] = (str(dst.get("overview") or "") + "；" + note).strip("；")
+    dst["claims"] = (dst.get("claims") or []) + (src.get("claims") or [])
+    return dst
+
+
+def _merge_small_events(events, min_turns=2):
+    """A one-turn event joins its neighbour: no span shorter than min_turns."""
+    if len(events) < 2:
+        return list(events)
+    out = []
+    for ev in events:
+        if len(ev.get("members") or []) >= min_turns or not out:
+            out.append(dict(ev))
+            continue
+        _fold_event(out[-1], ev)
+    if len(out) > 1 and len(out[0].get("members") or []) < min_turns:
+        out[1] = _fold_event(out[0], out[1])
+        out.pop(0)
+    return out
+
+
+def _event_layer_close_adaptive(events, buf, summarizer, global_state, embed_fn=None,
+                                 depth=0):
+    """Close one buffer; bisect the span while its note does not cover the turns.
+
+    The trial close is a real close (state included): when the note does not
+    cover the span we drop the event and re-close the two halves, so the only
+    thing lost is the note we rejected.
+    """
+    from biocore_memory.event import segment_adaptive as _SA
+    if (embed_fn is None or depth >= 6 or len(buf) < 2 * _SA.MIN_TURNS):
+        _event_layer_close(events, buf, summarizer, global_state)
+        return
+    _event_layer_close(events, buf, summarizer, global_state)
+    ev = events[-1]
+    try:
+        note_vec = embed_fn(str(ev.get("overview") or ev.get("text") or ""))
+    except Exception:
+        note_vec = None
+    turns = [row.get("vector") for row in buf]
+    covered = _SA.coverage(note_vec, turns) if note_vec else 1.0
+    if covered >= _SA.COVER_MIN:
+        return
+    events.pop()
+    cut = _SA.largest_jump(turns)
+    if cut <= 0 or cut >= len(buf):
+        _event_layer_close(events, buf, summarizer, global_state)
+        return
+    for part in _SA.merge_singletons([buf[:cut], buf[cut:]]):
+        _event_layer_close_adaptive(events, part, summarizer, global_state,
+                                    embed_fn, depth + 1)
+
+
 def _mean_vector(vectors):
     rows = [list(v) for v in (vectors or []) if isinstance(v, (list, tuple)) and v]
     if not rows:
         return []
     dim = len(rows[0])
     return [sum(row[i] for row in rows if len(row) == dim) / len(rows) for i in range(dim)]
+
+
+def _event_embed_fn(store, config, payload):
+    """One embed callable for this block; payload > config.json > env, else None."""
+    pl_cfg = {}
+    pl = payload if isinstance(payload, dict) else {}
+    if pl.get("embedding_base_url"):
+        # the caller's payload wins over config.json for this embedding call
+        pl_cfg = {"embedding_mode": pl.get("embedding_mode") or "remote",
+                  "embedding_base_url": pl.get("embedding_base_url"),
+                  "embedding_model": pl.get("embedding_model") or "",
+                  "embedding_dim": int(pl.get("embedding_dim") or 1024),
+                  "embedding_api_key": pl.get("embedding_api_key") or "",
+                  "embedding_timeout": 30}
+    try:
+        from biocore_memory.recall.embedding import embed as _embed
+        from biocore_memory.recall.embedding import load_provider as _load_prov
+        provider = _load_prov(pl_cfg) if pl_cfg else _load_prov(dict(config or {}))
+        if provider is None:
+            provider = _load_prov({})          # env-configured provider
+        if provider is None:
+            return None
+        return lambda text: _embed(str(text), provider, path=_embed_cache_path(store))
+    except Exception:
+        return None
 
 
 def _event_layer_block(session_id, store, query, budget, rerank_config=None,
@@ -2123,6 +2249,15 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                 item["vector"] = None
     buf = []
     new_rows = entries[seen:]
+    # drift threshold from this session's own adjacent-turn similarities
+    try:
+        from biocore_memory.event import segment_adaptive as _SA
+        _thr = _SA.adaptive_threshold(
+            _SA.adjacent_similarities([row.get("vector") for row in entries]))
+    except Exception:
+        _thr = None
+    thr = EVENT_SIM_CLOSE if _thr is None else _thr
+    _entry_embedder = _event_embed_fn(store, config, payload)
     for offset, row in enumerate(new_rows):
         vec = _entry_vector(store, row, config, payload)
         # memory entries carry ts, not turn: fall back to their position
@@ -2133,13 +2268,18 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         if buf:
             gap = float(item["ts"]) - float(buf[-1]["ts"])
             sim = _E._cos(_mean_vector([b.get("vector") for b in buf]), vec) if vec else 1.0
-            if (sim < EVENT_SIM_CLOSE or gap > EVENT_GAP_S
-                    or (EVENT_MAX_TURNS and len(buf) >= EVENT_MAX_TURNS)):
-                _event_layer_close(events, buf, summarizer, global_state)
+            if sim < thr or gap > EVENT_GAP_S:
+                _event_layer_close_adaptive(events, buf, summarizer, global_state,
+                                            _entry_embedder)
                 buf = []
         buf.append(item)
     if buf:
-        _event_layer_close(events, buf, summarizer, global_state)
+        _event_layer_close_adaptive(events, buf, summarizer, global_state, _entry_embedder)
+    if len(events) > 1:
+        events[:] = _merge_small_events(events)
+    for index, ev in enumerate(events, 1):
+        # bisecting pops and re-closes halves, so ids are renumbered here
+        ev["event_id"] = "EV%03d" % index
     if new_rows or seen != len(entries):
         _save_event_state(store, session_id,
                           {"seen": len(entries), "events": events, "state": global_state})
@@ -2158,28 +2298,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             if item.get("vector"):
                 live.append({"turn": item["turn"], "vector": item["vector"],
                              "text": item.get("text") or ""})
-    provider = None
-    embed_fn = None
-    pl_cfg = {}
-    _pl = payload if isinstance(payload, dict) else {}
-    if _pl.get("embedding_base_url"):
-        # the caller's payload wins over config.json for this embedding call
-        pl_cfg = {"embedding_mode": _pl.get("embedding_mode") or "remote",
-                  "embedding_base_url": _pl.get("embedding_base_url"),
-                  "embedding_model": _pl.get("embedding_model") or "",
-                  "embedding_dim": int(_pl.get("embedding_dim") or 1024),
-                  "embedding_api_key": _pl.get("embedding_api_key") or "",
-                  "embedding_timeout": 30}
-    try:
-        from biocore_memory.recall.embedding import embed as _embed_fn
-        from biocore_memory.recall.embedding import load_provider as _load_prov
-        provider = _load_prov(pl_cfg) if pl_cfg else _load_prov(dict(config or {}))
-        if provider is None:
-            provider = _load_prov({})          # env-configured provider
-        if provider is not None:
-            embed_fn = lambda text: _embed_fn(str(text), provider, path=_embed_cache_path(store))
-    except Exception:
-        provider, embed_fn = None, None
+    embed_fn = _event_embed_fn(store, config, payload)
     filled = 0
     if not live and embed_fn is not None:
         for ev in events:
