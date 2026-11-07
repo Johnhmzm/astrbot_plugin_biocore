@@ -2154,8 +2154,6 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             if item.get("vector"):
                 live.append({"turn": item["turn"], "vector": item["vector"],
                              "text": item.get("text") or ""})
-    if not live:
-        return None
     provider = None
     embed_fn = None
     pl_cfg = {}
@@ -2178,6 +2176,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             embed_fn = lambda text: _embed_fn(str(text), provider, path=_embed_cache_path(store))
     except Exception:
         provider, embed_fn = None, None
+    filled = 0
     if not live and embed_fn is not None:
         for ev in events:
             for item in ev.get("entries") or []:
@@ -2187,8 +2186,21 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                     item["vector"] = embed_fn(str(item.get("text") or ""))
                     live.append({"turn": item.get("turn"), "vector": item["vector"],
                                  "text": item.get("text") or ""})
+                    filled += 1
                 except Exception:
                     continue
+    if not live:
+        return None
+    for ev in events:
+        if not ev.get("vector"):
+            # an event whose entries were only just embedded needs its centroid
+            ev["vector"] = _mean_vector([item.get("vector")
+                                        for item in ev.get("entries") or []])
+    if filled:
+        # keep them: re-embedding every turn would cost a model call per entry
+        _save_event_state(store, session_id,
+                          {"seen": int(stored.get("seen") or 0), "events": events,
+                           "state": global_state})
     selected = _E.event_recall(
         query, events, budget_tokens=8000, flags={_E.FLAG_KEY: True},
         embed=embed_fn, entry=("two_stage" if embed_fn is not None else "summary"),
@@ -2270,7 +2282,20 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             lines.append("- [%s %s] %s" % (_day(row.get("ts")), who, body))
     if not lines:
         return None
-    lines = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"] + lines
+    state_lines = []
+    try:
+        from biocore_memory.event import claims as _claims
+        _raw = []
+        for _ev in _ordered:
+            for _item in _ev.get("claims") or []:
+                if isinstance(_item, dict):
+                    _raw.append(_item)
+        if _raw:
+            state_lines = _claims.render_claims(_claims.merge_claims(_raw), limit=8)
+    except Exception:
+        state_lines = []
+    head = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"]
+    lines = head + state_lines + lines
     text = "你记得这些事：\n" + "\n".join(lines)
     if budget and len(text) > budget:
         text = text[:max(0, budget - 1)]
