@@ -281,10 +281,10 @@ def merge_fact_state(state, facts, turn=0):
         groups.setdefault(key, []).append({'value': value, 'turn': said})
     if not groups:
         return rolling.merge_state(state or {}, {}, turn=turn)
-    before = {key: value_list((state or {}).get(key)) for key in groups}
     incoming = {}
     for key, rows in groups.items():
-        merged = list(before.get(key) or [])
+        carried = value_list((state or {}).get(key))
+        merged = list(carried)
         for row in rows:
             if row['value'] not in [v['value'] for v in merged]:
                 merged.append(dict(row))
@@ -294,16 +294,18 @@ def merge_fact_state(state, facts, turn=0):
                          'coexist': [v['value'] for v in merged] if len(merged) > 1 else [],
                          'source_turn': last['turn'], 'valid_at_turn': last['turn']}
     out = rolling.merge_state(state or {}, incoming, turn=turn)
-    for key, rows in groups.items():
-        item = out.get(key)
+    # merge_state rebuilds every row from a fixed field set, so the value turns
+    # are re-attached from the previous row plus this batch, never guessed.
+    for key, item in out.items():
         if not isinstance(item, dict):
             continue
-        values = list(before.get(key) or [])
-        for row in rows:
+        values = value_list((state or {}).get(key))
+        for row in groups.get(key) or []:
             if row['value'] not in [v['value'] for v in values]:
                 values.append(dict(row))
-        item['values'] = values
-        if item.get('status') == 'conflict':
+        if values:
+            item['values'] = values
+        if item.get('status') == 'conflict' and values:
             item['value'] = ' / '.join(item.get('coexist') or
                                       [v['value'] for v in values])
     return out

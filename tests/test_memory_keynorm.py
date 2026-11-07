@@ -200,6 +200,9 @@ def test_merge_is_incremental_across_batches():
     item = state['客厅地板·颜色']
     assert item['status'] == 'conflict'
     assert [v['value'] for v in item['values']] == ['浅灰色', '米色']
+    # 轮次不能因为第二次合并被抹成同一轮
+    assert [v['turn'] for v in item['values']] == [279, 317]
+    assert K.state_line('客厅地板·颜色', item).endswith('未确定（2 种说法并存）')
 
 
 def test_merge_repeated_value_does_not_add_a_second_row():
