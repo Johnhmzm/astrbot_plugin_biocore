@@ -237,6 +237,34 @@ def test_state_lines_only_for_multi_value_keys_mentioned_by_the_event():
     assert K.state_lines_for({'overview': '无关的话'}, state) == []
 
 
+def test_prepend_without_a_state_adds_no_line():
+    ev = {'start': 1, 'end': 2, 'overview': '叶楠生日'}
+    assert K.prepend_state_lines(['【事件｜第1-2轮】叶楠生日'], ev, {}) == ['【事件｜第1-2轮】叶楠生日']
+    assert K.prepend_state_lines(['x'], ev, None) == ['x']
+    single = {'叶楠·生日': {'value': '八月十六', 'source_turn': 165}}
+    assert K.prepend_state_lines(['x'], ev, single) == ['x']   # 单值键不占块顶
+
+
+def test_prepend_adds_a_line_when_values_coexist():
+    state = {'叶楠·生日': {'status': 'conflict', 'value': '八月十六 / 八月十八',
+                          'values': [{'value': '八月十六', 'turn': 165},
+                                     {'value': '八月十八', 'turn': 183}]}}
+    ev = {'start': 183, 'end': 184, 'overview': '叶楠生日改成八月十八', 'entries': []}
+    lines = K.prepend_state_lines(['【事件｜第183-184轮】叶楠生日改成八月十八'], ev, state)
+    assert lines[0] == ('【状态】叶楠·生日：八月十六（第165轮） / 八月十八（第183轮）'
+                        '，未确定（2 种说法并存）')
+    assert lines[1] == '【事件｜第183-184轮】叶楠生日改成八月十八'
+
+
+def test_prepend_marks_a_private_row():
+    state = {'叶楠·病假·原因': {'status': 'private', 'value': '抑郁复发', 'source_turn': 205}}
+    ev = {'start': 205, 'end': 206, 'overview': '叶楠请假，原因不便外传', 'entries': []}
+    lines = K.prepend_state_lines(['【事件｜第205-206轮】叶楠请假'], ev, state)
+    assert lines[0] == '【状态】叶楠·病假·原因：抑郁复发（第205轮），已确定，不可外传'
+    assert K.state_line('a·b', {'status': 'conflict', 'private': True,
+                                 'values': [{'value': 'x', 'turn': 1}, {'value': 'y', 'turn': 2}]}) \
+        .endswith('，未确定（2 种说法并存），不可外传')
+
 def test_prepend_state_lines_puts_the_state_on_top_of_the_block():
     state = {'叶楠·生日': {'status': 'conflict', 'value': 'a / b',
                           'values': [{'value': 'a', 'turn': 1}, {'value': 'b', 'turn': 2}]}}

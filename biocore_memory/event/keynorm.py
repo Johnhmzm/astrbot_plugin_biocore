@@ -131,6 +131,16 @@ def advanced_keys(known_keys, facts):
             names.append(key)
     return names
 
+def _loads(text):
+    """JSON out of a model answer that may arrive wrapped in a code fence."""
+    raw = str(text or '').strip()
+    if raw.startswith('```'):
+        raw = raw.split('\n', 1)[-1] if '\n' in raw else raw.strip('`')
+        if raw.rstrip().endswith('```'):
+            raw = raw.rstrip()[:-3]
+    return json.loads(raw.strip() or '[]')
+
+
 def _ts_for(event, turn):
     """Timestamp of the turn, when the event carries its entries."""
     turn = int(turn or 0)
@@ -205,7 +215,7 @@ def extract_facts(events, llm, known_keys=None, *, batch=8, stats=None):
         chunk = rows[start:start + size]
         record['calls'] += 1
         try:
-            data = json.loads(llm(extract_prompt(chunk, names)) or '[]')
+            data = _loads(llm(extract_prompt(chunk, names)) or '[]')
         except Exception:
             data = []
         for ev, raw in _pairs(data, chunk):
@@ -311,8 +321,14 @@ def merge_fact_state(state, facts, turn=0):
     return out
 
 
+def is_private(item):
+    """A row the user said must not reach a third party."""
+    item = item if isinstance(item, dict) else {}
+    return item.get('private') is True or str(item.get('status') or '').lower() == 'private'
+
+
 def state_line(key, item, max_values=4):
-    """One 【状态】 line: value (turn) / value (turn), and whether it is settled."""
+    """One 【状态】 line: value (turn) / value (turn), settled or not, private or not."""
     values = value_list(item)[:max(1, int(max_values or 1))]
     if not values:
         return ''
@@ -321,6 +337,8 @@ def state_line(key, item, max_values=4):
         tail = '，未确定（%d 种说法并存）' % len(value_list(item))
     else:
         tail = '，已确定'
+    if is_private(item):
+        tail += '，不可外传'
     return '【状态】%s：%s%s' % (key, body, tail)
 
 
@@ -338,7 +356,7 @@ def state_lines_for(event, state, max_lines=3):
         subject = split_key(key)[0]
         if not subject or subject not in text:
             continue
-        if not is_multi_value(item):
+        if not (is_multi_value(item) or is_private(item)):
             continue
         line = state_line(key, item)
         if line:
