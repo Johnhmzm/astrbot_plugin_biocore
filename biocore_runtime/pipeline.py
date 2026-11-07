@@ -69,6 +69,12 @@ if _PLUGIN_ROOT not in sys.path:
 
 MAX_CHARS = 420           # [engineering] default budget when the caller says nothing
 INJECT_MAX_CHARS = 12000  # [engineering] ceiling for an explicit caller request
+EVENT_CAP_MODE = os.environ.get("BIOCORE_EVENT_CAP_MODE") or "hint"
+# [engineering] how many turns an event may render:
+#   hint = the claim-density hint decides (current default)
+#   flat = always 5, no event is ever skipped
+#   min3 = at least 3, so a dense-note event still shows its best turn
+EVENT_CAP_STATS = {"events": 0, "skipped": 0, "rows": 0}
 EVENT_SIM_CLOSE = 0.30    # [engineering] below this similarity a turn starts a new event
 EVENT_MAX_TURNS = 8       # [engineering] 0 = no hard cap; else close the event at N turns
 EVENT_GAP_S = 86400.0     # [engineering] a day of silence also splits an event
@@ -2172,6 +2178,26 @@ def _event_layer_close(events, buf, summarizer, global_state, store=None,
     if not overview:
         overview = str(ev["text"]).replace("\n", " ")[:30]
     ev["overview"] = overview
+    ev["claims"] = []
+    if summarizer is not None:
+        try:
+            from biocore_memory.event import claims as _C
+            _day = None
+            try:
+                from datetime import datetime as _dt
+                _day = _dt.fromtimestamp(float(buf[0].get("ts") or 0.0)).strftime("%Y-%m-%d")
+            except Exception:
+                _day = None
+            _known = sorted(global_state.keys())[:60]
+            _raw = summarizer(_C.claims_prompt(ev, known=_known, day=_day))
+            _ov2, _cs = _C.parse_claims(_raw, day=_day)
+            for _c in _cs:
+                _c["turn"] = int(ev.get("end") or 0)
+            ev["claims"] = _cs
+            if not ev.get("overview") and _ov2:
+                ev["overview"] = _ov2
+        except Exception as _exc:
+            ev["claims_error"] = str(_exc)[:120]
     events.append(ev)
     try:
         _journal(store, session_id, "event_close", event=ev.get("event_id"),
@@ -2520,6 +2546,14 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             _cap, _dens = _CL.budget_hint(ev)
         except Exception:
             _cap = 5
+        _mode = str((payload or {}).get("event_cap_mode") or EVENT_CAP_MODE)
+        if _mode == "flat":
+            _cap = 5
+        elif _mode == "min3":
+            _cap = max(3, int(_cap))
+        EVENT_CAP_STATS["events"] += 1
+        if _cap <= 0:
+            EVENT_CAP_STATS["skipped"] += 1
         if seed_vec is not None:
             ranked_rows = sorted(rows, key=lambda r: _cos2(seed_vec, r.get("vector") or []),
                                  reverse=True)
@@ -2532,6 +2566,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             if all(row is not kept for kept in rows):
                 rows.append(row)
         rows.sort(key=lambda r: float(r.get("ts") or 0.0))
+        EVENT_CAP_STATS["rows"] += len(rows)
         if os.environ.get("BIOCORE_DEBUG_EV"):
             print("DBG-EV ev=%d-%d rows=%d" % (start, end, len(rows)), file=sys.stderr)
         lines.append("【事件｜第%d-%d轮】%s" % (start, end, str(ev.get("overview") or ev.get("summary") or "")[:60]))
