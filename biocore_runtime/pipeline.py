@@ -1987,7 +1987,7 @@ def _event_state_path(store, session_id):
 
 def _load_event_state(store, session_id):
     path = _event_state_path(store, session_id)
-    blank = {"seen": 0, "events": [], "state": {}}
+    blank = {"seen": 0, "events": [], "state": {}, "open": []}
     if path is None or not path.exists():
         return blank
     try:
@@ -1998,6 +1998,8 @@ def _load_event_state(store, session_id):
     out["seen"] = int(data.get("seen") or 0)
     out["events"] = data.get("events") if isinstance(data.get("events"), list) else []
     out["state"] = data.get("state") if isinstance(data.get("state"), dict) else {}
+    # the event that was still open when the last call saved
+    out["open"] = data.get("open") if isinstance(data.get("open"), list) else []
     return out
 
 
@@ -2248,6 +2250,9 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             if not item.get("vector"):
                 item["vector"] = None
     buf = []
+    for row in stored.get("open") or []:
+        if isinstance(row, dict):
+            buf.append(dict(row))          # an event that was still open last call
     new_rows = entries[seen:]
     # drift threshold from this session's own adjacent-turn similarities
     try:
@@ -2273,16 +2278,21 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                                             _entry_embedder)
                 buf = []
         buf.append(item)
-    if buf:
+    tail_closed = False
+    if buf and (not new_rows or str(query or "").strip()):
+        # a recall call finalises the open event; a capture call keeps it open
         _event_layer_close_adaptive(events, buf, summarizer, global_state, _entry_embedder)
+        buf = []
+        tail_closed = True
     if len(events) > 1:
         events[:] = _merge_small_events(events)
     for index, ev in enumerate(events, 1):
         # bisecting pops and re-closes halves, so ids are renumbered here
         ev["event_id"] = "EV%03d" % index
-    if new_rows or seen != len(entries):
+    if new_rows or seen != len(entries) or tail_closed:
         _save_event_state(store, session_id,
-                          {"seen": len(entries), "events": events, "state": global_state})
+                          {"seen": len(entries), "events": events,
+                           "state": global_state, "open": buf})
     if as_of is not None:
         try:
             limit = float(as_of)
