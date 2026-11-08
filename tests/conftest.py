@@ -40,12 +40,12 @@ def _release_handles():
         pass
 
 
-@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+@pytest.hookimpl(tryfirst=True)
 def pytest_runtest_teardown(item, nextitem):
-    # runs BEFORE the test's own teardown (unittest tearDown included), which is
-    # exactly where a TemporaryDirectory gets cleaned up
-    _release_handles()
-    yield
+    # A plain tryfirst hook (no hookwrapper: that spelling is gone in pytest 9)
+    # runs BEFORE the test's own teardown -- which is exactly where a unittest
+    # tearDown removes its TemporaryDirectory. Releasing after the call phase is
+    # what makes the delete succeed.
     _release_handles()
 
 

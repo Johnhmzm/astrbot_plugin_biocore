@@ -833,9 +833,22 @@ def load_memory(store, session_id):
     if cached is not None and token is not None and cached[0] == token:
         return _copy_doc(cached[2])
     store_api = _sql_store()
-    # an install that only ever had JSON imports once, on first open
-    store_api.open_or_import(root, session_id,
-                             events_path=_event_state_path(store, session_id))
+    # an install that only ever had JSON imports once, on first open.
+    # open_or_import hands back a live connection: close it here or it keeps
+    # sessions/<sid>/memory.db locked until GC (WinError 32 at temp cleanup)
+    _conn = None
+    try:
+        _conn, _info = store_api.open_or_import(
+            root, session_id,
+            events_path=_event_state_path(store, session_id))
+    except Exception:
+        _conn = None
+    finally:
+        if _conn is not None:
+            try:
+                _conn.close()
+            except Exception:
+                pass
     doc = store_api.read_doc(root, session_id)
     doc["session_id"] = str(doc.get("session_id") or session_id)
     _remember_doc(path, doc, _serialize_entries(doc["entries"]), token)
@@ -912,6 +925,10 @@ def import_session_json(store, session_id, force=False):
         _conn, info = store_api.import_session(
             root, session_id, force=force,
             events_path=_event_state_path(store, session_id))
+        try:
+            _conn.close()
+        except Exception:
+            pass
         _MEM_DOC_CACHE.pop(str(_db_path(root, session_id)), None)
         _EVENT_STATE_CACHE.pop(str(_db_path(root, session_id)), None)
         return bool(info)
