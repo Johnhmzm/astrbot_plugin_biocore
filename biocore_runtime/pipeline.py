@@ -2475,17 +2475,26 @@ def _load_event_state_sql(root, session_id):
         return _copy_event_state(cached[2])
     state = store_api.load_event_state(root, session_id)
     if state is None:
-        # first open of an install that only has the old JSON file
-        legacy = _load_event_state_json(root, session_id)
-        if legacy.get("events") or legacy.get("seen"):
-            try:
-                store_api.save_event_state(root, session_id, legacy.get("seen") or 0,
-                                           legacy.get("events") or [],
-                                           legacy.get("state") or {},
-                                           legacy.get("open") or [])
-            except Exception:
-                pass
-        state = legacy
+        # Importing the legacy file costs a 31 MB parse. A copied store repeats
+        # that cost on every copy, so the fact of the import is persisted: once
+        # the flag is set the JSON file is never read again, not even when it is
+        # absent (an exported copy may not carry it at all).
+        if str(_read_vector_meta(root, session_id).get("legacy_events_imported")) == "1":
+            state = {"seen": 0, "events": [], "state": {}, "open": []}
+        else:
+            legacy = _load_event_state_json(root, session_id)
+            if legacy.get("events") or legacy.get("seen"):
+                try:
+                    store_api.save_event_state(root, session_id,
+                                               legacy.get("seen") or 0,
+                                               legacy.get("events") or [],
+                                               legacy.get("state") or {},
+                                               legacy.get("open") or [])
+                    _write_vector_meta(root, session_id,
+                                       {"legacy_events_imported": 1})
+                except Exception:
+                    pass
+            state = legacy
     _cache_event_state(path, state)
     return _copy_event_state(state)
 
@@ -2960,7 +2969,21 @@ def _event_embed_fn(store, config, payload):
                 "embedding 已启用但未能构造 embedder：检查 core_config.json 里 "
                 "embedding 块的 base_url/model；拒绝静默退化为词匹配")
         return None
-    return lambda text: _embed(str(text), provider, path=_embed_cache_path(store))
+    batch = None
+    try:
+        from biocore_memory.recall.embedding import embed_many as _embed_many
+        batch = lambda texts: _embed_many(list(texts), provider,
+                                          path=_embed_cache_path(store))
+    except Exception:
+        batch = None
+
+    def _one(text):
+        return _embed(str(text), provider, path=_embed_cache_path(store))
+
+    # claim lines score dozens of short texts; batching them is the difference
+    # between one round-trip and one per claim on a remote provider
+    _one.embed_many = batch
+    return _one
 
 
 
@@ -3023,7 +3046,10 @@ def _claim_lines(query, events, embed_fn, top=8, min_score=0.35):
         qv = embed_fn(str(query))
     except Exception:
         return []
-    picked = []
+    # one batch call for every claim text, then score from the results: the
+    # order and the scores are identical to the per-call path (same vectors),
+    # only the number of round-trips changes
+    items, texts = [], []
     for ev in events or []:
         for claim in ev.get("claims") or []:
             if not isinstance(claim, dict):
@@ -3032,13 +3058,33 @@ def _claim_lines(query, events, embed_fn, top=8, min_score=0.35):
                                  claim.get("value") or "")
             if len(text) < 4:
                 continue
+            items.append((claim, ev, text))
+            texts.append(text)
+    vectors = None
+    batch = getattr(embed_fn, "embed_many", None)
+    if callable(batch) and texts:
+        try:
+            vectors = batch(texts)
+        except Exception:
+            vectors = None
+    picked = []
+    for slot, (claim, ev, text) in enumerate(items):
+        vec = None
+        if isinstance(vectors, list) and slot < len(vectors):
+            vec = vectors[slot]
+        if vec is None:
             try:
                 vec = embed_fn(text)
             except Exception:
                 continue
+        if vec is None:
+            continue
+        try:
             score = _E2._cos(qv, vec)
-            if score >= min_score:
-                picked.append((score, claim, ev, text))
+        except Exception:
+            continue
+        if score >= min_score:
+            picked.append((score, claim, ev, text))
     picked.sort(key=lambda item: item[0], reverse=True)
     lines = []
     seen = set()

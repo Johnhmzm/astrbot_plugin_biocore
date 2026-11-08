@@ -309,6 +309,11 @@ def cache_close(path=None):
         return False
     closed = _close_conn()
     _SQL_READY.update({"path": None, "ready": False})
+    # the process memo is part of the cache: releasing the cache releases it too
+    try:
+        _EMBED_MEMO.clear()
+    except Exception:
+        pass
     return closed
 
 
@@ -1153,6 +1158,81 @@ def _call_provider(provider, text, timeout):
         executor.shutdown(wait=False)
 
 
+_EMBED_MEMO = {}          # (cache_key) -> vector; process-local, bounded
+_EMBED_MEMO_MAX = 4096
+
+
+def embed_many(texts, provider, path=None, timeout=None):
+    """Vectors for many texts with ONE provider round-trip for the misses.
+
+    Every hit path is the same as embed(): the process memo, then the disk
+    cache, then the provider. Claims used to cost one network call each;
+    batching is what keeps a remote provider from adding ~10 s per turn.
+    """
+    if provider is None:
+        return [None for _ in (texts or [])]
+    if not hasattr(provider, "embed"):
+        return [embed(text, provider, path=path, timeout=timeout) for text in texts or []]
+    normalized = [normalize_text(text) for text in (texts or [])]
+    model = str(getattr(provider, "model", "") or "").strip()
+    if not model and str(getattr(provider, "mode", "") or "") in (
+            "remote", "remote_with_local_fallback"):
+        raise ValueError(
+            "embedding provider has no model name; cache_key would degrade to "
+            "text-only and a model swap would hit stale vectors")
+    target = path or configured_cache_file()
+    out = [None for _ in normalized]
+    pending, pending_index = [], []
+    for index, text in enumerate(normalized):
+        if not text:
+            continue
+        key = cache_key(text, model)
+        memo = _EMBED_MEMO.get(key)
+        if memo is not None:
+            out[index] = list(memo)
+            EMBED_STATS["hit"] = int(EMBED_STATS.get("hit", 0)) + 1
+            continue
+        disk = None
+        if target and cache_backend(target) == "sqlite":
+            disk = cache_get_many([key], target).get(key)
+        if disk is None and target:
+            disk = read_cache(target).get(key)
+        if disk is not None:
+            out[index] = list(disk)
+            _memo_put(key, disk)
+            EMBED_STATS["disk_hit"] = int(EMBED_STATS.get("disk_hit", 0)) + 1
+            continue
+        pending.append(text)
+        pending_index.append(index)
+    if pending:
+        EMBED_STATS["miss"] = int(EMBED_STATS.get("miss", 0)) + len(pending)
+        try:
+            vectors = provider.embed(pending)
+        except Exception:
+            vectors = []
+        for slot, vector in enumerate(vectors or []):
+            if slot >= len(pending_index):
+                break
+            checked = _validate_vector(vector)
+            if checked is None:
+                continue
+            index = pending_index[slot]
+            out[index] = checked
+            key = cache_key(normalized[index], model)
+            _memo_put(key, checked)
+            if target:
+                cache_put(key, checked, target)
+    return out
+
+
+def _memo_put(key, vector):
+    try:
+        if len(_EMBED_MEMO) >= _EMBED_MEMO_MAX:
+            _EMBED_MEMO.pop(next(iter(_EMBED_MEMO)), None)
+        _EMBED_MEMO[str(key)] = list(vector)
+    except Exception:
+        pass
+
 def embed(text, provider, cache=None, timeout=None, path=None):
     """Return a vector for text, or None.
 
@@ -1181,6 +1261,10 @@ def embed(text, provider, cache=None, timeout=None, path=None):
             "embedding provider has no model name; cache_key would degrade to "
             "text-only and a model swap would hit stale vectors")
     key = cache_key(normalized, model)
+    memo = _EMBED_MEMO.get(key)
+    if memo is not None:          # same process, same text+model: no round-trip
+        EMBED_STATS["hit"] = int(EMBED_STATS.get("hit", 0)) + 1
+        return list(memo)
     cached = _cache_get(cache, key)
     if cached is not None:
         EMBED_STATS["hit"] += 1
@@ -1205,6 +1289,7 @@ def embed(text, provider, cache=None, timeout=None, path=None):
         _call_provider(provider, normalized, _timeout_for(provider, timeout)))
     if checked is not None:
         EMBED_STATS["remote"] += 1
+        _memo_put(key, checked)
         _cache_put(cache, key, checked)
         if target:
             if rows is None:
