@@ -3755,7 +3755,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         try:
             _sentence_block = _sentence_recall_block(
                 store, session_id, query, entries, events, payload=payload,
-                rerank_config=rerank_config, now=at)
+                rerank_config=rerank_config, now=as_of)
         except Exception as exc:
             logger.warning("[sentence] fallback: %s: %s",
                            type(exc).__name__, str(exc)[:160])
