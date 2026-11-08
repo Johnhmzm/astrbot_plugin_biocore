@@ -31,7 +31,7 @@ def claims_prompt(event, known=None, day=None, threads=None):
         "从下面这段对话里抽出“断言”。每条断言是一个四元组。\n"
         "【已有键｜必须复用其中写法，确实没有才新建“主体·属性”】\n%s\n\n"
         "【已有线索｜同一件事必须用同一条线索名，确实没有才新建】\n%s\n\n"
-        "【对话｜第%d-%d轮｜本段日期 %s】\n%s\n\n"
+        "【对话｜本段日期 %s】\n%s\n\n"
         "规则："
         "一、主体写具体的人名或物件名，不要用“我/她/他/那个”；"
         "二、属性用已有键的写法，稳定，不要同义改写；"
@@ -52,7 +52,7 @@ def claims_prompt(event, known=None, day=None, threads=None):
         "只输出 JSON：{\"overview\": \"...30字以内\", \"claims\": "
         "[{\"subject\": \"...\", \"attr\": \"...\", \"value\": \"...\", "
         "\"status\": \"current\", \"source\": \"direct\", \"entity\": \"...\", \"thread\": \"...\", \"note\": \"\"}]}"
-        % (_known_lines(known), _known_lines(threads), start, end, str(day or ""),
+        % (_known_lines(known), _known_lines(threads), str(day or ""),
            str(event.get("text") or "").strip())
     )
 
@@ -165,7 +165,7 @@ def combined_prompt(event, state=None, known=None, day=None, threads=None):
         "【当前状态】\n%s\n\n"
         "【已有键｜优先复用】\n%s\n\n"
         "【已有线索｜优先复用】\n%s\n\n"
-        "【对话｜第%d-%d轮｜本段日期 %s】\n%s\n\n"
+        "【对话｜本段日期 %s】\n%s\n\n"
         "规则："
         "一、status 只能是 current/superseded/coexist/private；"
         "二、键写成“主体·属性”，能复用已有键就复用；"
@@ -181,7 +181,7 @@ def combined_prompt(event, state=None, known=None, day=None, threads=None):
         "\"value\": \"...\", \"status\": \"current\", \"source\": \"direct\", "
         "\"entity\": \"...\", \"thread\": \"...\"}]}"
         % ("\n".join(state_lines) if state_lines else "（空）", _known_lines(known),
-           _known_lines(threads), start, end, str(day or ""), str(event.get("text") or "").strip())
+           _known_lines(threads), str(day or ""), str(event.get("text") or "").strip())
     )
 
 
@@ -432,7 +432,21 @@ def expand_claims(table, seeds, hops=1, limit=6):
                 found.append(other)
     return found[:limit]
 
-def render_claims(table, limit=8):
+def _when(turn, turn_dates=None):
+    """Rendered time for one claim row: a date, never an internal coordinate.
+
+    The table keeps turn/event ids for indexing; the model only sees when a
+    fact was recorded, because "第15轮" means nothing to a reader who never
+    saw the turn list.
+    """
+    if not turn or not turn_dates:
+        return ""
+    stamp = turn_dates.get(int(turn or 0)) or turn_dates.get(str(int(turn or 0)))
+    text = str(stamp or "").strip()
+    return ("（%s 记录）" % text) if text else ""
+
+
+def render_claims(table, limit=8, turn_dates=None):
     lines = []
     for key in sorted(table):
         slot = table[key]
@@ -447,16 +461,18 @@ def render_claims(table, limit=8):
         if current:
             row = current[-1]
             weak = float(row.get("confidence") or 1.0) < 0.5
-            parts.append("【当前】%s（第%d轮%s）"
-                         % (row.get("value"), int(row.get("turn") or 0),
+            parts.append("【当前】%s%s%s"
+                         % (row.get("value"),
+                            _when(row.get("turn"), turn_dates),
                             "，可信度低" if weak else ""))
         # At most one retired value: the newest one. Two candidates are a
         # question, three are noise.
         for row in retired[-1:]:
-            parts.append("【已作废，仅供参考】%s（第%d轮）"
-                         % (row.get("value"), int(row.get("turn") or 0)))
+            parts.append("【已作废，仅供参考】%s%s"
+                         % (row.get("value"),
+                            _when(row.get("turn"), turn_dates)))
         for value, turn in [row for row in rows if not isinstance(row, dict)]:
-            parts.append("%s（第%d轮）" % (value, turn))
+            parts.append("%s%s" % (value, _when(turn, turn_dates)))
         shown = "，".join(parts)
         state = {"coexist": "，两种说法并存，记录不足以确定",
                  "private": "，不能对第三方透露",
