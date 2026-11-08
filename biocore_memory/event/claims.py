@@ -57,18 +57,20 @@ def claims_prompt(event, known=None, day=None, threads=None):
     )
 
 
+class ParseError(ValueError):
+    """A model answer that could not be read; the caller must log it."""
+
+
 def parse_claims(raw, day=None):
     """Tolerant JSON read; returns (overview, claims)."""
-    text = str(raw or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`").split("\n", 1)[-1]
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        return "", []
     try:
-        data = json.loads(text[start:end + 1])
-    except Exception:
-        return "", []
+        from . import json_tolerant as _jt
+        data = _jt.loads(raw, prefer="{")
+    except Exception as exc:
+        # never silent: the caller records why, so a 0-claim event has a reason
+        raise ParseError(str(exc))
+    if not isinstance(data, dict):
+        raise ParseError("model answer is not a JSON object")
     overview = str(data.get("overview") or "").strip()
     out = []
     for item in data.get("claims") or []:

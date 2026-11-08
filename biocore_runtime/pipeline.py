@@ -2962,7 +2962,12 @@ def _event_layer_close(events, buf, summarizer, global_state, store=None,
             if not ev.get("overview") and _ov2:
                 ev["overview"] = _ov2
         except Exception as _exc:
+            # a 0-claim event must say why: silence is how 107 events
+            # ended up with no claims and nobody noticed
             ev["claims_error"] = str(_exc)[:120]
+            logger.warning("[claims] event=%s parse failed: %s: %s",
+                           ev.get("event_id"), type(_exc).__name__,
+                           str(_exc)[:160])
     events.append(ev)
     try:
         _journal(store, session_id, "event_close", event=ev.get("event_id"),
@@ -3969,7 +3974,9 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     session_id = sanitize_session_id(session_id)
     # a store whose vectors came from another model must never be read silently
     ensure_vector_space(store, session_id)
-    budget = _int_param(max_chars, MAX_CHARS, 0, max(MAX_CHARS, INJECT_MAX_CHARS))
+    # 0 / None mean "use the default": an explicit rule, not a falsy accident
+    budget = (MAX_CHARS if max_chars in (None, 0)
+              else _int_param(max_chars, MAX_CHARS, 0, max(MAX_CHARS, INJECT_MAX_CHARS)))
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
