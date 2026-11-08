@@ -3488,8 +3488,26 @@ def _rrf_fuse(rank_lists, k=None):
     order = sorted(scores, key=lambda key: (-scores[key], first_seen[key]))
     return [(key, round(scores[key], 6)) for key in order]
 
+def _claims_state_lines(events, limit=8, turn_dates=None):
+    """【状态】 lines from claims: the correction/conflict view."""
+    try:
+        from biocore_memory.event import claims as _CL
+        raw = []
+        for ev in events or []:
+            for item in ev.get("claims") or []:
+                if isinstance(item, dict):
+                    raw.append(item)
+        if not raw:
+            return []
+        return _CL.render_claims(_CL.merge_claims(raw), limit=limit,
+                                turn_dates=turn_dates)
+    except Exception as exc:
+        logger.warning("[claims] render failed: %s: %s",
+                       type(exc).__name__, str(exc)[:120])
+        return []
+
 def _sentence_recall_block(store, session_id, query, entries, events, payload=None,
-                           rerank_config=None, now=None):
+                           rerank_config=None, now=None, budget_chars=None):
     """EM coarse (40) -> rerank fine (12) -> a block that folds instead of cutting.
 
     Three red lines: a sentence is never truncated mid-way, never silently
@@ -3574,7 +3592,7 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         except Exception:
             picked = coarse[:max(1, RECALL_FINAL_K)]
     notes = _event_notes_by_id(events)
-    budget = max(200, RECALL_INJECT_CHARS)
+    budget = max(200, int(budget_chars or RECALL_INJECT_CHARS))
     header = "【相关记忆】"
 
     def _sentence_line(score, row):
@@ -3755,7 +3773,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         try:
             _sentence_block = _sentence_recall_block(
                 store, session_id, query, entries, events, payload=payload,
-                rerank_config=rerank_config, now=as_of)
+                rerank_config=rerank_config, now=None)
         except Exception as exc:
             logger.warning("[sentence] fallback: %s: %s",
                            type(exc).__name__, str(exc)[:160])
@@ -4114,6 +4132,36 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
             logger.warning("[sentence] fallback: %s: %s",
                            type(exc).__name__, str(exc)[:160])
             _block = None
+        if _block and _block.get("text") and _event_layer_on(store, payload):
+            # both views, not either/or: claims carry the correction/conflict
+            # state, sentences carry the fact itself
+            try:
+                _turn_dates = {}
+                for _ev in _evs:
+                    for _row in _ev.get("entries") or []:
+                        try:
+                            _turn = int(_row.get("turn") or 0)
+                            _stamp = float(_row.get("ts") or 0.0)
+                        except Exception:
+                            continue
+                        if _turn and _stamp > 0 and _turn not in _turn_dates:
+                            _turn_dates[_turn] = _day_str(_stamp)
+                _state_lines = _claims_state_lines(_evs, limit=8,
+                                               turn_dates=_turn_dates)
+            except Exception as exc:
+                logger.warning("[claims] merge failed: %s: %s",
+                               type(exc).__name__, str(exc)[:120])
+                _state_lines = []
+            if _state_lines:
+                _head = chr(10).join(_state_lines)
+                _room = max(200, RECALL_INJECT_CHARS - len(_head) - 1)
+                _again = _sentence_recall_block(
+                    store, session_id, text_query, _pool, _evs, payload=payload,
+                    rerank_config=rerank_config, now=now, budget_chars=_room)
+                _body = (_again or {}).get("text") or _block.get("text") or ""
+                _merged = (_head + chr(10) + _body).strip()
+                _block = dict(_block, text=_merged, chars=len(_merged),
+                              state_lines=len(_state_lines))
         if _block and _block.get("text"):
             if _governance is not None:
                 try:      # the sentence path is still an injection: count the hit

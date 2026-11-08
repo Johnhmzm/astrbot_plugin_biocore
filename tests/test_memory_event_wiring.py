@@ -59,10 +59,19 @@ class EventLayerWiringTest(unittest.TestCase):
         block = pipeline.inject_block('s1', store, query='生日是哪天', max_chars=800, top_k=3,
                                       payload={'event_summarizer': stub_summarizer})
         self.assertTrue(block['text'])
-        # render rule: time only, never turn/event coordinates
-        self.assertIn('事件｜', block['text'])
+        # the block carries BOTH views: claims (state) and sentences (facts)
+        self.assertIn('【相关记忆】', block['text'])
         self.assertNotIn('事件｜第', block['text'])
         self.assertTrue(block['ids'])
+
+    def test_the_block_merges_claims_and_sentences(self):
+        """Both views, not either/or: state lines first, then sentences."""
+        store = store_with(ROWS, flags={"event_layer": True})
+        first = pipeline.inject_block("s1", store, query="生日是哪天",
+                                      max_chars=800, top_k=3,
+                                      payload={"event_summarizer": stub_summarizer})
+        self.assertIn("【相关记忆】", first["text"])
+        self.assertNotIn("第", first["text"])   # no turn coordinates
 
     def test_missing_summarizer_raises(self):
         store = store_with(ROWS, flags={'event_layer': True})
