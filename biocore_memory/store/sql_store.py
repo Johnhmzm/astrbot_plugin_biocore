@@ -311,7 +311,7 @@ def read_entry_vectors(root, session_id):
         conn.close()
 
 
-def read_doc(root, session_id):
+def read_doc(root, session_id, with_vectors=False):
     """The session document as the JSON file used to hold it.
 
     Insert order is rowid order, which is exactly the order the old file kept,
@@ -327,13 +327,21 @@ def read_doc(root, session_id):
         except Exception:
             meta = {}
         entries = []
-        for (raw,) in conn.execute('SELECT raw FROM entries ORDER BY rowid').fetchall():
+        # the vector lives in its own BLOB column, not in `raw`: reading only
+        # `raw` is why recall saw vector=None on every row
+        columns = 'raw, vector' if with_vectors else 'raw'
+        for row in conn.execute('SELECT %s FROM entries ORDER BY rowid' % columns).fetchall():
+            raw = row[0]
             if not raw:
                 continue
             try:
-                entries.append(json.loads(raw))
+                entry = json.loads(raw)
             except Exception:
                 continue
+            if with_vectors:
+                blob = row[1] if len(row) > 1 else None
+                entry['vector'] = unpack_vector(blob)
+            entries.append(entry)
         try:
             schema_version = int(meta.get('schema_version') or 1)
         except Exception:

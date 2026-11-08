@@ -796,8 +796,17 @@ def _file_stamp(path):
 
 def _copy_doc(doc):
     out = dict(doc or {})
-    out["entries"] = [dict(row) for row in (out.get("entries") or [])
-                      if isinstance(row, dict)]
+    rows = []
+    for row in out.get("entries") or []:
+        if not isinstance(row, dict):
+            continue
+        copy = dict(row)
+        # every returned row carries a vector list: [] means "this row has none",
+        # a missing key or None reads as "we never looked" and silently turned
+        # sentence recall into "first N in order"
+        copy["vector"] = list(copy.get("vector") or [])
+        rows.append(copy)
+    out["entries"] = rows
     return out
 
 
@@ -871,7 +880,7 @@ def load_memory(store, session_id):
                 _conn.close()
             except Exception:
                 pass
-    doc = store_api.read_doc(root, session_id)
+    doc = store_api.read_doc(root, session_id, with_vectors=True)
     doc["session_id"] = str(doc.get("session_id") or session_id)
     _remember_doc(path, doc, _serialize_entries(doc["entries"]), token)
     return _copy_doc(doc)
