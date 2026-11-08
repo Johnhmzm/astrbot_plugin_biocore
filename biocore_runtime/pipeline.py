@@ -1039,6 +1039,70 @@ def capture_decision(session_id, role, text, state):
     return decision
 
 
+_SUMMARIZER_CACHE = {}
+
+
+def summarizer_from_config(store, payload=None):
+    """Build the event summariser from core_config.json.
+
+    The worker talks JSON over stdin, so it cannot hand a Python callable to
+    the core: every production capture arrived with summarizer=None and the
+    event layer silently did nothing. If the layer is on, the core builds the
+    callable itself; a missing block is an error, never a silent skip.
+    """
+    pl = payload if isinstance(payload, dict) else {}
+    if callable(pl.get("event_summarizer")):
+        return pl["event_summarizer"]        # the host always wins
+    try:
+        cfg = _load_runtime_config(store) if store else {}
+    except Exception:
+        cfg = {}
+    block = cfg.get("summarizer") if isinstance(cfg.get("summarizer"), dict) else {}
+    base_url = str(block.get("base_url") or cfg.get("summarizer_base_url") or "").strip()
+    model = str(block.get("model") or cfg.get("summarizer_model") or "").strip()
+    key = str(block.get("key") or cfg.get("summarizer_key") or "")
+    try:
+        timeout = float(block.get("timeout") or cfg.get("summarizer_timeout") or 60.0)
+    except Exception:
+        timeout = 60.0
+    if not base_url or not model:
+        raise RuntimeError(
+            "event_layer 已启用，但 core_config.json 里没有可用的 summarizer 段"
+            "（需要 base_url + model；也接受 summarizer_base_url/_model 扁平写法）——"
+            "没有任何入口能自己带一个 callable 进来，缺失就是错误")
+    cache_key = (base_url, model, key, timeout)
+    cached = _SUMMARIZER_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    def _summarise(prompt):
+        """One chat-completions call; returns the assistant text."""
+        import urllib.request
+        url = base_url.rstrip("/") + "/chat/completions"
+        request_payload = {"model": model, "temperature": 0,
+                           "messages": [{"role": "user",
+                                         "content": str(prompt or "")}]}
+        headers = {"Content-Type": "application/json"}
+        if key:
+            headers["Authorization"] = "Bearer " + key
+        request = urllib.request.Request(
+            url, data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
+            headers=headers, method="POST")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read()
+        try:
+            doc = json.loads(body.decode("utf-8", "replace"))
+        except Exception:
+            return ""
+        choices = doc.get("choices") if isinstance(doc, dict) else None
+        if not isinstance(choices, list) or not choices:
+            return ""
+        message = choices[0].get("message") if isinstance(choices[0], dict) else {}
+        return str((message or {}).get("content") or "")
+
+    _SUMMARIZER_CACHE[cache_key] = _summarise
+    return _summarise
+
 def capture(session_id, role, text, store, config=None):
     """Decide + remember + persist per-session capture state (thin IO)."""
     cfg = config if isinstance(config, dict) else {}
@@ -1056,6 +1120,10 @@ def capture(session_id, role, text, store, config=None):
     })
     decision = capture_decision(session_id, role, text, state)
     summarizer = cfg.get("event_summarizer")
+    if summarizer is None and _event_layer_on(store, cfg):
+        # production capture is JSON over stdin: no callable can travel with it,
+        # so the core builds the summariser from config instead of skipping
+        summarizer = summarizer_from_config(store, cfg)
     entry = None
     position = 0
     if decision["capture"]:
@@ -3577,6 +3645,14 @@ def _trim_lines(text, budget):
     note = "（已省略 %d 行，超出本次注入预算）" % dropped
     return "\n".join(kept) + "\n" + note
 
+def _inject_summarizer(store, payload):
+    """The host's callable if it sent one, else the config-built one."""
+    pl = payload if isinstance(payload, dict) else {}
+    if callable(pl.get("event_summarizer")):
+        return pl["event_summarizer"]
+    return summarizer_from_config(store, pl)
+
+
 def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                  query="", mode="query", rerank_config=None, now=None,
                  include_superseded=False, payload=None, as_of=None):
@@ -3598,8 +3674,7 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
         event_block = _event_layer_block(
             session_id, store, text_query, budget, rerank_config=rerank_config,
             payload=payload,
-            summarizer=(payload.get("event_summarizer")
-                        if isinstance(payload, dict) else None),
+            summarizer=_inject_summarizer(store, payload),
             as_of=as_of)
         if not event_block or not event_block.get("text"):
             raise RuntimeError("event_layer returned an empty block")
