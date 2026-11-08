@@ -53,6 +53,23 @@ class StoreHandleTest(unittest.TestCase):
                 sql_store.store_close()
                 shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_create_and_delete_ten_stores_in_a_row(self):
+        # the leak class this guards against shows up as a *later* failing
+        # cleanup, so the regression test has to repeat the cycle
+        for attempt in range(10):
+            tmp = tempfile.mkdtemp(prefix='handle-loop-')
+            store = str(Path(tmp) / 'store')
+            try:
+                out = pipeline.capture('s1', 'user',
+                                       '循环第 %d 次写入的足够长句子。' % attempt,
+                                       store, config={'now': 1.79e9 + attempt,
+                                                      'enabled': True})
+                self.assertIsNotNone(out.get('entry'))
+            finally:
+                sql_store.store_close()
+                shutil.rmtree(tmp)
+            self.assertFalse(Path(tmp).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
