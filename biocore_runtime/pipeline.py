@@ -110,6 +110,7 @@ EVENT_MAX_CHARS = int(os.environ.get("BIOCORE_EVENT_MAX_CHARS") or 900)  # safet
 EVENT_GAP_S = float(os.environ.get("BIOCORE_EVENT_GAP_S") or 86400.0)
 # a day of silence also splits an event
 RECALL_COARSE_N = int(os.environ.get("BIOCORE_RECALL_COARSE_N") or 40)
+RECALL_MULTIQUERY_TOP = int(os.environ.get("BIOCORE_MULTIQUERY_TOP") or 3)
 # EM coarse recall: sentence-level cosine, no model call
 RECALL_FINAL_K = int(os.environ.get("BIOCORE_RECALL_FINAL_K") or 12)
 # how many reranked sentences are rendered in full
@@ -3420,6 +3421,72 @@ def _event_notes_by_id(events):
     return out
 
 
+MULTIQUERY_ON = str(os.environ.get("BIOCORE_MULTIQUERY", "1")).strip().lower() not in ("0", "off", "false", "no")
+RRF_ON = str(os.environ.get("BIOCORE_RRF", "1")).strip().lower() not in ("0", "off", "false", "no")
+RRF_K = 60
+RRF_EVENT_TOP = int(os.environ.get("BIOCORE_RRF_EVENT_TOP") or 5)
+
+
+def _rewrite_queries(query, store=None, payload=None):
+    """2-3 retrieval queries from the question, or [query] when unavailable.
+
+    A rewrite may paraphrase, resolve a pronoun or split a sub-question; it must
+    not invent entities. Any failure (no model, bad JSON, timeout) falls back
+    to the original question with a warning: retrieval never fails because a
+    rewrite did.
+    """
+    text = str(query or "").strip()
+    if not text or not MULTIQUERY_ON:
+        return [text] if text else []
+    pl = payload if isinstance(payload, dict) else {}
+    ask = pl.get("query_rewriter")
+    if not callable(ask):
+        ask = None
+        try:
+            cfg = _load_runtime_config(store) if store else {}
+            block = cfg.get("rewriter") if isinstance(cfg.get("rewriter"), dict) else {}
+            if block.get("model") and block.get("base_url"):
+                ask = summarizer_from_config(store, {"summary_block": "rewriter"})
+        except Exception:
+            ask = None
+    if not callable(ask):
+        return [text]
+    prompt = ("把这个问题改写成 2-3 个不同角度的检索式，只输出 JSON 数组，元素是字符串。"
+              "要求：换一种说法、补全代词所指、必要时拆成子问题；"
+              "严禁引入原问题里没有的实体。" + chr(10) + text)
+    try:
+        raw = ask(prompt)
+        from biocore_memory.event import json_tolerant as _jt
+        data = _jt.loads(raw, prefer="[")
+    except Exception as exc:
+        logger.warning("[multiquery] rewrite failed, using the original: %s: %s",
+                       type(exc).__name__, str(exc)[:120])
+        return [text]
+    rows = [str(item).strip() for item in (data or []) if str(item or "").strip()]
+    seen, out = set(), []
+    for row in [text] + rows:
+        if row in seen:
+            continue
+        seen.add(row)
+        out.append(row)
+    return out[:max(1, 1 + RECALL_MULTIQUERY_TOP)]
+
+
+def _rrf_fuse(rank_lists, k=None):
+    """Reciprocal rank fusion: score = sum(1 / (k + rank)) over the lists."""
+    k = RRF_K if k is None else int(k)
+    scores, first_seen = {}, {}
+    position = 0
+    for rows in rank_lists or []:
+        for rank, key in enumerate(rows, 1):
+            if key not in scores:
+                scores[key] = 0.0
+                first_seen[key] = position
+                position += 1
+            scores[key] += 1.0 / (k + rank)
+    order = sorted(scores, key=lambda key: (-scores[key], first_seen[key]))
+    return [(key, round(scores[key], 6)) for key in order]
+
 def _sentence_recall_block(store, session_id, query, entries, events, payload=None,
                            rerank_config=None, now=None):
     """EM coarse (40) -> rerank fine (12) -> a block that folds instead of cutting.
@@ -3438,21 +3505,57 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             and str(row.get("text") or "").strip()]
     if not pool:
         return None
-    qvec = None
+    qvecs = []
     try:
         embed_fn = _event_embed_fn(store, _load_runtime_config(store), payload)
         if embed_fn is not None:
-            qvec = embed_fn(text)
+            for piece in _rewrite_queries(text, store, payload):
+                try:
+                    vector = embed_fn(piece)
+                except Exception:
+                    vector = None
+                if vector:
+                    qvecs.append(list(vector))
     except Exception:
-        qvec = None
-    scored = []
-    for row in pool:
-        if qvec:
-            score = _ch.cosine(qvec, row.get("vector") or [])
-        else:
-            score = _ch.lexical_score(text, str(row.get("text") or ""))
-        scored.append((float(score), row))
+        qvecs = []
+    if not qvecs:
+        # no embeddings at all: lexical on the original question only
+        scored = [(float(_ch.lexical_score(text, str(row.get("text") or ""))), row)
+                  for row in pool]
+    else:
+        scored = []
+        for row in pool:
+            vector = row.get("vector") or []
+            best = max((_ch.cosine(qv, vector) for qv in qvecs), default=0.0)
+            scored.append((float(best), row))
     scored.sort(key=lambda pair: -pair[0])
+    if RRF_ON and events:
+        try:
+            kindex = {str(row.get("id") or ""): pair for pair in scored for row in [pair[1]]}
+            ev_scores = []
+            for ev in events:
+                centroid = ev.get("vector") or []
+                if not centroid or not qvecs:
+                    continue
+                value = max((_ch.cosine(qv, centroid) for qv in qvecs), default=0.0)
+                ev_scores.append((float(value), ev))
+            ev_scores.sort(key=lambda pair: -pair[0])
+            by_event = {}
+            for row in pool:
+                by_event.setdefault(str(row.get("event_id") or ""), []).append(row)
+            sentence_rank = [str(row.get("id") or "") for _s, row in scored]
+            event_rank = []
+            for _s, ev in ev_scores[:max(1, RRF_EVENT_TOP)]:
+                for row in by_event.get(str(ev.get("event_id") or ""), []):
+                    key = str(row.get("id") or "")
+                    if key and key not in event_rank:
+                        event_rank.append(key)
+            if event_rank:
+                fused = _rrf_fuse([sentence_rank, event_rank])
+                order = {key: position for position, (key, _score) in enumerate(fused)}
+                scored.sort(key=lambda pair: order.get(str(pair[1].get("id") or ""), len(order)))
+        except Exception:
+            pass
     coarse = scored[:max(1, RECALL_COARSE_N)]
     picked = coarse[:max(1, RECALL_FINAL_K)]
     mode = "coarse"
