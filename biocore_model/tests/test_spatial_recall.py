@@ -72,8 +72,8 @@ class SpatialBase(unittest.TestCase):
         return pl.tool_call("remember", args, str(self.store), session_id=session)
 
     def entries(self, session="s1"):
-        path = self.store / "sessions" / session / "memory.json"
-        return json.loads(path.read_text(encoding="utf-8"))["entries"]
+        # sqlite is the store now: ask the pipeline for the JSON view
+        return pl.export_session_json(str(self.store), session)["entries"]
 
     def seed(self, session="s1"):
         for text, tags in (("我的猫叫团子，三岁", ["猫"]),

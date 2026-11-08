@@ -102,8 +102,7 @@ class CaptureTest(unittest.TestCase):
         self.assertTrue(first["decision"]["capture"])
         self.assertFalse(second["decision"]["capture"])
         self.assertEqual(second["decision"]["reason"], "hourly-limit")
-        doc = json.loads((Path(root) / "sessions" / "sess-a" / "memory.json")
-                         .read_text(encoding="utf-8"))
+        doc = pl.export_session_json(root, "sess-a")
         self.assertEqual(len(doc["entries"]), 1)
 
 
@@ -1492,10 +1491,8 @@ class CaptureInTurnTest(unittest.TestCase):
         self.root = store_root()
 
     def _entries(self):
-        path = Path(pl.memory_path(self.root, "A"))
-        if not path.exists():
-            return []
-        return json.loads(path.read_text(encoding="utf-8")).get("entries", [])
+        # sqlite is the store: the JSON file is an export, not the truth
+        return pl.export_session_json(self.root, "A").get("entries", [])
 
     def _turn_start(self, user_text="我叫小林，今天在杭州西湖边出差。", **extra):
         payload = {"session_id": "A", "user_text": user_text,

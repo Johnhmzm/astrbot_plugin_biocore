@@ -58,11 +58,22 @@ SCORING_KINDS = ("score_array", "logit_margin")
 
 
 class ProviderError(RuntimeError):
-    """Configuration or protocol problem the caller must fix."""
+    """Configuration or protocol problem the caller must fix.
+
+    reason is a short, stable string the caller may log or surface; it is the
+    only wire detail that escapes this module.
+    """
+
+    def __init__(self, message, reason="provider_error"):
+        super().__init__(message)
+        self.reason = str(reason or "provider_error")
 
 
 class UnknownScoring(ProviderError):
     """A rerank scoring kind that this module does not implement."""
+
+    def __init__(self, message):
+        super().__init__(message, reason="unknown_scoring")
 
 
 class EmbeddingSpaceMismatch(ProviderError):
@@ -276,8 +287,26 @@ class RerankProvider:
         self.cfg = resolve_rerank_config(config)
         self.transport = transport or _urllib_transport
 
+    def rank(self, query, docs, top_k=None):
+        """Ranked pairs [(index, score)], best first -- the only rerank output.
+
+        Only rows the endpoint actually scored are returned: a document the
+        service skipped must not silently become a 0.0 that still ranks.
+        """
+        pairs = self._pairs(query, docs, top_k=top_k)
+        pairs.sort(key=lambda pair: (-pair[1], pair[0]))
+        return pairs
+
     def rerank(self, query, docs, top_k=None):
-        """Scores aligned to the input docs (higher = more relevant)."""
+        """Dense scores aligned to the input docs (0.0 where unscored)."""
+        pairs = self._pairs(query, docs, top_k=top_k)
+        scores = [0.0 for _ in (docs or [])]
+        for index, score in pairs:
+            if 0 <= index < len(scores):
+                scores[index] = float(score)
+        return scores
+
+    def _pairs(self, query, docs, top_k=None):
         texts = []
         for item in docs or []:
             if isinstance(item, dict):
@@ -287,30 +316,51 @@ class RerankProvider:
         if not texts:
             return []
         text = str(query or "").strip()
-        if not text:
-            return [0.0 for _ in texts]
         cfg = self.cfg
-        if not cfg["enabled"] or not cfg["base_url"] or not cfg["model"]:
-            return [0.0 for _ in texts]
+        if not text or not cfg["enabled"] or not cfg["base_url"] or not cfg["model"]:
+            return []
         if not cfg["scoring"]:
-            raise UnknownScoring(
-                "rerank scoring is required: set scoring to one of %s"
-                % ", ".join(SCORING_KINDS))
+            raise UnknownScoring("rerank scoring is required: set it in providers config")
         top_n = int(top_k or cfg["top_n"])
         payload = {"model": cfg["model"], "query": text, "documents": texts,
                    "top_n": min(max(1, top_n), len(texts))}
         headers = {"Content-Type": "application/json"}
         if cfg["key"]:
             headers["Authorization"] = "Bearer " + cfg["key"]
-        url = cfg["base_url"] + "/rerank"
-        status, body = self.transport(url, payload, cfg["timeout"], headers)
+        urls = [cfg["base_url"] + "/rerank"]
+        if not cfg["base_url"].endswith("/v1"):
+            urls.append(cfg["base_url"] + "/v1/rerank")
+        status, body, last_reason = 0, b"", "http_error"
+        for url in urls:
+            try:
+                status, body = self.transport(url, payload, cfg["timeout"], headers)
+            except (TimeoutError, socket.timeout):
+                raise ProviderError("rerank request timed out", reason="timeout")
+            except urllib.error.HTTPError as error:
+                status = int(getattr(error, "code", 0) or 0)
+                last_reason = "http_%s" % status
+                continue
+            except Exception:
+                raise ProviderError("rerank request failed", reason="request_failed")
+            if 200 <= int(status or 0) < 300:
+                break
+            last_reason = "http_%s" % status
+        else:
+            raise ProviderError("rerank http_%s" % status, reason=last_reason)
         if not (200 <= int(status or 0) < 300):
-            raise ProviderError("rerank http_%s" % status)
-        doc = _json_body(body)
-        results = doc.get("results") if isinstance(doc, dict) else None
-        if not isinstance(results, list) or not results:
-            raise ProviderError("rerank response without results")
-        scores = [0.0 for _ in texts]
+            raise ProviderError("rerank http_%s" % status, reason=last_reason)
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", "replace")
+        try:
+            doc = json.loads(body or "{}")
+        except Exception:
+            raise ProviderError("rerank bad json", reason="bad_json")
+        if not isinstance(doc, dict):
+            raise ProviderError("rerank bad json", reason="bad_json")
+        results = doc.get("results")
+        if not isinstance(results, list):
+            raise ProviderError("rerank response without results", reason="bad_results")
+        pairs = []
         for item in results:
             if not isinstance(item, dict):
                 continue
@@ -320,21 +370,36 @@ class RerankProvider:
                 continue
             if not (0 <= index < len(texts)):
                 continue
-            scores[index] = self._score_of(item)
-        return scores
-
+            try:
+                score = float(self._score_of(item))
+            except Exception:
+                continue
+            if not math.isfinite(score):
+                continue
+            pairs.append((index, score))
+        if not pairs:
+            raise ProviderError("rerank returned no usable rows", reason="empty_results")
+        return pairs
     def _score_of(self, item):
         """The scoring branch lives HERE and nowhere else."""
         kind = self.cfg["scoring"]
         if kind == "score_array":
             for key in ("relevance_score", "score", "similarity"):
-                if item.get(key) is not None:
-                    return _num(item.get(key), 0.0)
-            raise ProviderError("score_array result without relevance_score")
+                value = item.get(key)
+                if value is None:
+                    continue
+                try:                     # strict: "bad" must be skipped, not 0.0
+                    return float(value)
+                except Exception:
+                    raise ProviderError("score_array result with a non-numeric score",
+                                        reason="bad_score")
+            raise ProviderError("score_array result without relevance_score",
+                                reason="bad_score")
         if kind == "logit_margin":
             margin = self._logit_margin(item)
             if margin is None:
-                raise ProviderError("logit_margin result without two logits")
+                raise ProviderError("logit_margin result without two logits",
+                                    reason="bad_score")
             return margin
         raise UnknownScoring("unknown rerank scoring %r" % kind)
 

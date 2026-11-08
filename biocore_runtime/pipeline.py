@@ -530,6 +530,12 @@ def _vector_space_config(store):
         cfg = _load_runtime_config(store) if store else {}
     except Exception:
         cfg = {}
+    # a missing config file is "unknown", NOT "use the defaults": resolving the
+    # defaults here is how a store ended up stamped bge-m3 while a Qwen model
+    # produced the vectors
+    data_dir = _store_data_dir(store) if store else None
+    if not cfg or (data_dir is not None and not (Path(data_dir) / CORE_CONFIG_FILE).exists()):
+        return None, None
     try:
         embed_cfg = _prov.resolve_embedding_config(cfg)
     except Exception:
@@ -634,12 +640,23 @@ def reembed_store(store, session_id, provider=None, batch_size=32):
         return {"ok": False, "reason": "no_store"}
     session_id = sanitize_session_id(session_id)
     embed_cfg, rerank_cfg = _vector_space_config(store)
+    want_model = str((embed_cfg or {}).get("model") or "")
+    if not want_model:
+        raise ValueError(
+            "reembed: embedding 配置未加载（core_config.json 缺失或键名不匹配）——"
+            "拒绝用默认模型名写 meta，否则向量是 A 模型算的、meta 记成 B 模型")
     if provider is None:
         try:
             from biocore_memory.recall import providers as _prov
             provider = _prov.load_embedding_provider(embed_cfg)
         except Exception as exc:
             return {"ok": False, "reason": "no_provider", "detail": type(exc).__name__}
+    actual_model = str(getattr(provider, "model", "") or "")
+    if actual_model and actual_model != want_model:
+        raise ValueError(
+            "reembed: provider 实际模型 %r 与配置模型 %r 不一致——"
+            "检查 core_config.json 的 embedding 键是否被加载（键名不匹配/嵌套层错）"
+            % (actual_model, want_model))
     doc = load_memory(store, session_id)
     entries = [row for row in doc.get("entries") or [] if isinstance(row, dict)]
     texts = [str(row.get("text") or "") for row in entries]
@@ -726,11 +743,20 @@ def _db_stamp(root, session_id):
     the file after our own writes, so every cache missed once per turn. Our own
     writes refresh the memos explicitly, so this only has to catch strangers.
     """
+    conn = None
     try:
         conn = _sql_store().connect(root, session_id)
         return int(conn.execute("PRAGMA data_version").fetchone()[0])
     except Exception:
         return None
+    finally:
+        # a stamp is one pragma: holding the handle would keep the db file
+        # undeletable on Windows (the temp-store cleanup in every test)
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
 
 
 def _file_stamp(path):
@@ -2863,10 +2889,50 @@ def _mean_vector(vectors):
     return [sum(row[i] for row in rows if len(row) == dim) / len(rows) for i in range(dim)]
 
 
+def _embedding_enabled(store, config, payload):
+    """True when this store asks for real embeddings (either config shape)."""
+    pl = payload if isinstance(payload, dict) else {}
+    block = pl.get("embedding") if isinstance(pl.get("embedding"), dict) else {}
+    if block.get("model") or block.get("base_url"):
+        return True
+    if pl.get("embedding_base_url") and pl.get("embedding_model"):
+        return True
+    cfg = config if isinstance(config, dict) else {}
+    inner = cfg.get("embedding") if isinstance(cfg.get("embedding"), dict) else {}
+    if inner.get("model") or inner.get("base_url"):
+        return True
+    if cfg.get("embedding_model") or cfg.get("embedding_base_url"):
+        return True
+    try:
+        runtime = _load_runtime_config(store) if store else {}
+    except Exception:
+        runtime = {}
+    inner = runtime.get("embedding") if isinstance(runtime.get("embedding"), dict) else {}
+    return bool(inner.get("model") or inner.get("base_url")
+                or runtime.get("embedding_model") or runtime.get("embedding_base_url"))
+
+
+def _embedding_required(store, config, payload):
+    return _embedding_enabled(store, config, payload)
+
 def _event_embed_fn(store, config, payload):
-    """One embed callable for this block; payload > config.json > env, else None."""
+    """One embed callable for this block; payload > config.json > env.
+
+    Accepts both config shapes: the new {"embedding": {...}} block and the old
+    flat embedding_* keys. When embedding is configured but no provider could be
+    built this raises -- a silent fallback to lexical matching makes every query
+    look alike and is far harder to notice than an error.
+    """
     pl_cfg = {}
     pl = payload if isinstance(payload, dict) else {}
+    block = pl.get("embedding") if isinstance(pl.get("embedding"), dict) else {}
+    if block:
+        pl_cfg = {"embedding_mode": block.get("mode") or "remote",
+                  "embedding_base_url": block.get("base_url") or "",
+                  "embedding_model": block.get("model") or "",
+                  "embedding_api_key": block.get("key") or "",
+                  "embedding_dim": int(block.get("dim") or 1024),
+                  "embedding_timeout": 30}
     if pl.get("embedding_base_url"):
         # the caller's payload wins over config.json for this embedding call
         pl_cfg = {"embedding_mode": pl.get("embedding_mode") or "remote",
@@ -2881,11 +2947,20 @@ def _event_embed_fn(store, config, payload):
         provider = _load_prov(pl_cfg) if pl_cfg else _load_prov(dict(config or {}))
         if provider is None:
             provider = _load_prov({})          # env-configured provider
-        if provider is None:
-            return None
-        return lambda text: _embed(str(text), provider, path=_embed_cache_path(store))
-    except Exception:
+    except Exception as exc:
+        if _embedding_required(store, config, payload):
+            raise RuntimeError(
+                "embedding 已启用但未能构造 embedder (%s)：检查 core_config.json 的 "
+                "embedding 键（新结构与旧扁平 embedding_* 都支持）；拒绝静默退化为词匹配"
+                % type(exc).__name__)
         return None
+    if provider is None:
+        if _embedding_required(store, config, payload):
+            raise RuntimeError(
+                "embedding 已启用但未能构造 embedder：检查 core_config.json 里 "
+                "embedding 块的 base_url/model；拒绝静默退化为词匹配")
+        return None
+    return lambda text: _embed(str(text), provider, path=_embed_cache_path(store))
 
 
 

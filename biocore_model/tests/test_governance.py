@@ -103,8 +103,7 @@ class IndexAndConceptTest(StoreCase):
     def test_remember_stores_concepts(self):
         pipeline.tool_call("remember", {"text": "苹果和咖啡都很好"},
                            {"root": str(self.store)}, session_id="s2")
-        doc = json.loads((self.store / "sessions" / "s2" / "memory.json")
-                         .read_text(encoding="utf-8"))
+        doc = pipeline.export_session_json(str(self.store), "s2")
         self.assertTrue(doc["entries"][0].get("concepts"))
 
     def test_concept_filter_narrows_candidates(self):

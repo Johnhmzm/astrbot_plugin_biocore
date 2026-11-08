@@ -158,8 +158,7 @@ class PipelineSpaceTest(unittest.TestCase):
         return pl.tool_call("remember", args, str(self.store), session_id=session)
 
     def stored(self, session="s1"):
-        path = self.store / "sessions" / session / "memory.json"
-        return json.loads(path.read_text(encoding="utf-8"))["entries"]
+        return pl.export_session_json(str(self.store), session)["entries"]
 
     def test_off_by_default_writes_nothing(self):
         out = self.remember("我的猫叫团子")

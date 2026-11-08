@@ -901,10 +901,20 @@ def _disabled_fallback_config(timeout):
 
 def _remote_provider(cfg):
     remote = _remote_settings(cfg)
-    if not remote["base_url"] or not remote["model"]:
+    if not remote["base_url"]:
         return None
+    if not str(remote["model"] or "").strip():
+        # cache_key(text, model) = sha256("model|text"): an empty model degrades
+        # the key to text-only, so a model swap would silently answer from the
+        # previous model's vectors. None keeps the "not configured" contract;
+        # embed() still raises if such a provider ever reaches it.
+        _warn_once("provider:no-model",
+                   "embedding base_url set but model empty: provider disabled "
+                   "(cache_key would degrade to text-only)")
+        return None
+    model = str(remote["model"]).strip()
     provider = OpenAICompatibleProvider(
-        remote["base_url"], remote["model"], remote["api_key"],
+        remote["base_url"], model, remote["api_key"],
         remote["timeout"], dim=remote["dim"])
     provider.mode = "remote"
     provider.fallback_config = _disabled_fallback_config(remote["timeout"])
@@ -924,6 +934,19 @@ class _LazyLocalEmbedder:
         self._cfg = dict(local_cfg or {})
         self._impl = None
         self._failed = None
+
+    @property
+    def model(self):
+        """A non-empty identity for the cache key.
+
+        The local model has no vendor name, but cache_key must never be
+        text-only: two different local checkpoints would otherwise share rows.
+        """
+        name = str(self._cfg.get("model_id") or "").strip()
+        if name:
+            return name
+        base = os.path.basename(str(self.model_path or "").rstrip("/\\"))
+        return ("local:" + base) if base else "local"
 
     @property
     def model_path(self):
@@ -1024,10 +1047,14 @@ def _fallback_provider(cfg):
     local_cfg = dict(cfg)
     local_cfg["embedding_local_fallback_enabled"] = True
     local = local_config(local_cfg)
-    if not (remote["base_url"] and remote["model"]):
+    if not remote["base_url"]:
         return _local_provider(cfg) if local.get("model_path") else None
+    if not str(remote["model"] or "").strip():
+        raise ValueError(
+            "embedding model 未配置（base_url 已给但 model 为空）："
+            "cache_key 会退化为纯文本键，换模型将静默命中旧向量")
     provider = OpenAICompatibleProvider(
-        remote["base_url"], remote["model"], remote["api_key"],
+        remote["base_url"], str(remote["model"]).strip(), remote["api_key"],
         remote["timeout"], dim=remote["dim"])
     provider.mode = "remote_with_local_fallback"
     if local.get("model_path"):
@@ -1127,7 +1154,12 @@ def _call_provider(provider, text, timeout):
 
 
 def embed(text, provider, cache=None, timeout=None, path=None):
-    """Return a vector for text, or None (never raises).
+    """Return a vector for text, or None.
+
+    Raises ValueError for a provider that does not name its model: that is a
+    wiring bug, not a transient failure, and a silent text-only cache key would
+    poison every later lookup.
+
 
     Both caches are optional: the caller may pass an in-memory LRU, and the
     disk cache lives at path (default: the configured cache file, or none).
@@ -1139,7 +1171,15 @@ def embed(text, provider, cache=None, timeout=None, path=None):
     normalized = normalize_text(text)
     if not normalized:
         return None
-    model = str(getattr(provider, "model", "") or "")
+    model = str(getattr(provider, "model", "") or "").strip()
+    if not model and str(getattr(provider, "mode", "") or "") in (
+            "remote", "remote_with_local_fallback"):
+        # last line of defence for a REMOTE provider: cache_key(text, "") is
+        # text-only, so a model swap would answer from the previous model's
+        # vectors. A local checkpoint identifies itself by its path instead.
+        raise ValueError(
+            "embedding provider has no model name; cache_key would degrade to "
+            "text-only and a model swap would hit stale vectors")
     key = cache_key(normalized, model)
     cached = _cache_get(cache, key)
     if cached is not None:

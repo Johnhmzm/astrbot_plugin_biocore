@@ -36,8 +36,9 @@ class MockEmbedder:
 
     model = "mock"
 
-    def __init__(self, dim):
+    def __init__(self, dim, model="mock"):
         self.dim = dim
+        self.model = model
         self.calls = 0
 
     def embed(self, texts):
@@ -85,7 +86,9 @@ class EmbeddingDimTest(unittest.TestCase):
         with self.assertRaises(prov.EmbeddingSpaceMismatch):
             pipeline.ensure_vector_space(self.store, "s1")
 
-        mock = MockEmbedder(768)
+        # the provider must agree with the configured model, or reembed refuses
+        # to stamp meta (that mismatch is exactly the silent-mislabel bug)
+        mock = MockEmbedder(768, model="m-768")
         result = pipeline.reembed_store(self.store, "s1", provider=mock)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["dim"], 768)

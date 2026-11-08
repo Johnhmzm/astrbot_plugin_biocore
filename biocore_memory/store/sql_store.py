@@ -6,7 +6,10 @@ store that only has JSON imports it once, so old installs keep working.
 """
 from __future__ import annotations
 
+import atexit
+import contextlib
 import json
+import weakref
 import os
 import sqlite3
 import struct
@@ -66,13 +69,18 @@ def db_path(root, session_id):
     return Path(root) / 'sessions' / str(session_id) / 'memory.db'
 
 
+_OPEN_CONNS = []          # weak refs only: a forgotten handle must not survive
+                          # (a strong list would keep the file undeletable forever)
+
+
 def connect(root, session_id):
-    """A fresh connection per call; the caller owns it and closes it.
+    """A fresh connection per call; registered so store_close() can release it.
 
     Pooling was tried and removed: a held handle makes the temporary store
-    directory undeletable on Windows (WinError 32), which breaks every test that
-    cleans up a store. The per-turn memos key on PRAGMA data_version, so they do
-    not need a long-lived connection to stay coherent.
+    directory undeletable on Windows (WinError 32). A registry is not pooling --
+    it exists because a *forgotten* close is exactly the same bug, and callers
+    that legitimately hold a handle (a test, a worker shutdown) need one way to
+    let go of all of them.
     """
     path = db_path(root, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +89,68 @@ def connect(root, session_id):
     conn.execute('PRAGMA synchronous=NORMAL')
     conn.executescript(SCHEMA)
     conn.commit()
+    try:
+        _OPEN_CONNS.append(weakref.ref(conn))
+    except TypeError:       # a backend without weakref support: nothing to track
+        pass
     return conn
+
+
+def store_close(path=None):
+    """Close every registered connection (or only those of one database).
+
+    Safe to call from anywhere, any number of times: a closed handle is dropped
+    from the registry, so the next connect() starts clean.
+    """
+    root = None
+    if path is not None:
+        root = str(Path(path).resolve())
+    closed = 0
+    keep = []
+    for ref in list(_OPEN_CONNS):
+        conn = ref() if callable(ref) else ref
+        if conn is None:
+            continue                  # already collected and closed by CPython
+        if False:
+            pass
+        target = ""
+        try:
+            target = str(Path(conn.execute("PRAGMA database_list").fetchone()[2]))
+        except Exception:
+            target = ""
+        if root is not None and target and Path(target).resolve().as_posix() != Path(root).as_posix():
+            keep.append(conn)
+            continue
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.close()
+            closed += 1
+        except Exception:
+            pass
+    _OPEN_CONNS[:] = keep
+    return closed
+
+
+@contextlib.contextmanager
+def store_open(root, session_id):
+    """Hold one store connection for a block and release it on the way out."""
+    conn = connect(root, session_id)
+    try:
+        yield conn
+    finally:
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _OPEN_CONNS[:] = [ref for ref in _OPEN_CONNS
+                          if (ref() if callable(ref) else ref) not in (None, conn)]
 
 
 def _read_json(path, default):
@@ -383,14 +452,9 @@ def journal_tail(conn, limit=50, kind=None):
     return out
 
 
-def close_connections():
-    """No-op hook kept for symmetry with the embedding cache.
-
-    Store connections are not pooled (a held handle breaks temp-dir cleanup on
-    Windows), so there is nothing to release; the name exists so a test helper
-    can call both caches without knowing which one pools.
-    """
-    return 0
+def close_connections(path=None):
+    """Alias kept for the test helper: every store handle is released."""
+    return store_close(path)
 
 
 def backfill_vectors(root, session_id, events_path=None):
@@ -449,6 +513,9 @@ def open_or_import(root, session_id, events_path=None):
     info['vectors'] = backfill_vectors(root, session_id, events_path=events_path)
     info['fresh'] = fresh
     return conn, info
+
+
+atexit.register(store_close)
 
 
 def _ensure_events_centroid(conn):
