@@ -4107,7 +4107,9 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
     if _event_layer_on(store, payload):
-        # no fallback here: a broken event layer must fail loudly
+        # both views, not either/or: claims carry the correction/conflict state,
+        # sentences carry the fact itself. The event layer used to return first,
+        # which made the sentence branch below unreachable.
         event_block = _event_layer_block(
             session_id, store, text_query, budget, rerank_config=rerank_config,
             payload=payload,
@@ -4115,6 +4117,38 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
             as_of=as_of)
         if not event_block or not event_block.get("text"):
             raise RuntimeError("event_layer returned an empty block")
+        if SENTENCE_RECALL_ON and str(text_query).strip():
+            try:
+                _pool = [row for row in _visible(load_memory(store, session_id).get("entries"))
+                         if isinstance(row, dict) and str(row.get("text") or "").strip()]
+                _evs = (_load_event_state(store, session_id).get("events") or [])
+                _sent_probe = _sentence_recall_block(
+                    store, session_id, text_query, _pool, _evs, payload=payload,
+                    rerank_config=rerank_config, now=None,
+                    budget_chars=RECALL_INJECT_CHARS)
+                # point to surface: the claims come from the events the hit
+                # sentences belong to, never from the whole history
+                _hit_ids = set(str(x) for x in ((_sent_probe or {}).get("ids") or []))
+                _hit_events = []
+                if _hit_ids:
+                    for _ev in _evs:
+                        for _row in _ev.get("entries") or []:
+                            if str(_row.get("id") or "") in _hit_ids:
+                                _hit_events.append(_ev)
+                                break
+                _lines = _claims_state_lines(_hit_events or _evs, limit=8)
+                _head = chr(10).join(_lines)
+                _room = max(200, RECALL_INJECT_CHARS - len(_head) - 1)
+                _sent = _sentence_recall_block(
+                    store, session_id, text_query, _pool, _evs, payload=payload,
+                    rerank_config=rerank_config, now=None, budget_chars=_room)
+                _body = (_sent or {}).get("text") or ""
+                if _body:
+                    _merged = ((_head + chr(10)) if _head else "") + _body
+                    return dict(event_block, text=_merged, chars=len(_merged))
+            except Exception as exc:
+                logger.warning("[sentence] merge fallback: %s: %s",
+                               type(exc).__name__, str(exc)[:160])
         return event_block
     if SENTENCE_RECALL_ON and str(text_query).strip():
         # reachable without the event layer: production runs segment recall,
@@ -4146,8 +4180,19 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                             continue
                         if _turn and _stamp > 0 and _turn not in _turn_dates:
                             _turn_dates[_turn] = _day_str(_stamp)
-                _state_lines = _claims_state_lines(_evs, limit=8,
-                                               turn_dates=_turn_dates)
+                # scope the claims to the events the hit sentences belong to: a global
+                # top-8 surfaced unrelated lines (口头禅 etc.) and pushed the relevant
+                # ones out of the block
+                _hit_ids = set(str(x) for x in (_block.get("ids") or []))
+                _hit_events = []
+                if _hit_ids:
+                    for _ev in _evs:
+                        for _row in _ev.get("entries") or []:
+                            if str(_row.get("id") or "") in _hit_ids:
+                                _hit_events.append(_ev)
+                                break
+                _state_lines = _claims_state_lines(_hit_events or _evs, limit=8,
+                                                   turn_dates=_turn_dates)
             except Exception as exc:
                 logger.warning("[claims] merge failed: %s: %s",
                                type(exc).__name__, str(exc)[:120])
