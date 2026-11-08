@@ -101,6 +101,12 @@ EVENT_CLOSE_CHARS = int(os.environ.get("BIOCORE_EVENT_CLOSE_CHARS") or 2000)
 EVENT_MAX_CHARS = int(os.environ.get("BIOCORE_EVENT_MAX_CHARS") or 900)  # safety net
 EVENT_GAP_S = float(os.environ.get("BIOCORE_EVENT_GAP_S") or 86400.0)
 # a day of silence also splits an event
+RECALL_COARSE_N = int(os.environ.get("BIOCORE_RECALL_COARSE_N") or 40)
+# EM coarse recall: sentence-level cosine, no model call
+RECALL_FINAL_K = int(os.environ.get("BIOCORE_RECALL_FINAL_K") or 12)
+# how many reranked sentences are rendered in full
+RECALL_INJECT_CHARS = int(os.environ.get("BIOCORE_RECALL_INJECT_CHARS") or 2000)
+# the whole block is capped here; over budget means "fold", never "drop"
 TOP_K = 5                 # [engineering]
 INJECT_MAX_K = 10          # inject_block may ask for more when rerank prunes
 INJECT_MODES = ("query", "recent")
@@ -3305,6 +3311,142 @@ def _event_should_close(buf, item, sim, gap, thr, close_chars=None,
             return "chars"
     return ""
 
+def _day_str(ts):
+    """YYYY-MM-DD for a timestamp; "" when unusable (never a relative phrase)."""
+    try:
+        import datetime as _dt
+        return _dt.datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
+
+
+def _event_notes_by_id(events):
+    """event_id -> {note, span, score}: one line per event under the sentences."""
+    out = {}
+    for ev in events or []:
+        eid = str(ev.get("event_id") or "")
+        if not eid:
+            continue
+        stamps = [float(r.get("ts") or 0.0) for r in ev.get("entries") or []
+                  if isinstance(r, dict) and float(r.get("ts") or 0.0) > 0]
+        span = ""
+        if stamps:
+            a, b = _day_str(min(stamps)), _day_str(max(stamps))
+            span = a if a == b else "%s 至 %s" % (a, b)
+        out[eid] = {"note": str(ev.get("note") or ev.get("overview") or "").strip(),
+                    "span": span}
+    return out
+
+
+def _sentence_recall_block(store, session_id, query, entries, events, payload=None,
+                           rerank_config=None, now=None):
+    """EM coarse (40) -> rerank fine (12) -> a block that folds instead of cutting.
+
+    Three red lines: a sentence is never truncated mid-way, never silently
+    dropped, never removed for budget reasons. Over budget, detail degrades in
+    order -- full sentence, then the event's one-line note, then a single
+    reference line -- so the evidence stays reachable at every step.
+    """
+    from biocore_memory.recall import channels as _ch
+    text = str(query or "").strip()
+    if not text:
+        return None
+    pool = [row for row in (entries or [])
+            if isinstance(row, dict) and not row.get("archived")
+            and str(row.get("text") or "").strip()]
+    if not pool:
+        return None
+    qvec = None
+    try:
+        embed_fn = _event_embed_fn(store, _load_runtime_config(store), payload)
+        if embed_fn is not None:
+            qvec = embed_fn(text)
+    except Exception:
+        qvec = None
+    scored = []
+    for row in pool:
+        if qvec:
+            score = _ch.cosine(qvec, row.get("vector") or [])
+        else:
+            score = _ch.lexical_score(text, str(row.get("text") or ""))
+        scored.append((float(score), row))
+    scored.sort(key=lambda pair: -pair[0])
+    coarse = scored[:max(1, RECALL_COARSE_N)]
+    picked = coarse[:max(1, RECALL_FINAL_K)]
+    mode = "coarse"
+    if _rerank_mod is not None and len(coarse) > 1:
+        try:
+            ranked = _rerank_mod.rerank_documents(
+                text, [str(row.get("text") or "") for _s, row in coarse],
+                rerank_config)
+            if ranked:
+                order = [int(item["index"]) for item in ranked
+                         if isinstance(item, dict) and item.get("index") is not None]
+                picked = [coarse[index] for index in order
+                          if 0 <= index < len(coarse)][:max(1, RECALL_FINAL_K)]
+                mode = "rerank"
+        except Exception:
+            picked = coarse[:max(1, RECALL_FINAL_K)]
+    notes = _event_notes_by_id(events)
+    budget = max(200, RECALL_INJECT_CHARS)
+    header = "【相关记忆】"
+
+    def _sentence_line(score, row):
+        when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
+        body = str(row.get("text") or "").strip()
+        return "- %s%s" % (body, ("（%s）" % when) if when else "")
+
+    def _note_line(score, row):
+        info = notes.get(str(row.get("event_id") or "")) or {}
+        note = str(info.get("note") or "").strip()
+        if not note:
+            return ""
+        when = info.get("span") or ""
+        tail = "，相关度 %.2f" % score
+        return "  · %s%s%s" % (note, ("（%s）" % when) if when else "", tail)
+
+    rows = [(score, row, _sentence_line(score, row)) for score, row in picked]
+    folded = []                      # ids folded into the reference line
+    notes_used = set()
+    render = [line for _s, _r, line in rows]
+    # room for the fold trailer: the reference line plus the counter. Reserving
+    # it up front is what keeps the final block inside the budget -- appending
+    # the trailer after the loop used to overshoot by exactly its length
+    reserve = 90
+    while True:
+        total = len(header) + sum(len(line) + 1 for line in render)
+        if total <= max(100, budget - reserve) or len(render) <= 1:
+            break
+        index = len(render) - 1      # lowest score first
+        score, row, line = rows[index]
+        if row.get("id") in folded:
+            break
+        note_line = _note_line(score, row)
+        eid = str(row.get("event_id") or "")
+        if note_line and eid and eid not in notes_used and len(note_line) < len(line):
+            render[index] = note_line
+            notes_used.add(eid)
+            continue
+        folded.append(str(row.get("id") or ""))
+        render.pop(index)
+        rows.pop(index)
+    lines = list(render)
+    if folded:
+        stamps = [float(row.get("ts") or 0.0) for _s, row, _l in rows if row.get("ts")]
+        a = _day_str(min(stamps)) if stamps else ""
+        b = _day_str(max(stamps)) if stamps else ""
+        span = ("%s 至 %s" % (a, b)) if a and b and a != b else (a or "无时间")
+        scores = [score for score, _r, _l in rows] or [0.0]
+        lines.append("另有 %d 条相关记忆（%s，相关度 %.2f-%.2f，id 见 meta）"
+                     % (len(folded), span, min(scores), max(scores)))
+        lines.append("已折叠 %d 条" % len(folded))
+    body = header + "\n" + "\n".join(lines)
+    return {"text": body, "chars": len(body), "mode": mode,
+            "coarse": len(coarse), "kept": len(rows) + len(folded),
+            "folded": len(folded), "folded_ids": folded,
+            "ids": [str(row.get("id") or "") for _s, row, _l in rows]}
+
+
 def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                        payload=None, summarizer=None, as_of=None):
     """Incremental event maintenance + two-stage recall, rendered for injection."""
@@ -3421,6 +3563,15 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                           {"seen": len(entries), "events": events,
                            "state": global_state, "open": buf})
     _as_of_ts = None
+    if str(query or "").strip():
+        try:
+            _sentence_block = _sentence_recall_block(
+                store, session_id, query, entries, events, payload=payload,
+                rerank_config=rerank_config, now=at)
+        except Exception:
+            _sentence_block = None
+        if _sentence_block and _sentence_block.get("text"):
+            return _sentence_block
     if isinstance(payload, dict):
         try:
             _as_of_ts = float(payload.get("as_of_ts")) if payload.get("as_of_ts") else None
