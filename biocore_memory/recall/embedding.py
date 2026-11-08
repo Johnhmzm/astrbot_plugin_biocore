@@ -1204,12 +1204,15 @@ def embed_many(texts, provider, path=None, timeout=None):
             continue
         pending.append(text)
         pending_index.append(index)
+    requests = 0
     if pending:
         EMBED_STATS["miss"] = int(EMBED_STATS.get("miss", 0)) + len(pending)
+        before = int(getattr(provider, "requests", 0) or 0)
         try:
             vectors = provider.embed(pending)
         except Exception:
             vectors = []
+        requests = max(0, int(getattr(provider, "requests", 0) or 0) - before)
         for slot, vector in enumerate(vectors or []):
             if slot >= len(pending_index):
                 break
@@ -1222,6 +1225,15 @@ def embed_many(texts, provider, path=None, timeout=None):
             _memo_put(key, checked)
             if target:
                 cache_put(key, checked, target)
+    # batching is observable: rows is what the caller asked for, requests is
+    # what actually went over the wire (misses only, batched by the provider)
+    EMBED_STATS["rows"] = int(EMBED_STATS.get("rows", 0)) + len(normalized)
+    EMBED_STATS["requests"] = int(EMBED_STATS.get("requests", 0)) + requests
+    try:
+        logger.info("[embed_many] rows=%d requests=%d misses=%d",
+                    len(normalized), requests, len(pending))
+    except Exception:
+        pass
     return out
 
 

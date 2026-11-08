@@ -245,6 +245,9 @@ class OpenAICompatEmbeddings:
     def _embed_batch(self, batch):
         if not self.cfg["base_url"] or not self.cfg["model"]:
             raise ProviderError("embedding base_url/model not configured")
+        # request counter: batching is only real if this stays small while the
+        # row count grows (embed_many reports both)
+        self.requests = int(getattr(self, "requests", 0)) + 1
         payload = {"model": self.cfg["model"], "input": batch,
                    "encoding_format": "float"}
         headers = {"Content-Type": "application/json"}
