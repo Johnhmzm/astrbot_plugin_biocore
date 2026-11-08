@@ -994,7 +994,10 @@ def capture_decision(session_id, role, text, state):
     if not text:
         decision["reason"] = "empty"
         return decision
-    if len(text) < _int_param(state.get("min_chars"), MIN_CHARS, 2, 200):
+    # 0 is a legal value ("keep every non-empty line"), so the clamp starts at 0:
+    # clamping to 2 made min_chars=0 silently behave like the default 8
+    min_chars = _int_param(state.get("min_chars"), MIN_CHARS, 0, 200)
+    if len(text) < min_chars:
         decision["reason"] = "too-short"
         return decision
     if text in _recent_for(state, session_id):
@@ -1004,7 +1007,9 @@ def capture_decision(session_id, role, text, state):
     hourly_cap = _int_param(state.get("hourly_cap"), HOURLY_CAP, 0, 1000)
     live = [stamp for stamp in _stamps_for(state, session_id)
             if now - stamp < _HOUR]
-    if hourly_cap <= 0 or len(live) >= hourly_cap:
+    # 0 means "no rate limit": it used to mean "reject everything", which made
+    # the unlimited case inexpressible and a 0 typo look like a hard stop
+    if hourly_cap > 0 and len(live) >= hourly_cap:
         decision["reason"] = "hourly-limit"
         return decision
     decision["capture"] = True
