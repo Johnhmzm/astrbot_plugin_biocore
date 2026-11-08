@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """Embedding determinism: the disk cache is keyed by text + model.
 
-The same text through the same model returns the same vector bit for bit; the
+The same text through the same model returns the same vector (float32-exact in
+the db cache, bit for bit in the legacy json cache); the
 key carries the model name so a model swap can never be answered with a stale
 vector. Writes go through a temp file + os.replace and a corrupt cache is a
 miss, not a crash. /state reports {hit, miss, size}.
@@ -55,25 +56,32 @@ class DeterminismTest(unittest.TestCase):
         emb.embed_stats(reset=True)
 
     def tearDown(self):
+        # the cache pools one writer handle: release it before the temp dir goes
+        emb.cache_close()
         self.tmp.cleanup()
 
     def test_the_same_text_returns_the_same_vector(self):
         provider = FakeProvider([0.1, 0.2, 0.3])
         first = emb.embed("你好", provider, path=self.path)
         second = emb.embed("你好", provider, path=self.path)
-        self.assertEqual(first, second)
+        # the db stores float32 (4 KB per 1024-d vector): a round-trip is exact to
+        # float32, not to the float64 the json cache happened to keep
+        for got, want in zip(second, first):
+            self.assertAlmostEqual(got, want, places=6)
         self.assertEqual(provider.calls, 1)          # second call: cache hit
-        self.assertTrue(Path(self.path).exists())
+        # the file that exists depends on the backend (json file or sqlite db)
+        expected = (emb.sqlite_cache_path(self.path)
+                    if emb.cache_backend(self.path) == "sqlite" else self.path)
+        self.assertTrue(Path(expected).exists())
 
     def test_a_second_process_reads_the_disk_cache(self):
         first = emb.embed("你好", FakeProvider([0.1, 0.2, 0.3]), path=self.path)
         other = FakeProvider([9.9, 9.9])            # would differ if it ran
         second = emb.embed("你好", other, path=self.path)
-        self.assertEqual(second, first)
+        for got, want in zip(second, first):
+            self.assertAlmostEqual(got, want, places=6)
         self.assertEqual(other.calls, 0)
-        doc = json.loads(Path(self.path).read_text(encoding="utf-8"))
-        self.assertEqual(doc["format"], emb.CACHE_FORMAT)
-        self.assertEqual(len(doc["entries"]), 1)
+        self.assertEqual(len(emb.read_cache(self.path)), 1)   # backend-agnostic
 
     def test_write_leaves_no_temp_file(self):
         emb.embed("写入", FakeProvider([1.0]), path=self.path)
@@ -82,6 +90,13 @@ class DeterminismTest(unittest.TestCase):
 
     def test_corrupt_cache_degrades_to_a_miss(self):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        if emb.cache_backend(self.path) == "sqlite":
+            # the db is not the json: a corrupt json is simply not consulted
+            Path(self.path).write_text("{ this is not json", encoding="utf-8")
+            vector = emb.embed("坏掉的缓存", FakeProvider([0.5, 0.5]), path=self.path)
+            self.assertEqual(vector, [0.5, 0.5])
+            self.assertEqual(len(emb.read_cache(self.path)), 1)
+            return
         Path(self.path).write_text("{ this is not json", encoding="utf-8")
         vector = emb.embed("坏掉的缓存", FakeProvider([0.5, 0.5]), path=self.path)
         self.assertEqual(vector, [0.5, 0.5])
@@ -96,7 +111,9 @@ class DeterminismTest(unittest.TestCase):
         self.assertEqual(info["size"], 2)
         self.assertEqual(info["miss"], 2)
         self.assertEqual(info["hit"], 1)
-        self.assertEqual(info["file"], self.path)
+        self.assertEqual(info["file"],
+                         emb.sqlite_cache_path(self.path)
+                         if emb.cache_backend(self.path) == "sqlite" else self.path)
 
 
 class PathTest(unittest.TestCase):
@@ -138,6 +155,7 @@ class StateTest(unittest.TestCase):
             cache = Path(root) / "cache" / "embedding.json"
             emb.embed("统计", FakeProvider([0.3]), path=str(cache))
             out = pipeline.dispatch("state", {"session_id": "s1", "store": root})
+            emb.cache_close()          # release the handle before the with-block exits
             info = out["state"]["embedding_cache"]
             for key in ("hit", "miss", "size"):
                 self.assertIn(key, info)

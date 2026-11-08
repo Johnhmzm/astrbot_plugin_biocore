@@ -8,6 +8,8 @@ degrades to lexical instead of failing. urllib + stdlib only.
 """
 from __future__ import annotations
 
+import atexit
+import contextlib
 import hashlib
 import json
 import logging
@@ -195,11 +197,17 @@ def _cache_stamp(target):
 def read_cache(path=None):
     """The cache mapping; a corrupt or unreadable file is simply a miss.
 
+    Dispatches to the active backend: under sqlite the whole table is returned
+    (this is a debug/inspection read, not the hot path -- embed() uses
+    cache_get_many for one key).
+
     A stat-keyed memo keeps the hot path from re-parsing the file for every
     embedding in one process; another writer (or any mtime change) invalidates
     it, so it can only save a read, never serve a stale vector.
     """
     target = path or configured_cache_file()
+    if target and cache_backend(target) == "sqlite":
+        return _sqlite_rows(target)
     if not target or not os.path.isfile(target):
         return {}
     stamp = _cache_stamp(target)
@@ -249,13 +257,14 @@ def write_cache(rows, path=None):
 def cache_backend(path=None):
     """'sqlite' when the incremental cache is switched on, else 'json'.
 
-    Still opt-in (BIOCORE_EMBED_CACHE=sqlite): flipping the default needs the
-    connection lifetime fixed first -- the pooled writer keeps a handle on the
-    file, and on Windows that breaks temp-dir cleanup in ~45 unrelated tests
-    (WinError 32). Tracked in task-246 as the one open item for this switch.
+    The pooled writer keeps a handle on the file, so anything that copies or
+    deletes a store calls cache_close() first (the test suite does it in an
+    autouse fixture). BIOCORE_EMBED_CACHE=json keeps the old single-file cache.
     """
     mode = str(os.environ.get("BIOCORE_EMBED_CACHE") or "").strip().lower()
-    return "sqlite" if mode in ("sqlite", "db", "1", "on") else "json"
+    if mode in ("json", "file", "legacy", "off", "0"):
+        return "json"
+    return "sqlite"
 
 
 def sqlite_cache_path(path=None):
@@ -270,10 +279,60 @@ _SQL_READY = {"path": None, "ready": False}
 _SQL_CONN = {"path": None, "conn": None}
 
 
+def _close_conn():
+    """Drop the pooled writer; safe to call any number of times."""
+    conn = _SQL_CONN.get("conn")
+    _SQL_CONN.update({"path": None, "conn": None})
+    if conn is None:
+        return False
+    try:
+        conn.commit()
+    except Exception:
+        pass
+    try:
+        conn.close()
+    except Exception:
+        pass
+    return True
+
+
+def cache_close(path=None):
+    """Release the cache handle so the files can be moved or deleted.
+
+    The writer connection is pooled for speed (opening sqlite per vector
+    dominated the write), which on Windows keeps a handle on the file: temp-dir
+    cleanup, a store copy, or a re-point at another cache all need this. A
+    path argument closes only when it matches the open one.
+    """
+    db = sqlite_cache_path(path) if path else None
+    if db is not None and _SQL_CONN.get("path") not in (None, db):
+        return False
+    closed = _close_conn()
+    _SQL_READY.update({"path": None, "ready": False})
+    return closed
+
+
+atexit.register(cache_close)
+
+
+@contextlib.contextmanager
+def cache_open(path=None):
+    """Hold the cache for one block and release the handle on the way out."""
+    cache_init(path)
+    try:
+        yield sqlite_cache_path(path)
+    finally:
+        cache_close(path)
+
+
 def _shared_conn(db):
     """One write connection per process: opening sqlite per vector dominated the write."""
-    if _SQL_CONN["path"] == db and _SQL_CONN["conn"] is not None:
-        return _SQL_CONN["conn"]
+    current = _SQL_CONN.get("conn")
+    if _SQL_CONN["path"] == db and current is not None:
+        return current
+    if current is not None:          # re-pointing at another cache closes the old one
+        _close_conn()
+        _SQL_READY.update({"path": None, "ready": False})
     conn = _sql_connect(db)
     _SQL_CONN.update({"path": db, "conn": conn})
     return conn
@@ -395,6 +454,26 @@ def cache_put(key, vector, path=None):
         return False
 
 
+def _sqlite_rows(path=None):
+    """Every row of the db cache as {key: vector} (debug/inspection only)."""
+    db = sqlite_cache_path(path)
+    if not db or not os.path.isfile(db):
+        return {}
+    try:
+        conn = _sql_connect(db, create=False)
+        try:
+            out = {}
+            for key, blob in conn.execute("SELECT key, vector FROM vec"):
+                vector = unpack_vector(blob)
+                if vector:
+                    out[str(key)] = vector
+            return out
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
 def cache_count(path=None):
     db = sqlite_cache_path(path)
     if not db or not os.path.isfile(db):
@@ -423,7 +502,10 @@ def cache_summary(path=None, data_dir=None):
                          if total else 0.0),
             "memory_hit": memory_hit, "disk_hit": disk_hit,
             "corrupt": int(EMBED_STATS.get("corrupt", 0)),
-            "file": str(target or "")}
+            "file": str((sqlite_cache_path(target)
+                         if target and cache_backend(target) == "sqlite"
+                         else target) or ""),
+            "backend": cache_backend(target) if target else "none"}
 
 
 def _cache_trim(rows, keep=EMBED_CACHE_MAX):

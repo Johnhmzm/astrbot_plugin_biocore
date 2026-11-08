@@ -383,6 +383,16 @@ def journal_tail(conn, limit=50, kind=None):
     return out
 
 
+def close_connections():
+    """No-op hook kept for symmetry with the embedding cache.
+
+    Store connections are not pooled (a held handle breaks temp-dir cleanup on
+    Windows), so there is nothing to release; the name exists so a test helper
+    can call both caches without knowing which one pools.
+    """
+    return 0
+
+
 def backfill_vectors(root, session_id, events_path=None):
     """One-time: lift per-entry vectors out of the legacy event file.
 
