@@ -202,7 +202,12 @@ def apply_decisions(events, decisions, now=None):
     return applied
 
 
-def compact(events, budget_chars, ask, ratio=None, unarchived=None):
+COMPACT_BATCH_EVENTS = 4   # one request per few events: a long history produced
+                          # a JSON answer long enough to be truncated (33 s, then
+                          # "整理结果无法解析")
+
+
+def compact(events, budget_chars, ask, ratio=None, unarchived=None, batch_events=None):
     """One compaction pass.
 
     ask(prompt) -> raw model text. A missing ask is an error: falling back to
@@ -215,8 +220,21 @@ def compact(events, budget_chars, ask, ratio=None, unarchived=None):
     if not callable(ask):
         raise CompactionError(
             "容量已达阈值但没有可用的整理模型：拒绝回落到截断上下文")
-    raw = ask(compaction_prompt(events, budget_chars))
-    decisions = parse_decisions(raw)
-    applied = apply_decisions(events, decisions)
-    return {"triggered": True, "applied": applied,
+    size = int(batch_events or COMPACT_BATCH_EVENTS)
+    applied, batches, failed = [], 0, []
+    rows = [ev for ev in (events or []) if isinstance(ev, dict)]
+    for start in range(0, len(rows), max(1, size)):
+        chunk = rows[start:start + max(1, size)]
+        batches += 1
+        try:
+            raw = ask(compaction_prompt(chunk, budget_chars))
+            decisions = parse_decisions(raw)
+        except CompactionError as exc:
+            failed.append(str(exc)[:120])
+            continue                      # one bad batch must not block the rest
+        applied.extend(apply_decisions(chunk, decisions))
+    if failed and not applied:
+        raise CompactionError("; ".join(failed[:2]))
+    return {"triggered": True, "applied": applied, "batches": batches,
+            "failed_batches": failed,
             "remaining_chars": unarchived_chars(events)}

@@ -3422,6 +3422,7 @@ def _event_notes_by_id(events):
 
 
 MULTIQUERY_ON = str(os.environ.get("BIOCORE_MULTIQUERY", "1")).strip().lower() not in ("0", "off", "false", "no")
+SENTENCE_RECALL_ON = str(os.environ.get("BIOCORE_SENTENCE", "1")).strip().lower() not in ("0", "off", "false", "no")
 RRF_ON = str(os.environ.get("BIOCORE_RRF", "1")).strip().lower() not in ("0", "off", "false", "no")
 RRF_K = 60
 RRF_EVENT_TOP = int(os.environ.get("BIOCORE_RRF_EVENT_TOP") or 5)
@@ -3749,11 +3750,15 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                            "state": global_state, "open": buf})
     _as_of_ts = None
     if str(query or "").strip():
+        logger.info("[sentence] gate query=%s entries=%d events=%d",
+                    bool(str(query or "").strip()), len(entries), len(events))
         try:
             _sentence_block = _sentence_recall_block(
                 store, session_id, query, entries, events, payload=payload,
                 rerank_config=rerank_config, now=at)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[sentence] fallback: %s: %s",
+                           type(exc).__name__, str(exc)[:160])
             _sentence_block = None
         if _sentence_block and _sentence_block.get("text"):
             return _sentence_block
@@ -4093,6 +4098,31 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
         if not event_block or not event_block.get("text"):
             raise RuntimeError("event_layer returned an empty block")
         return event_block
+    if SENTENCE_RECALL_ON and str(text_query).strip():
+        # reachable without the event layer: production runs segment recall,
+        # so a block nested inside _event_layer_block never executed
+        try:
+            _pool = [row for row in _visible(load_memory(store, session_id).get("entries"))
+                     if isinstance(row, dict) and str(row.get("text") or "").strip()]
+            _evs = (_load_event_state(store, session_id).get("events") or [])
+            logger.info("[sentence] main path entries=%d events=%d",
+                        len(_pool), len(_evs))
+            _block = _sentence_recall_block(store, session_id, text_query, _pool, _evs,
+                                            payload=payload, rerank_config=rerank_config,
+                                            now=now)
+        except Exception as exc:
+            logger.warning("[sentence] fallback: %s: %s",
+                           type(exc).__name__, str(exc)[:160])
+            _block = None
+        if _block and _block.get("text"):
+            if _governance is not None:
+                try:      # the sentence path is still an injection: count the hit
+                    _hits = set(_governance.lookup(store, text_query))
+                    if _hits:
+                        _governance.note_index_hit(store)
+                except Exception:
+                    pass
+            return _block
     if _segment_recall_on(store, payload) and _segments is not None:
         segmented = _inject_segments(
             session_id, store, text_query, limit, budget,
