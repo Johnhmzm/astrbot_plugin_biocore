@@ -85,10 +85,15 @@ _THR_MEMO = {"stamp": None, "thr": None}
 SENT_POOL = int(os.environ.get("BIOCORE_SENT_POOL") or 0)
 # [engineering] 0 = every row of the event competes for the cap; N = only the
 # N best rows by cosine do, so a long noisy event cannot flood the block
-EVENT_SIM_CLOSE = 0.30    # [engineering] below this similarity a turn starts a new event
-EVENT_MAX_TURNS = 8       # [engineering] 0 = no hard cap; else split at N turns
+# [engineering] every knob that decides segmentation reads an env override:
+# a value that decides behaviour is configuration, not a constant to recompile.
+EVENT_SIM_CLOSE = float(os.environ.get("BIOCORE_EVENT_SIM_CLOSE") or 0.30)
+# below EVENT_SIM_CLOSE a turn starts a new event
+EVENT_MAX_TURNS = int(os.environ.get("BIOCORE_EVENT_MAX_TURNS") or 8)
+# 0 = no hard cap; else split at N turns
 EVENT_MAX_CHARS = int(os.environ.get("BIOCORE_EVENT_MAX_CHARS") or 900)  # safety net
-EVENT_GAP_S = 86400.0     # [engineering] a day of silence also splits an event
+EVENT_GAP_S = float(os.environ.get("BIOCORE_EVENT_GAP_S") or 86400.0)
+# a day of silence also splits an event
 TOP_K = 5                 # [engineering]
 INJECT_MAX_K = 10          # inject_block may ask for more when rerank prunes
 INJECT_MODES = ("query", "recent")
