@@ -30,3 +30,5 @@ ruff_*.txt
 # local scratch scripts (never ship)
 _tpl_smoke.py
 _ut.txt
+s1/sessions/
+s1/sessions*/
