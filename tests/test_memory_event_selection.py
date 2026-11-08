@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Event score = 0.8 * rank position + 0.2 * share of top-40 sentences."""
+"""Event-level selection: score = 0.9 * max + 0.1 * rest_mean, whole events."""
 import math
 import sys
 import unittest
@@ -11,17 +11,10 @@ if str(ROOT) not in sys.path:
 
 from biocore_runtime import pipeline as P  # noqa: E402
 
-TOTAL = 583          # the N used in the arithmetic below
 
-
-def cosine_rank(rank, total=TOTAL):
-    # distinct cosines that keep the intended order
-    return 0.99 - (rank - 1) * (0.59 / max(1, total - 1))
-
-
-def row(entry_id, cos, ts, event_id):
-    return {"id": entry_id, "text": "句子" + entry_id, "ts": ts,
-            "event_id": event_id, "role": "user",
+def row(entry_id, cos, ts, event_id, text=None):
+    return {"id": entry_id, "text": text or ("句子" + entry_id),
+            "ts": ts, "event_id": event_id, "role": "user",
             "vector": [float(cos), math.sqrt(max(0.0, 1.0 - cos * cos))]}
 
 
@@ -35,90 +28,72 @@ class EmbedStub:
         return [[1.0, 0.0] for _ in texts]
 
 
-def build(spec):
-    """spec: list of (event_id, [global ranks]). Filler goes to one noise event."""
-    rows = []
-    placed = set()
-    for event_id, ranks in spec:
-        for offset, rank in enumerate(ranks):
-            placed.add(rank)
-            rows.append(row("%s-%d" % (event_id, offset), cosine_rank(rank),
-                            1777800000 + offset, event_id))
-    for rank in range(1, TOTAL + 1):
-        if rank in placed:
-            continue
-        rows.append(row("noise-%d" % rank, cosine_rank(rank),
-                         1777900000 + rank, "EVNOISE"))
-    old_embed = P._event_embed_fn
+def build(rows, budget=4000, top=None):
+    old_embed, old_top = P._event_embed_fn, P.EVENT_TOP
     P._event_embed_fn = lambda *a, **k: EmbedStub()
+    if top is not None:
+        P.EVENT_TOP = top
     try:
-        block = P._sentence_recall_block("/tmp", "s1", "查询", rows, [],
-                                         payload={}, budget_chars=4000)
+        return P._sentence_recall_block("/tmp", "s1", "查询", rows, [],
+                                        payload={}, budget_chars=budget)
     finally:
-        P._event_embed_fn = old_embed
-    by_event = {item["event_id"]: item for item in block["events"]}
-    return block, by_event
+        P._event_embed_fn, P.EVENT_TOP = old_embed, old_top
 
-class ArithmeticTest(unittest.TestCase):
-    def test_a_strong_single_line_beats_a_slightly_later_cluster(self):
-        block, meta = build([("EVA", [1]), ("EVB", [5, 6, 7])])
-        self.assertAlmostEqual(meta["EVA"]["p"], 1.0, places=6)
-        self.assertGreater(meta["EVA"]["score"], meta["EVB"]["score"])
-        self.assertLess(block["events"].index(meta["EVA"]),
-                        block["events"].index(meta["EVB"]))
 
-    def test_a_cluster_at_the_top_beats_a_later_single_line(self):
-        block, meta = build([("EVC", [20]), ("EVD", [1, 2, 3])])
-        self.assertGreater(meta["EVD"]["score"], meta["EVC"]["score"])
-        self.assertLess(block["events"].index(meta["EVD"]),
-                        block["events"].index(meta["EVC"]))
+def mixed(event_id, head, tail, base_ts):
+    rows = [row(event_id + "-head", head, base_ts, event_id)]
+    rows += [row("%s-t%d" % (event_id, i), tail, base_ts + 60 * (i + 1), event_id)
+             for i in range(5)]
+    return rows
 
-    def test_when_ranks_diverge_the_size_does_not_matter(self):
-        block, meta = build([("EVE", [300]), ("EVF", [50, 51, 52, 53, 54, 55])])
-        self.assertEqual(meta["EVF"]["r"], 0.0)   # 50..55 are outside the top-40
-        self.assertGreater(meta["EVF"]["score"], meta["EVE"]["score"])
-        self.assertEqual(meta["EVE"]["r"], 0.0)
+
+def consistent(event_id, values, base_ts):
+    return [row("%s-%d" % (event_id, i), value, base_ts + 60 * i, event_id)
+            for i, value in enumerate(values)]
+
+
+class ScoreTest(unittest.TestCase):
+    def test_one_strong_line_beats_a_consistent_weaker_event(self):
+        rows = mixed("EVA", 0.90, 0.10, 1777800000)
+        rows += consistent("EVB", [0.80, 0.78, 0.76], 1777860000)
+        order = [item["event_id"] for item in build(rows)["events"]]
+        self.assertEqual(order[0], "EVA")
+
+    def test_a_small_gap_lets_the_rest_of_the_event_decide(self):
+        rows = mixed("EVC", 0.81, 0.10, 1777800000)
+        rows += consistent("EVD", [0.80, 0.79, 0.78], 1777860000)
+        order = [item["event_id"] for item in build(rows)["events"]]
+        self.assertEqual(order[0], "EVD")
+
+    def test_a_single_line_event_is_not_penalised(self):
+        rows = consistent("EVE", [0.85], 1777800000)
+        first = build(rows)["events"][0]
+        self.assertAlmostEqual(first["score"], 0.85, places=6)
+        self.assertAlmostEqual(first["rest_mean"], 0.85, places=6)
+        self.assertEqual(first["sentence_count"], 1)
 
     def test_meta_carries_the_arithmetic(self):
-        block, meta = build([("EVA", [1])])
-        first = meta["EVA"]
-        for key in ("rank_best", "p", "r", "score", "sentence_count"):
+        rows = mixed("EVA", 0.90, 0.10, 1777800000)
+        first = build(rows)["events"][0]
+        for key in ("max_cos", "rest_mean", "score", "sentence_count"):
             self.assertIn(key, first)
-        self.assertEqual(first["rank_best"], 1)
-        self.assertEqual(first["sentence_count"], 1)
+        self.assertAlmostEqual(first["score"], 0.9 * 0.90 + 0.1 * 0.10, places=3)
 
 
 class WholeEventTest(unittest.TestCase):
     def test_an_event_that_does_not_fit_is_folded_whole(self):
-        rows = [row("e%d" % i, 0.9 - i * 0.01, 1777800000 + i, "EVONE") for i in range(6)]
-        for item in rows:
-            item["text"] = "句子" + str(len(item["text"])) + "字" * 40
-        old_embed = P._event_embed_fn
-        P._event_embed_fn = lambda *a, **k: EmbedStub()
-        try:
-            block = P._sentence_recall_block("/tmp", "s1", "查询", rows, [],
-                                             payload={}, budget_chars=200)
-        finally:
-            P._event_embed_fn = old_embed
+        rows = [row("e%d" % i, 0.9 - i * 0.01, 1777800000 + i, "EVONE",
+                    text="句子" + str(i) + "字" * 40) for i in range(6)]
+        block = build(rows, budget=200)
         self.assertEqual(block["text"].count("句子"), 0)
         self.assertIn("EVONE 共6句，已折叠", block["text"])
         self.assertEqual(block["folded"], 6)
 
     def test_a_fitting_event_is_rendered_whole_in_ts_order(self):
-        rows = [row("e2", 0.90, 1777800200, "EVONE"),
-                row("e1", 0.80, 1777800000, "EVONE"),
-                row("e3", 0.70, 1777800400, "EVONE")]
-        rows[0]["text"] = "第二句。"
-        rows[1]["text"] = "第一句。"
-        rows[2]["text"] = "第三句。"
-        old_embed = P._event_embed_fn
-        P._event_embed_fn = lambda *a, **k: EmbedStub()
-        try:
-            block = P._sentence_recall_block("/tmp", "s1", "查询", rows, [],
-                                             payload={}, budget_chars=4000)
-        finally:
-            P._event_embed_fn = old_embed
-        text = block["text"]
+        rows = [row("e2", 0.90, 1777800200, "EVONE", text="第二句。"),
+                row("e1", 0.80, 1777800000, "EVONE", text="第一句。"),
+                row("e3", 0.70, 1777800400, "EVONE", text="第三句。")]
+        text = build(rows, budget=4000)["text"]
         self.assertLess(text.index("第一句"), text.index("第二句"))
         self.assertLess(text.index("第二句"), text.index("第三句"))
 

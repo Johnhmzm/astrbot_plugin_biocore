@@ -115,9 +115,9 @@ RECALL_MULTIQUERY_TOP = int(os.environ.get("BIOCORE_MULTIQUERY_TOP") or 3)
 RECALL_FINAL_K = int(os.environ.get("BIOCORE_RECALL_FINAL_K") or 12)
 EVENT_TOP = int(os.environ.get("BIOCORE_EVENT_TOP") or 12)
 # how many events the block may try to place (not sentences)
-EVENT_SCORE_W_RANK = 0.8
-EVENT_SCORE_W_RATIO = 0.2
-EVENT_RATIO_TOPN = 40
+EVENT_SCORE_W_MAX = 0.9
+EVENT_SCORE_W_REST = 0.1
+EVENT_SCORE_TOL = 0.03
 # best-line gaps below this count as a tie; the overall level decides
 # one lucky sentence must not outrank a consistently relevant event,
 # so the score mixes the best line with the top-3 mean
@@ -3587,34 +3587,23 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             bucket["best_id"] = str(row.get("id") or "")
     # score = 0.6 * best + 0.4 * mean(top3): a single lucky line cannot
     # outrank an event that is consistently on-topic
-    # event score mixes WHERE its best line sits with HOW MUCH of it is relevant
-    ordered = sorted(scored, key=lambda pair: -pair[0])
-    total = len(ordered)
-    rank_of = {}
-    for position, (score, row) in enumerate(ordered, 1):
-        rank_of[str(row.get("id") or "")] = position
+    global_scores = sorted((score for score, _row in scored), reverse=True)
+    top40 = set(global_scores[:40])
     for key in order:
         bucket = grouped[key]
-        ranks = sorted(rank_of.get(str(row.get("id") or ""), total + 1)
-                       for _score, row in bucket["rows"])
-        rank_best = ranks[0] if ranks else total + 1
-        best = max((score for score, _row in bucket["rows"]), default=0.0)
-        if total > 1:
-            rank_score = 1.0 - (rank_best - 1) / float(total - 1)
-        else:
-            rank_score = 1.0
-        in_top = sum(1 for value in ranks if value <= EVENT_RATIO_TOPN)
-        ratio = in_top / float(len(ranks)) if ranks else 0.0
-        bucket["max_cos"] = round(float(best), 6)
-        bucket["rank_best"] = int(rank_best)
-        bucket["p"] = round(rank_score, 6)
-        bucket["r"] = round(ratio, 6)
-        bucket["sentence_count"] = len(ranks)
-        bucket["in_top40"] = in_top
-        bucket["score"] = round(EVENT_SCORE_W_RANK * rank_score
-                                + EVENT_SCORE_W_RATIO * ratio, 6)
+        values = sorted((score for score, _row in bucket["rows"]), reverse=True)
+        best = float(values[0]) if values else 0.0
+        rest = values[1:]
+        # a single-line event must not be punished for having no rest:
+        # rest_mean falls back to its own maximum
+        rest_mean = sum(rest) / len(rest) if rest else best
+        bucket["max_cos"] = round(best, 6)
+        bucket["rest_mean"] = round(rest_mean, 6)
+        bucket["sentence_count"] = len(values)
+        bucket["score"] = round(EVENT_SCORE_W_MAX * best
+                                + EVENT_SCORE_W_REST * rest_mean, 6)
+        bucket["in_top40"] = sum(1 for value in values if value in top40)
     ranked = sorted(order, key=lambda key: (-grouped[key]["score"],
-                                           -grouped[key]["r"],
                                            -grouped[key]["in_top40"],
                                            grouped[key]["start"],
                                            order.index(key)))
@@ -3668,9 +3657,7 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             "folded_ids": folded, "folded_events": folded_events,
             "events": [{"event_id": grouped[key]["key"],
                         "max_cos": grouped[key]["max_cos"],
-                        "rank_best": grouped[key]["rank_best"],
-                        "p": grouped[key]["p"],
-                        "r": grouped[key]["r"],
+                        "rest_mean": grouped[key]["rest_mean"],
                         "score": grouped[key]["score"],
                         "sentence_count": grouped[key]["sentence_count"],
                         "best_entry_id": grouped[key]["best_id"],
