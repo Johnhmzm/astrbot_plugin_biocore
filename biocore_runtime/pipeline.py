@@ -113,7 +113,9 @@ RECALL_COARSE_N = int(os.environ.get("BIOCORE_RECALL_COARSE_N") or 40)
 RECALL_MULTIQUERY_TOP = int(os.environ.get("BIOCORE_MULTIQUERY_TOP") or 3)
 # EM coarse recall: sentence-level cosine, no model call
 RECALL_FINAL_K = int(os.environ.get("BIOCORE_RECALL_FINAL_K") or 12)
-EVENT_TOP = int(os.environ.get("BIOCORE_EVENT_TOP") or 12)
+EVENT_TOP = int(os.environ.get("BIOCORE_EVENT_TOP") or 0)
+# 0 = no cap: the budget decides how many events are delivered. A positive
+# value is a debugging clamp (P20 has 163 events; a hard 12 threw away 151)
 # how many events the block may try to place (not sentences)
 EVENT_SCORE_W_MAX = 0.9
 EVENT_SCORE_W_REST = 0.1
@@ -3662,7 +3664,7 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                                            -grouped[key]["in_top40"],
                                            grouped[key]["start"],
                                            order.index(key)))
-    picked_events = ranked[:max(1, EVENT_TOP)]
+    picked_events = ranked[:EVENT_TOP] if EVENT_TOP > 0 else list(ranked)
     notes = _event_notes_by_id(events)
     budget = max(200, int(budget_chars or RECALL_INJECT_CHARS))
     header = "【相关记忆】"
@@ -3740,6 +3742,13 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         line = "- %s 共%d句，已折叠" % (label, len(members))
         lines.append(line)
         used += len(line) + 1
+    if EVENT_TOP > 0:
+        # a debugging clamp: the events beyond it are still accounted for,
+        # they simply never get a line of their own
+        for key in ranked[EVENT_TOP:]:
+            label = key if not key.startswith("ID:") else key[3:]
+            folded_events.append(label)
+            folded.extend(str(row.get("id") or "") for _s, row in grouped[key]["rows"])
     if folded:
         stamps = [float(row.get("ts") or 0.0) for _s, row in scored if row.get("ts")]
         a = _day_str(min(stamps)) if stamps else ""
