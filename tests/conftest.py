@@ -75,3 +75,15 @@ def _cleanup_with_retry(self):
 
 
 tempfile.TemporaryDirectory.cleanup = _cleanup_with_retry
+
+@pytest.fixture(autouse=True)
+def _isolated_cwd(tmp_path, monkeypatch):
+    """Run every test in its own directory.
+
+    One test used to hand a store path to the core as if it were a session id,
+    which wrote sessions/<sanitized-path>/memory.db into the repo root (and once
+    got committed). Chdir makes that class of mistake land in a temp dir no
+    matter which call site is wrong; the actual call site can be fixed later.
+    """
+    monkeypatch.chdir(tmp_path)
+    yield
