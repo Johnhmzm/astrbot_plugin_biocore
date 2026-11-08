@@ -91,6 +91,11 @@ SENT_POOL = int(os.environ.get("BIOCORE_SENT_POOL") or 0)
 # [engineering] every knob that decides segmentation reads an env override:
 # a value that decides behaviour is configuration, not a constant to recompile.
 EVENT_SIM_CLOSE = float(os.environ.get("BIOCORE_EVENT_SIM_CLOSE") or 0.30)
+# the constant is a fallback and a clamp, not the rule: by default the threshold
+# is learned from this session's own adjacent-similarity distribution
+EVENT_SIM_OVERRIDE = os.environ.get("BIOCORE_EVENT_SIM_CLOSE")
+EVENT_SIM_MIN = float(os.environ.get("BIOCORE_EVENT_SIM_MIN") or 0.25)
+EVENT_SIM_MAX = float(os.environ.get("BIOCORE_EVENT_SIM_MAX") or 0.75)
 # below EVENT_SIM_CLOSE a turn starts a new event
 EVENT_MAX_TURNS = int(os.environ.get("BIOCORE_EVENT_MAX_TURNS") or 12)
 # 0 = no hard cap; else split at N turns (a long event that never closes drags
@@ -3306,6 +3311,45 @@ def _capacity_guard(store, session_id, entries):
             if str(row.get("id") or "") in protected or str(row.get("id") or "") in keep_ids]
 
 
+def _sim_threshold(series, log=True):
+    """Closing threshold: explicit override > the session's own distribution.
+
+    The constant used to be the rule, and the adaptive helper in
+    segment_adaptive was dead code. Now the constant is only the clamp and the
+    fallback: a session whose adjacent turns are all similar gets a high bar, a
+    session that jumps around gets a low one.
+    """
+    if EVENT_SIM_OVERRIDE not in (None, ""):
+        try:
+            value = float(EVENT_SIM_OVERRIDE)
+        except Exception:
+            value = EVENT_SIM_CLOSE
+        if log:
+            logger.info("[segment] thr=%.3f source=override", value)
+        return max(0.0, min(1.0, value))
+    rows = [float(x) for x in (series or []) if isinstance(x, (int, float))]
+    if not rows:
+        if log:
+            logger.info("[segment] thr=%.3f source=default (no samples)", EVENT_SIM_CLOSE)
+        return EVENT_SIM_CLOSE
+    try:
+        from biocore_memory.event import segment_adaptive as _SA2
+        value = _SA2.adaptive_threshold(rows, low=EVENT_SIM_MIN, high=EVENT_SIM_MAX)
+    except Exception:
+        value = None
+    if value is None:
+        value = EVENT_SIM_CLOSE
+    value = max(EVENT_SIM_MIN, min(EVENT_SIM_MAX, float(value)))
+    if log:
+        ordered = sorted(rows)
+        def _q(p):
+            index = min(len(ordered) - 1, int(round((len(ordered) - 1) * p)))
+            return ordered[index]
+        logger.info("[segment] adaptive_thr=%.3f n=%d p20=%.3f p50=%.3f p80=%.3f",
+                    value, len(rows), _q(0.20), _q(0.50), _q(0.80))
+    return value
+
+
 def _event_should_close(buf, item, sim, gap, thr, close_chars=None,
                        min_turns=None, max_turns=None):
     """Why this turn should start a new event, or "" to keep accumulating.
@@ -3530,19 +3574,19 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             buf.append(dict(row))          # an event that was still open last call
     new_rows = entries[seen:]
     # drift threshold from this session's own adjacent-turn similarities
-    _thr = None
+    _thr_series = []
     try:
         from biocore_memory.event import segment_adaptive as _SA
         _window = entries[-ADAPTIVE_WINDOW:] if ADAPTIVE_WINDOW > 0 else entries
         _stamp = (len(entries), str((_window[-1].get("id") if _window else "") or ""))
         if _THR_MEMO.get("stamp") != _stamp:
             _THR_MEMO["stamp"] = _stamp
-            _THR_MEMO["thr"] = _SA.adaptive_threshold(
-                _SA.adjacent_similarities([row.get("vector") for row in _window]))
-        _thr = _THR_MEMO.get("thr")
+            _THR_MEMO["thr_series"] = _SA.adjacent_similarities(
+                [row.get("vector") for row in _window])
+        _thr_series = _THR_MEMO.get("thr_series") or []
     except Exception:
-        _thr = None
-    thr = EVENT_SIM_CLOSE if _thr is None else _thr
+        _thr_series = []
+    thr = _sim_threshold(_thr_series)
     _entry_embedder = _event_embed_fn(store, config, payload)
     for offset, row in enumerate(new_rows):
         vec = _entry_vector(store, row, config, payload)
