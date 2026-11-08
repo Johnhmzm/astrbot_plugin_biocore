@@ -4153,19 +4153,13 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             _private = _CL2.private_lines(_CL2.merge_claims(_praw))
     except Exception:
         _private = []
-    head = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"]
-    if _private:
-        _keys = [str(line).split("：")[0].replace("【不可外传】", "") for line in _private]
-        _keys = [k for k in _keys if k]
-        if _keys:
-            head.append("【禁止主动披露】以下条目只有用户直接问起时才可提及，不要主动展开："
-                        + "、".join(_keys[:6]))
-    _claims = []
-    try:
-        _claims = _claim_lines(query, _ordered, embed_fn)
-    except Exception:
-        _claims = []
-    lines = head + _private + state_lines + (_claims + [""] if _claims else []) + lines
+    # constraint lines are NOT part of the memory block. Rules such as
+    # "do not volunteer X" belong to the system prompt; carrying them here
+    # cost a few hundred characters every turn and bought no recall. The
+    # claim fields themselves stay in the store, they just stop being
+    # rendered -- docs/INJECTION-CONTRACT.md shows the caller-side example.
+    head = []
+    lines = state_lines + (_claims + [""] if _claims else []) + lines
     text = "你记得这些事：\n" + "\n".join(lines)
     try:
         _journal(store, session_id, "inject", query=str(query)[:60],
