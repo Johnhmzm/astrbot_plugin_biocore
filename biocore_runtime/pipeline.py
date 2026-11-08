@@ -2816,7 +2816,8 @@ def _build_subnotes(ev, summarizer):
     archived or folded later and its index would shift.
     """
     rows = [row for row in ev.get("entries") or [] if isinstance(row, dict)]
-    if not SUBNOTES_ON or summarizer is None or len(rows) <= SUBNOTE_MIN_TURNS:
+    size = sum(len(str(row.get("text") or "")) + 14 for row in rows)
+    if not SUBNOTES_ON or summarizer is None or size <= SUBNOTE_MIN_CHARS:
         return []
     listing = chr(10).join("%d. %s" % (i + 1, str(r.get("text") or "")[:120])
                          for i, r in enumerate(rows))
@@ -3497,7 +3498,10 @@ SENTENCE_RECALL_ON = str(os.environ.get("BIOCORE_SENTENCE", "1")).strip().lower(
 RRF_ON = str(os.environ.get("BIOCORE_RRF", "1")).strip().lower() not in ("0", "off", "false", "no")
 RRF_K = 60
 SUBNOTES_ON = str(os.environ.get("BIOCORE_SUBNOTES", "1")).strip().lower() not in ("0", "off", "false", "no")
-SUBNOTE_MIN_TURNS = int(os.environ.get("BIOCORE_SUBNOTE_MIN_TURNS") or 8)
+SUBNOTE_MIN_CHARS = int(os.environ.get("BIOCORE_SUBNOTE_MIN_CHARS") or 800)
+# characters, not sentences: P01 averages 15.5 chars a line, so a 12-line
+# event is ~180 chars -- not long at all. 800 chars is roughly forty lines
+# of chat, the point where a summary actually saves room
 # subnotes are a packing device, not a retrieval unit: a long event can
 # still be delivered when its full text no longer fits the budget
 RRF_EVENT_TOP = int(os.environ.get("BIOCORE_RRF_EVENT_TOP") or 5)

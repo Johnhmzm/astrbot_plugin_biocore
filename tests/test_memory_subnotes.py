@@ -94,18 +94,39 @@ class WriteSideTest(unittest.TestCase):
             called["n"] += 1
             return "[]"
 
-        ev = {"entries": [{"id": "a", "text": "x", "turn": 1}] * 6}
-        self.assertEqual(P._build_subnotes(ev, summarizer), [])
+        # 12 lines x ~15 chars is ~180 chars: short, despite the line count
+        rows = [{"id": "s%02d" % i, "text": "短短一句十五字左右" + str(i), "turn": i + 1}
+                for i in range(12)]
+        self.assertEqual(P._build_subnotes({"entries": rows}, summarizer), [])
         self.assertEqual(called["n"], 0)
 
-    def test_a_long_event_gets_id_based_subnotes(self):
-        rows = [{"id": "s%02d" % i, "text": "t%d" % i, "turn": i + 1} for i in range(12)]
-        payload = json.dumps([{"start": 1, "end": 6, "note": "前半"},
-                              {"start": 7, "end": 12, "note": "后半"}], ensure_ascii=False)
+    def test_a_genuinely_long_event_gets_id_based_subnotes(self):
+        # 40 lines x ~25 chars is ~1000 chars: that is worth compressing
+        rows = [{"id": "s%02d" % i, "text": "这一句大概有二十五个字左右的长度吧" + str(i),
+                 "turn": i + 1} for i in range(40)]
+        payload = json.dumps([{"start": 1, "end": 20, "note": "前半"},
+                              {"start": 21, "end": 40, "note": "后半"}], ensure_ascii=False)
         notes = P._build_subnotes({"entries": rows}, lambda prompt: payload)
         self.assertEqual(len(notes), 2)
-        self.assertEqual(notes[0]["sentence_ids"], ["s%02d" % i for i in range(6)])
+        self.assertEqual(notes[0]["sentence_ids"], ["s%02d" % i for i in range(20)])
+        self.assertEqual(notes[1]["turn_range"], [21, 40])
 
+    def test_the_switch_disables_subnotes_entirely(self):
+        called = {"n": 0}
+
+        def summarizer(prompt):
+            called["n"] += 1
+            return "[]"
+
+        rows = [{"id": "s%02d" % i, "text": "这一句大概有二十五个字左右的长度吧" + str(i),
+                 "turn": i + 1} for i in range(40)]
+        old = P.SUBNOTES_ON
+        P.SUBNOTES_ON = False
+        try:
+            self.assertEqual(P._build_subnotes({"entries": rows}, summarizer), [])
+        finally:
+            P.SUBNOTES_ON = old
+        self.assertEqual(called["n"], 0)
 
 if __name__ == "__main__":
     unittest.main()
