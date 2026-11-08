@@ -2809,6 +2809,45 @@ def _entry_vector(store, entry, config=None, payload=None):
         return None
 
 
+def _build_subnotes(ev, summarizer):
+    """2-4 contiguous groups of a long event, each with a <=40-char note.
+
+    Stored as sentence-id sequences, never positions: a row may be
+    archived or folded later and its index would shift.
+    """
+    rows = [row for row in ev.get("entries") or [] if isinstance(row, dict)]
+    if not SUBNOTES_ON or summarizer is None or len(rows) <= SUBNOTE_MIN_TURNS:
+        return []
+    listing = chr(10).join("%d. %s" % (i + 1, str(r.get("text") or "")[:120])
+                         for i, r in enumerate(rows))
+    head = ("把这 %d 句按顺序切成 2-4 个连续句群，覆盖全部句子、不重叠；"
+            "每群给一句不超过 40 字的小结。只输出 JSON 数组，元素形如 "
+            "[start, end, note]，start/end 是句序号（1 起）。") % len(rows)
+    try:
+        from biocore_memory.event import json_tolerant as _jt
+        data = _jt.loads(summarizer(head + chr(10) + listing), prefer="[")
+    except Exception as exc:
+        logger.warning("[subnote] skipped: %s: %s",
+                       type(exc).__name__, str(exc)[:120])
+        return []
+    out = []
+    for item in (data if isinstance(data, list) else []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = int(item.get("start")) - 1
+            end = int(item.get("end"))
+        except Exception:
+            continue
+        note = str(item.get("note") or "").strip()[:40]
+        if start < 0 or end <= start or end > len(rows) or not note:
+            continue
+        out.append({"sentence_ids": [str(r.get("id") or "") for r in rows[start:end]],
+                    "note": note,
+                    "turn_range": [int(rows[start].get("turn") or 0),
+                                   int(rows[end - 1].get("turn") or 0)]})
+    return out if len(out) >= 2 else []
+
 def _event_layer_notes(ev, buf, summarizer, global_state, chunk_tokens=400):
     """One note per chunk of a long span; the event boundary itself does not move."""
     from biocore_memory.event import events as _E
@@ -2967,6 +3006,14 @@ def _event_layer_close(events, buf, summarizer, global_state, store=None,
     if not overview:
         overview = str(ev["text"]).replace("\n", " ")[:30]
     ev["overview"] = overview
+    if summarizer is not None:
+        try:
+            _sub = _build_subnotes(ev, summarizer)
+            if _sub:
+                ev["subnotes"] = _sub
+        except Exception as exc:
+            logger.warning("[subnote] failed: %s: %s",
+                           type(exc).__name__, str(exc)[:120])
     if not _claims_done:
         ev["claims"] = []
     if summarizer is not None and not _claims_done:
@@ -3449,6 +3496,10 @@ MULTIQUERY_ON = str(os.environ.get("BIOCORE_MULTIQUERY", "1")).strip().lower() n
 SENTENCE_RECALL_ON = str(os.environ.get("BIOCORE_SENTENCE", "1")).strip().lower() not in ("0", "off", "false", "no")
 RRF_ON = str(os.environ.get("BIOCORE_RRF", "1")).strip().lower() not in ("0", "off", "false", "no")
 RRF_K = 60
+SUBNOTES_ON = str(os.environ.get("BIOCORE_SUBNOTES", "1")).strip().lower() not in ("0", "off", "false", "no")
+SUBNOTE_MIN_TURNS = int(os.environ.get("BIOCORE_SUBNOTE_MIN_TURNS") or 8)
+# subnotes are a packing device, not a retrieval unit: a long event can
+# still be delivered when its full text no longer fits the budget
 RRF_EVENT_TOP = int(os.environ.get("BIOCORE_RRF_EVENT_TOP") or 5)
 
 
@@ -3613,6 +3664,44 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
     header = "【相关记忆】"
     reserve = 90            # room for the fold trailer
     limit = max(100, budget - reserve)
+    subnotes_by_event = {}
+    for _ev in events or []:
+        _eid = str(_ev.get("event_id") or "")
+        if _eid and _ev.get("subnotes"):
+            subnotes_by_event[_eid] = _ev.get("subnotes") or []
+
+    def subnotes_for(event_id):
+        return subnotes_by_event.get(str(event_id or ""), [])
+
+    def _line_of(row):
+        when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
+        body = str(row.get("text") or "").strip()
+        return "- %s%s" % (body, ("（%s）" % when) if when else "")
+
+    def _compress_event(members, subs, used_now, limit_now):
+        """Delivery for a long event: the hit lines verbatim plus EVERY
+        subnote of the event. Returns None when even that does not fit."""
+        if not subs:
+            return None
+        by_score = sorted(members, key=lambda item: -float(item[0]))
+        hits = by_score[:3]
+        hit_ids = set(str(item[1].get("id") or "") for item in hits)
+        rendered = [_line_of(item[1]) for item in sorted(
+            hits, key=lambda item: float(item[1].get("ts") or 0.0))]
+        delta = sum(len(line) + 1 for line in rendered)
+        for group in subs:
+            note = str(group.get("note") or "").strip()
+            if not note:
+                continue
+            ids = [str(x) for x in (group.get("sentence_ids") or [])]
+            line = "  · %s（%d 句，id 见 meta）" % (note, len(ids))
+            rendered.append(line)
+            delta += len(line) + 1
+        if used_now + delta > limit_now:
+            return None
+        compressed_ids = [str(item[1].get("id") or "") for item in members
+                           if str(item[1].get("id") or "") not in hit_ids]
+        return {"lines": rendered, "used": delta, "compressed_ids": compressed_ids}
     lines, folded, folded_events = [], [], []
     used = len(header)
     shown_events = 0
@@ -3629,6 +3718,18 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             used += cost
             shown_events += 1
             continue
+        # the event does not fit whole: before folding it, compress it with its
+        # subnotes -- the hit lines stay verbatim, the rest becomes one line
+        # per group. Nothing is lost: compressed ids go to folded_ids.
+        if SUBNOTES_ON and grouped[key].get("rows") and subnotes_for(key):
+            compressed = _compress_event(members, subnotes_for(key),
+                                            used, limit)
+            if compressed:
+                lines.extend(compressed["lines"])
+                used += compressed["used"]
+                folded.extend(compressed["compressed_ids"])
+                shown_events += 1
+                continue
         label = key if not key.startswith("ID:") else key[3:]
         folded_events.append(label)
         folded.extend(str(row.get("id") or "") for _s, row in members)
