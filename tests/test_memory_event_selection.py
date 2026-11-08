@@ -35,7 +35,7 @@ def build(rows, budget=4000, top=None):
         P.EVENT_TOP = top
     try:
         return P._sentence_recall_block("/tmp", "s1", "查询", rows, [],
-                                        payload={}, budget_chars=budget)
+                                        payload={}, budget_chars=budget, delivery="event")
     finally:
         P._event_embed_fn, P.EVENT_TOP = old_embed, old_top
 

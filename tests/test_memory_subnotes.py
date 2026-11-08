@@ -50,7 +50,7 @@ def build(rows, events, budget, switch=None):
         P.SUBNOTES_ON = switch
     try:
         return P._sentence_recall_block("/tmp", "s1", "查询", rows, events,
-                                        payload={}, budget_chars=budget)
+                                        payload={}, budget_chars=budget, delivery="event")
     finally:
         P._event_embed_fn, P.SUBNOTES_ON = old_embed, old_switch
 

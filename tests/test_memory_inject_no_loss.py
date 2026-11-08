@@ -43,7 +43,7 @@ def build(budget):
     P._event_embed_fn = lambda *a, **k: EmbedStub()
     try:
         return P._sentence_recall_block("/tmp", "s1", "查询", make_rows(), [],
-                                        payload={}, budget_chars=budget)
+                                        payload={}, budget_chars=budget, delivery="event")
     finally:
         P._event_embed_fn = old
 

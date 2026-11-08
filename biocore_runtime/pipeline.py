@@ -3588,7 +3588,8 @@ def _claims_state_lines(events, limit=8, turn_dates=None):
         return []
 
 def _sentence_recall_block(store, session_id, query, entries, events, payload=None,
-                           rerank_config=None, now=None, budget_chars=None):
+                           rerank_config=None, now=None, budget_chars=None,
+                           delivery="sentence"):
     """Rank EVENTS by their best sentence, then inject each one whole.
 
     Sentence-level seeding misses events whose best line ranks 33rd: the
@@ -3664,9 +3665,49 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                                            -grouped[key]["in_top40"],
                                            grouped[key]["start"],
                                            order.index(key)))
+    budget = int(budget_chars) if budget_chars else int(RECALL_INJECT_CHARS)
+    if delivery == "sentence":
+        # an exact index/concept hit leads; cosine orders the rest
+        try:
+            _pinned = set(_governance.lookup(store, query)) if _governance else set()
+        except Exception:
+            _pinned = set()
+        if _pinned:
+            scored = sorted(scored, key=lambda pair: (
+                0 if str(pair[1].get("id") or "") in _pinned else 1,
+                -float(pair[0])))
+        # flat sentence delivery: every sentence ranked by cosine, packed
+        # until the budget is spent -- no event grouping, no event order
+        header_s = "【相关记忆】"
+        limit_s = max(50, budget - 90)
+        used_s = len(header_s)
+        out_lines, skipped, shown_ids = [], [], []
+        for score, row in scored:
+            when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
+            body_text = str(row.get("text") or "").strip()
+            line = "- %s%s" % (body_text, ("（%s）" % when) if when else "")
+            if used_s + len(line) + 1 > limit_s:
+                skipped.append(str(row.get("id") or ""))
+                continue
+            out_lines.append(line)
+            shown_ids.append(str(row.get("id") or ""))
+            used_s += len(line) + 1
+        body_s = header_s + chr(10) + chr(10).join(out_lines)
+        if skipped:
+            body_s += chr(10) + "已折叠 %d 条" % len(skipped)
+        while len(body_s) > budget and shown_ids:
+            shown_ids.pop()
+            out_lines.pop()
+            skipped.append("trimmed")
+            body_s = header_s + chr(10) + chr(10).join(out_lines)
+            body_s += chr(10) + "已折叠 %d 条" % len(skipped)
+        return {"text": body_s, "chars": len(body_s), "mode": "sentence",
+                "events_picked": 0, "events_shown": 0, "kept": len(scored),
+                "shown": len(shown_ids), "folded": len(skipped),
+                "folded_ids": skipped, "folded_events": [], "events": [],
+                "ids": shown_ids}
     picked_events = ranked[:EVENT_TOP] if EVENT_TOP > 0 else list(ranked)
     notes = _event_notes_by_id(events)
-    budget = int(budget_chars) if budget_chars else int(RECALL_INJECT_CHARS)
     header = "【相关记忆】"
     reserve = 90            # room for the fold trailer
     limit = max(100, budget - reserve)
@@ -4249,8 +4290,15 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     # a store whose vectors came from another model must never be read silently
     ensure_vector_space(store, session_id)
     # 0 / None mean "use the default": an explicit rule, not a falsy accident
-    budget = (MAX_CHARS if max_chars in (None, 0)
-              else _int_param(max_chars, MAX_CHARS, 0, max(MAX_CHARS, INJECT_MAX_CHARS)))
+    _recall = recall_settings(store, payload)
+    if max_chars in (None, 0):
+        budget = _recall["inject_chars"]
+    else:
+        budget = _int_param(max_chars, _recall["inject_chars"], 0,
+                            max(_recall["inject_chars"], INJECT_MAX_CHARS))
+    delivery = _recall["delivery"]
+
+
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
@@ -6936,6 +6984,48 @@ CORE_DEFAULTS = {
     "spatial_reconsolidate": False,
 }
 
+
+RECALL_INJECT_MIN = 500
+RECALL_INJECT_MAX = 200000
+RECALL_INJECT_DEFAULT = 14000
+RECALL_DELIVERIES = ("sentence", "event")
+
+
+def recall_settings(store, payload=None):
+    """recall.inject_chars / recall.delivery, validated loudly.
+
+    Precision is bought with characters and the curve has no knee, so the
+    caller picks the budget; a bad value raises instead of quietly
+    falling back to a default nobody asked for.
+    """
+    pl = payload if isinstance(payload, dict) else {}
+    cfg = {}
+    try:
+        raw_cfg = _load_runtime_config(store) if store else {}
+        if isinstance(raw_cfg.get("recall"), dict):
+            cfg = raw_cfg["recall"]
+    except Exception:
+        cfg = {}
+    budget = cfg.get("inject_chars")
+    if budget is None:
+        budget = os.environ.get("BIOCORE_RECALL_INJECT_CHARS")
+    if budget is None and pl.get("inject_chars") is not None:
+        budget = pl.get("inject_chars")
+    if budget in (None, ""):
+        budget = RECALL_INJECT_DEFAULT
+    try:
+        value = int(budget)
+    except Exception:
+        raise RuntimeError("recall.inject_chars 必须是正整数（当前 %r）；合法范围 [%d, %d]" % (budget, RECALL_INJECT_MIN, RECALL_INJECT_MAX))
+    if value < RECALL_INJECT_MIN or value > RECALL_INJECT_MAX:
+        raise RuntimeError("recall.inject_chars=%d 超出合法范围 [%d, %d]" % (value, RECALL_INJECT_MIN, RECALL_INJECT_MAX))
+    delivery = (cfg.get("delivery") or os.environ.get("BIOCORE_RECALL_DELIVERY")
+                or pl.get("delivery") or "sentence")
+    delivery = str(delivery).strip().lower()
+    if delivery not in RECALL_DELIVERIES:
+        raise RuntimeError("recall.delivery=%r 不合法；只接受 %s"
+                           % (delivery, " / ".join(RECALL_DELIVERIES)))
+    return {"inject_chars": value, "delivery": delivery}
 
 def _load_runtime_config(store):
     data_dir = _store_data_dir(store)
