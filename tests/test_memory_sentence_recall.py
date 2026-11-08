@@ -71,11 +71,13 @@ class FoldingTest(unittest.TestCase):
         block = self._block(budget=100000)
         self.assertEqual(block["folded"], 0)
         self.assertNotIn("已折叠", block["text"])
-        self.assertLessEqual(block["kept"], P.RECALL_FINAL_K)
+        # expansion may add rows beyond the seed count; what matters here is
+        # that none of them were folded away
+        self.assertGreaterEqual(block["kept"], 1)
 
-    def test_coarse_pool_is_capped(self):
+    def test_the_seed_pool_is_capped(self):
         block = self._block(budget=100000, rows=entries(60))
-        self.assertLessEqual(block["coarse"], P.RECALL_COARSE_N)
+        self.assertLessEqual(block["seeds"], P.SENTENCE_SEED_K)
 
 
 if __name__ == "__main__":

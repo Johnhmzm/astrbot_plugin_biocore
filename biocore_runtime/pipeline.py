@@ -113,6 +113,10 @@ RECALL_COARSE_N = int(os.environ.get("BIOCORE_RECALL_COARSE_N") or 40)
 RECALL_MULTIQUERY_TOP = int(os.environ.get("BIOCORE_MULTIQUERY_TOP") or 3)
 # EM coarse recall: sentence-level cosine, no model call
 RECALL_FINAL_K = int(os.environ.get("BIOCORE_RECALL_FINAL_K") or 12)
+SENTENCE_SEED_K = int(os.environ.get("BIOCORE_SENTENCE_SEED_K") or 12)
+# seed sentences are the point; their events are expanded to full text
+# below, and expanded rows never pass the rerank top-K cut
+EXPAND_EVENTS = str(os.environ.get("BIOCORE_EXPAND_EVENTS", "1")).strip().lower() not in ("0", "off", "false", "no")
 # how many reranked sentences are rendered in full
 RECALL_INJECT_CHARS = int(os.environ.get("BIOCORE_RECALL_INJECT_CHARS") or 2000)
 # the whole block is capped here; over budget means "fold", never "drop"
@@ -3584,22 +3588,43 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                 scored.sort(key=lambda pair: order.get(str(pair[1].get("id") or ""), len(order)))
         except Exception:
             pass
-    coarse = scored[:max(1, RECALL_COARSE_N)]
-    picked = coarse[:max(1, RECALL_FINAL_K)]
+    # point -> surface: the best sentences are seeds, and each seed pulls
+    # its whole event in. The evidence sentence is often not the one that
+    # matched -- it sits at rank 65-456 inside an event that did match -- so
+    # expanded rows go straight to rendering and are never pruned by rerank.
+    seeds = scored[:max(1, SENTENCE_SEED_K)]
     mode = "coarse"
-    if _rerank_mod is not None and len(coarse) > 1:
+    if _rerank_mod is not None and len(seeds) > 1:
         try:
             ranked = _rerank_mod.rerank_documents(
-                text, [str(row.get("text") or "") for _s, row in coarse],
+                text, [str(row.get("text") or "") for _s, row in seeds],
                 rerank_config)
             if ranked:
                 order = [int(item["index"]) for item in ranked
                          if isinstance(item, dict) and item.get("index") is not None]
-                picked = [coarse[index] for index in order
-                          if 0 <= index < len(coarse)][:max(1, RECALL_FINAL_K)]
-                mode = "rerank"
+                reordered = [seeds[index] for index in order if 0 <= index < len(seeds)]
+                if reordered:
+                    seeds = reordered
+                    mode = "rerank"
         except Exception:
-            picked = coarse[:max(1, RECALL_FINAL_K)]
+            mode = "coarse"
+    picked = list(seeds)
+    if EXPAND_EVENTS:
+        seen_ids = set(str(row.get("id") or "") for _s, row in picked)
+        want = set(str(row.get("event_id") or "") for _s, row in seeds) - {""}
+        extra = []
+        if want:
+            for score, row in scored:
+                if str(row.get("event_id") or "") not in want:
+                    continue
+                key = str(row.get("id") or "")
+                if key and key in seen_ids:
+                    continue
+                extra.append((score, row))
+                if key:
+                    seen_ids.add(key)
+        extra.sort(key=lambda pair: float(pair[1].get("ts") or 0.0))
+        picked = picked + extra
     notes = _event_notes_by_id(events)
     budget = max(200, int(budget_chars or RECALL_INJECT_CHARS))
     header = "【相关记忆】"
@@ -3655,7 +3680,7 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         lines.append("已折叠 %d 条" % len(folded))
     body = header + "\n" + "\n".join(lines)
     return {"text": body, "chars": len(body), "mode": mode,
-            "coarse": len(coarse), "kept": len(rows) + len(folded),
+            "seeds": len(seeds), "kept": len(rows) + len(folded),
             "folded": len(folded), "folded_ids": folded,
             "ids": [str(row.get("id") or "") for _s, row, _l in rows]}
 
