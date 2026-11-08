@@ -59,7 +59,9 @@ class EventLayerWiringTest(unittest.TestCase):
         block = pipeline.inject_block('s1', store, query='生日是哪天', max_chars=800, top_k=3,
                                       payload={'event_summarizer': stub_summarizer})
         self.assertTrue(block['text'])
-        self.assertIn('事件｜第', block['text'])
+        # render rule: time only, never turn/event coordinates
+        self.assertIn('事件｜', block['text'])
+        self.assertNotIn('事件｜第', block['text'])
         self.assertTrue(block['ids'])
 
     def test_missing_summarizer_raises(self):

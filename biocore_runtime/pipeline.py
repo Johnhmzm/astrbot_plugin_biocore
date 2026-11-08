@@ -3064,6 +3064,18 @@ def _rerank_fn_from(payload, config=None):
 
 
 
+def _fmt_stamp_local(stamp):
+    """Local clock label for rendered facts: time only, no turn/event coordinates."""
+    try:
+        from datetime import datetime
+        value = float(stamp)
+        if not value or value != value:
+            return ""
+        return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return ""
+
+
 def _claim_lines(query, events, embed_fn, top=8, min_score=0.35):
     """Facts first: score claim texts, keep the evidence sentence of each hit."""
     from biocore_memory.event import events as _E2
@@ -3122,11 +3134,14 @@ def _claim_lines(query, events, embed_fn, top=8, min_score=0.35):
         seen.add(key)
         turn = int(claim.get("turn") or 0)
         evidence = ""
+        stamp = 0.0
         for row in ev.get("entries") or []:
             if int(row.get("turn") or 0) == turn:
                 evidence = str(row.get("text") or "")
+                stamp = float(row.get("ts") or 0.0)
                 break
-        head = "【事实】%s（第%d轮｜相关度 %.2f）" % (text, turn, score)
+        head = "【事实】%s（%s｜相关度 %.2f）" % (
+            text, _fmt_stamp_local(stamp) or "无时间", score)
         if claim.get("status") == "coexist":
             head += " ［两种说法并存］"
         lines.append(head)
@@ -3458,7 +3473,15 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         EVENT_CAP_STATS["rows"] += len(rows)
         if os.environ.get("BIOCORE_DEBUG_EV"):
             print("DBG-EV ev=%d-%d rows=%d" % (start, end, len(rows)), file=sys.stderr)
-        lines.append("【事件｜第%d-%d轮】%s" % (start, end, str(ev.get("overview") or ev.get("summary") or "")[:60]))
+        # what the model needs is *when*, not our internal coordinates
+        _stamps = [float(r.get("ts") or 0.0) for r in (ev.get("entries") or [])
+                   if float(r.get("ts") or 0.0) > 0]
+        _span = ""
+        if _stamps:
+            _a, _b = _day(min(_stamps)), _day(max(_stamps))
+            _span = _a if _a == _b else "%s 至 %s" % (_a, _b)
+        lines.append("【事件｜%s】%s" % (_span or "无时间",
+                                      str(ev.get("overview") or ev.get("summary") or "")[:60]))
         for row in rows:
             body = str(row.get("text") or "")
             if _nrt is not None:
@@ -3479,7 +3502,20 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                 if isinstance(_item, dict):
                     _raw.append(_item)
         if _raw:
-            state_lines = _claims.render_claims(_claims.merge_claims(_raw), limit=8)
+            # the model sees dates, never turn numbers: build turn -> date from
+            # the entries the claims came from (first ts seen for a turn wins)
+            _turn_dates = {}
+            for _ev in _ordered:
+                for _row in _ev.get("entries") or []:
+                    try:
+                        _turn = int(_row.get("turn") or 0)
+                        _stamp = float(_row.get("ts") or 0.0)
+                    except Exception:
+                        continue
+                    if _turn and _stamp > 0 and _turn not in _turn_dates:
+                        _turn_dates[_turn] = _day(_stamp)
+            state_lines = _claims.render_claims(_claims.merge_claims(_raw), limit=8,
+                                                turn_dates=_turn_dates)
     except Exception:
         state_lines = []
     _private = []
