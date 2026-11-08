@@ -113,10 +113,21 @@ RECALL_COARSE_N = int(os.environ.get("BIOCORE_RECALL_COARSE_N") or 40)
 RECALL_MULTIQUERY_TOP = int(os.environ.get("BIOCORE_MULTIQUERY_TOP") or 3)
 # EM coarse recall: sentence-level cosine, no model call
 RECALL_FINAL_K = int(os.environ.get("BIOCORE_RECALL_FINAL_K") or 12)
-SENTENCE_SEED_K = int(os.environ.get("BIOCORE_SENTENCE_SEED_K") or 12)
+EVENT_TOP = int(os.environ.get("BIOCORE_EVENT_TOP") or 12)
+# how many events the block may try to place (not sentences)
+EVENT_SCORE_W_MAX = 0.9
+EVENT_SCORE_W_REST = 0.1
+EVENT_SCORE_TOL = 0.03
+# best-line gaps below this count as a tie; the overall level decides
+# one lucky sentence must not outrank a consistently relevant event,
+# so the score mixes the best line with the top-3 mean
+SENTENCE_SEED_K = int(os.environ.get("BIOCORE_SENTENCE_SEED_K") or 40)
 # seed sentences are the point; their events are expanded to full text
 # below, and expanded rows never pass the rerank top-K cut
 EXPAND_EVENTS = str(os.environ.get("BIOCORE_EXPAND_EVENTS", "1")).strip().lower() not in ("0", "off", "false", "no")
+EXPAND_MIN_SEEDS = int(os.environ.get("BIOCORE_EXPAND_MIN_SEEDS") or 1)
+# one stray seed must not drag a whole unrelated event into the budget:
+# expand only events that earned at least this many seeds (1 = old behaviour)
 # how many reranked sentences are rendered in full
 RECALL_INJECT_CHARS = int(os.environ.get("BIOCORE_RECALL_INJECT_CHARS") or 2000)
 # the whole block is capped here; over budget means "fold", never "drop"
@@ -3521,12 +3532,12 @@ def _claims_state_lines(events, limit=8, turn_dates=None):
 
 def _sentence_recall_block(store, session_id, query, entries, events, payload=None,
                            rerank_config=None, now=None, budget_chars=None):
-    """EM coarse (40) -> rerank fine (12) -> a block that folds instead of cutting.
+    """Rank EVENTS by their best sentence, then inject each one whole.
 
-    Three red lines: a sentence is never truncated mid-way, never silently
-    dropped, never removed for budget reasons. Over budget, detail degrades in
-    order -- full sentence, then the event's one-line note, then a single
-    reference line -- so the evidence stays reachable at every step.
+    Sentence-level seeding misses events whose best line ranks 33rd: the
+    event itself is often top-10 among ~100 events, so the unit of ranking
+    is the event, not the sentence. An event is injected completely or
+    folded to one line -- half an event is worse than none.
     """
     from biocore_memory.recall import channels as _ch
     text = str(query or "").strip()
@@ -3550,128 +3561,109 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                     qvecs.append(list(vector))
     except Exception:
         qvecs = []
-    if not qvecs:
-        # no embeddings at all: lexical on the original question only
-        scored = [(float(_ch.lexical_score(text, str(row.get("text") or ""))), row)
-                  for row in pool]
-    else:
-        scored = []
-        for row in pool:
+    scored = []
+    for row in pool:
+        if qvecs:
             vector = row.get("vector") or []
-            best = max((_ch.cosine(qv, vector) for qv in qvecs), default=0.0)
-            scored.append((float(best), row))
-    scored.sort(key=lambda pair: -pair[0])
-    if RRF_ON and events:
-        try:
-            kindex = {str(row.get("id") or ""): pair for pair in scored for row in [pair[1]]}
-            ev_scores = []
-            for ev in events:
-                centroid = ev.get("vector") or []
-                if not centroid or not qvecs:
-                    continue
-                value = max((_ch.cosine(qv, centroid) for qv in qvecs), default=0.0)
-                ev_scores.append((float(value), ev))
-            ev_scores.sort(key=lambda pair: -pair[0])
-            by_event = {}
-            for row in pool:
-                by_event.setdefault(str(row.get("event_id") or ""), []).append(row)
-            sentence_rank = [str(row.get("id") or "") for _s, row in scored]
-            event_rank = []
-            for _s, ev in ev_scores[:max(1, RRF_EVENT_TOP)]:
-                for row in by_event.get(str(ev.get("event_id") or ""), []):
-                    key = str(row.get("id") or "")
-                    if key and key not in event_rank:
-                        event_rank.append(key)
-            if event_rank:
-                fused = _rrf_fuse([sentence_rank, event_rank])
-                order = {key: position for position, (key, _score) in enumerate(fused)}
-                scored.sort(key=lambda pair: order.get(str(pair[1].get("id") or ""), len(order)))
-        except Exception:
-            pass
-    # point -> surface: the best sentences are seeds, and each seed pulls
-    # its whole event in. The evidence sentence is often not the one that
-    # matched -- it sits at rank 65-456 inside an event that did match -- so
-    # expanded rows go straight to rendering and are never pruned by rerank.
-    seeds = scored[:max(1, SENTENCE_SEED_K)]
-    mode = "coarse"
-    if _rerank_mod is not None and len(seeds) > 1:
-        try:
-            ranked = _rerank_mod.rerank_documents(
-                text, [str(row.get("text") or "") for _s, row in seeds],
-                rerank_config)
-            if ranked:
-                order = [int(item["index"]) for item in ranked
-                         if isinstance(item, dict) and item.get("index") is not None]
-                reordered = [seeds[index] for index in order if 0 <= index < len(seeds)]
-                if reordered:
-                    seeds = reordered
-                    mode = "rerank"
-        except Exception:
-            mode = "coarse"
-    picked = list(seeds)
-    if EXPAND_EVENTS:
-        seen_ids = set(str(row.get("id") or "") for _s, row in picked)
-        want = set(str(row.get("event_id") or "") for _s, row in seeds) - {""}
-        extra = []
-        if want:
-            for score, row in scored:
-                if str(row.get("event_id") or "") not in want:
-                    continue
-                key = str(row.get("id") or "")
-                if key and key in seen_ids:
-                    continue
-                extra.append((score, row))
-                if key:
-                    seen_ids.add(key)
-        extra.sort(key=lambda pair: float(pair[1].get("ts") or 0.0))
-        picked = picked + extra
+            value = max((_ch.cosine(qv, vector) for qv in qvecs), default=0.0)
+        else:
+            value = _ch.lexical_score(text, str(row.get("text") or ""))
+        scored.append((float(value), row))
+    grouped = {}
+    order = []
+    for score, row in scored:
+        key = str(row.get("event_id") or "") or ("ID:" + str(row.get("id") or ""))
+        if key not in grouped:
+            grouped[key] = {"key": key, "rows": [], "best": -1.0, "best_id": "",
+                           "start": float(row.get("ts") or 0.0)}
+            order.append(key)
+        bucket = grouped[key]
+        bucket["rows"].append((score, row))
+        first = float(row.get("ts") or 0.0)
+        if first and (not bucket["start"] or first < bucket["start"]):
+            bucket["start"] = first
+        if score > bucket["best"]:
+            bucket["best"] = score
+            bucket["best_id"] = str(row.get("id") or "")
+    # score = 0.6 * best + 0.4 * mean(top3): a single lucky line cannot
+    # outrank an event that is consistently on-topic
+    global_scores = sorted((score for score, _row in scored), reverse=True)
+    top40 = set(global_scores[:40])
+    for key in order:
+        bucket = grouped[key]
+        values = sorted((score for score, _row in bucket["rows"]), reverse=True)
+        best = float(values[0]) if values else 0.0
+        rest = values[1:]
+        # a single-line event must not be punished for having no rest:
+        # rest_mean falls back to its own maximum
+        rest_mean = sum(rest) / len(rest) if rest else best
+        bucket["max_cos"] = round(best, 6)
+        bucket["rest_mean"] = round(rest_mean, 6)
+        bucket["sentence_count"] = len(values)
+        bucket["score"] = round(EVENT_SCORE_W_MAX * best
+                                + EVENT_SCORE_W_REST * rest_mean, 6)
+        bucket["in_top40"] = sum(1 for value in values if value in top40)
+    ranked = sorted(order, key=lambda key: (-grouped[key]["score"],
+                                           -grouped[key]["in_top40"],
+                                           grouped[key]["start"],
+                                           order.index(key)))
+    picked_events = ranked[:max(1, EVENT_TOP)]
     notes = _event_notes_by_id(events)
     budget = max(200, int(budget_chars or RECALL_INJECT_CHARS))
     header = "【相关记忆】"
-
-    def _sentence_line(score, row):
-        when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
-        body = str(row.get("text") or "").strip()
-        return "- %s%s" % (body, ("（%s）" % when) if when else "")
-
-    def _note_line(score, row):
-        info = notes.get(str(row.get("event_id") or "")) or {}
-        note = str(info.get("note") or "").strip()
-        if not note:
-            return ""
-        when = info.get("span") or ""
-        tail = "，相关度 %.2f" % score
-        return "  · %s%s%s" % (note, ("（%s）" % when) if when else "", tail)
-
-    rows = [(score, row, _sentence_line(score, row)) for score, row in picked]
-    # Greedy fill that SKIPS what does not fit instead of stopping at it:
-    # P01 sentences vary a lot in length, so stopping at the first overflow
-    # dropped every later short sentence, and that is often the evidence
     reserve = 90            # room for the fold trailer
     limit = max(100, budget - reserve)
-    lines, folded = [], []
+    lines, folded, folded_events = [], [], []
     used = len(header)
-    for score, row, line in rows:
-        cost = len(line) + 1
-        if used + cost > limit:
-            folded.append(str(row.get("id") or ""))
-            continue                      # skip it, keep scanning
+    shown_events = 0
+    for key in picked_events:
+        members = sorted(grouped[key]["rows"], key=lambda item: float(item[1].get("ts") or 0.0))
+        rendered = []
+        for score, row in members:
+            when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
+            body = str(row.get("text") or "").strip()
+            rendered.append("- %s%s" % (body, ("（%s）" % when) if when else ""))
+        cost = sum(len(line) + 1 for line in rendered)
+        if used + cost <= limit:
+            lines.extend(rendered)
+            used += cost
+            shown_events += 1
+            continue
+        label = key if not key.startswith("ID:") else key[3:]
+        folded_events.append(label)
+        folded.extend(str(row.get("id") or "") for _s, row in members)
+        line = "- %s 共%d句，已折叠" % (label, len(members))
         lines.append(line)
-        used += cost
+        used += len(line) + 1
     if folded:
-        stamps = [float(row.get("ts") or 0.0) for _s, row, _l in rows if row.get("ts")]
+        stamps = [float(row.get("ts") or 0.0) for _s, row in scored if row.get("ts")]
         a = _day_str(min(stamps)) if stamps else ""
         b = _day_str(max(stamps)) if stamps else ""
         span = ("%s 至 %s" % (a, b)) if a and b and a != b else (a or "无时间")
-        scores = [score for score, _r, _l in rows] or [0.0]
         lines.append("另有 %d 条相关记忆（%s，相关度 %.2f-%.2f，id 见 meta）"
-                     % (len(folded), span, min(scores), max(scores)))
-        lines.append("已折叠 %d 条" % len(folded))
-    body = header + "\n" + "\n".join(lines)
-    return {"text": body, "chars": len(body), "mode": mode,
-            "seeds": len(seeds), "kept": len(rows), "shown": len(lines),
-            "folded": len(folded), "folded_ids": folded,
-            "ids": [str(row.get("id") or "") for _s, row, _l in rows]}
+                     % (len(folded), span,
+                        min([s for s, _r in scored] or [0.0]),
+                        max([s for s, _r in scored] or [0.0])))
+        lines.append("已折叠 %d 条（%d 个事件）" % (len(folded), len(folded_events)))
+    body = header + chr(10) + chr(10).join(lines)
+    shown_ids = []
+    for key in picked_events[:shown_events]:
+        for _s, row in grouped[key]["rows"]:
+            shown_ids.append(str(row.get("id") or ""))
+    return {"text": body, "chars": len(body), "mode": "event",
+            "events_picked": len(picked_events), "events_shown": shown_events,
+            "kept": sum(len(grouped[key]["rows"]) for key in picked_events),
+            "shown": len(shown_ids), "folded": len(folded),
+            "folded_ids": folded, "folded_events": folded_events,
+            "events": [{"event_id": grouped[key]["key"],
+                        "max_cos": grouped[key]["max_cos"],
+                        "rest_mean": grouped[key]["rest_mean"],
+                        "score": grouped[key]["score"],
+                        "sentence_count": grouped[key]["sentence_count"],
+                        "best_entry_id": grouped[key]["best_id"],
+                        "shown": position < shown_events}
+                       for position, key in enumerate(picked_events)],
+            "ids": shown_ids}
 
 
 def _event_layer_block(session_id, store, query, budget, rerank_config=None,
