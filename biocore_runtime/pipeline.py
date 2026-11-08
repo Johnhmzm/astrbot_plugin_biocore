@@ -81,7 +81,8 @@ SENT_POOL = int(os.environ.get("BIOCORE_SENT_POOL") or 0)
 # [engineering] 0 = every row of the event competes for the cap; N = only the
 # N best rows by cosine do, so a long noisy event cannot flood the block
 EVENT_SIM_CLOSE = 0.30    # [engineering] below this similarity a turn starts a new event
-EVENT_MAX_TURNS = 8       # [engineering] 0 = no hard cap; else close the event at N turns
+EVENT_MAX_TURNS = 8       # [engineering] 0 = no hard cap; else split at N turns
+EVENT_MAX_CHARS = int(os.environ.get("BIOCORE_EVENT_MAX_CHARS") or 900)  # safety net
 EVENT_GAP_S = 86400.0     # [engineering] a day of silence also splits an event
 TOP_K = 5                 # [engineering]
 INJECT_MAX_K = 10          # inject_block may ask for more when rerank prunes
@@ -2154,6 +2155,39 @@ def _journal(store, session_id, kind, **fields):
             print("journal_failed kind=%s" % kind, flush=True)
         return None
 
+def _loads_tolerant(text):
+    """Parse model JSON even when it is truncated or wrapped in prose."""
+    raw = str(text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").split("\n", 1)[-1]
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    start = raw.find("{")
+    if start < 0:
+        return {}
+    depth = 0
+    for i in range(start, len(raw)):
+        ch = raw[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(raw[start:i + 1])
+                except Exception:
+                    break
+    # truncated: close open braces and retry
+    frag = raw[start:]
+    frag += "}" * max(0, frag.count("{") - frag.count("}"))
+    try:
+        return json.loads(frag)
+    except Exception:
+        return {}
+
+
 def _event_layer_close(events, buf, summarizer, global_state, store=None,
                        session_id=""):
     """Close one open event: one model call for state + overview."""
@@ -2165,26 +2199,40 @@ def _event_layer_close(events, buf, summarizer, global_state, store=None,
           "members": [int(row.get("turn") or 0) for row in buf],
           "entries": [{"turn": int(row.get("turn") or 0), "ts": float(row.get("ts") or 0.0),
                        "role": row.get("role") or "user", "text": str(row.get("text") or ""),
-                       "vector": row.get("vector")} for row in buf],
+                       "vector": row.get("vector"),
+                       "id": str(row.get("id") or "")} for row in buf],
           "text": body, "tokens": _E._tokens(body),
           "vector": _mean_vector([row.get("vector") for row in buf]),
           "event_id": "EV%03d" % (len(events) + 1)}
     overview = ""
+    _claims_done = False
+    _day = None
+    try:
+        from datetime import datetime as _dt0
+        _day = _dt0.fromtimestamp(float(buf[0].get("ts") or 0.0)).strftime("%Y-%m-%d")
+    except Exception:
+        _day = None
     if summarizer is not None and int(ev["tokens"]) > 800:
         overview = "；".join(_event_layer_notes(ev, buf, summarizer, global_state))
     elif summarizer is not None:
-        # a failing summarizer must surface, so inject_block can fall back
-        prompt = _R.rolling_prompt(global_state, ev)
-        data = json.loads(summarizer(prompt) or "{}")
-        if isinstance(data.get("state"), dict) and data["state"]:
+        from biocore_memory.event import claims as _C1
+        prompt = _C1.combined_prompt(ev, state=global_state,
+                                     known=sorted(global_state.keys())[:60], day=_day)
+        _ov1, _st1, _cl1 = _C1.parse_combined(summarizer(prompt), day=_day)
+        if _st1:
             global_state.clear()
-            global_state.update(_R.normalize_state(data["state"]))
-        overview = str(data.get("overview") or "").strip()
+            global_state.update(_R.normalize_state(_st1))
+        overview = _ov1
+        for _c in _cl1:
+            _c["turn"] = int(ev.get("end") or 0)
+        ev["claims"] = _cl1
+        _claims_done = True
     if not overview:
         overview = str(ev["text"]).replace("\n", " ")[:30]
     ev["overview"] = overview
-    ev["claims"] = []
-    if summarizer is not None:
+    if not _claims_done:
+        ev["claims"] = []
+    if summarizer is not None and not _claims_done:
         try:
             from biocore_memory.event import claims as _C
             _day = None
@@ -2270,7 +2318,11 @@ def _event_layer_close_adaptive(events, buf, summarizer, global_state, embed_fn=
         note_vec = None
     turns = [row.get("vector") for row in buf]
     covered = _SA.coverage(note_vec, turns) if note_vec else 1.0
-    if covered >= _SA.COVER_MIN:
+    _span = int(ev.get("end") or 0) - int(ev.get("start") or 0) + 1
+    _chars = len(str(ev.get("text") or ""))
+    _too_big = ((EVENT_MAX_TURNS > 0 and _span > EVENT_MAX_TURNS)
+                or _chars > EVENT_MAX_CHARS)
+    if covered >= _SA.COVER_MIN and not _too_big:
         return
     events.pop()
     cut = _SA.largest_jump(turns)
@@ -2341,7 +2393,15 @@ def _rerank_fn_from(payload, config=None):
         if key:
             headers["Authorization"] = "Bearer " + key
         req = _rq.Request(endpoint, data=json.dumps(body).encode("utf-8"), headers=headers)
-        data = json.loads(_rq.urlopen(req, timeout=30).read().decode("utf-8"))
+        data = None
+        for _attempt in range(3):
+            try:
+                data = json.loads(_rq.urlopen(req, timeout=30).read().decode("utf-8"))
+                break
+            except Exception:
+                time.sleep(1.5 * (_attempt + 1))
+        if data is None:
+            return []          # rerank is an optimisation: fall back to cosine order
         rows = data.get("results") or data.get("data") or []
         scores = [0.0] * len(texts)
         for row in rows:
@@ -2354,6 +2414,88 @@ def _rerank_fn_from(payload, config=None):
         return scores
 
     return _rerank
+
+
+
+
+def _claim_lines(query, events, embed_fn, top=8, min_score=0.35):
+    """Facts first: score claim texts, keep the evidence sentence of each hit."""
+    from biocore_memory.event import events as _E2
+    if embed_fn is None or not str(query or "").strip():
+        return []
+    try:
+        qv = embed_fn(str(query))
+    except Exception:
+        return []
+    picked = []
+    for ev in events or []:
+        for claim in ev.get("claims") or []:
+            if not isinstance(claim, dict):
+                continue
+            text = "%s·%s：%s" % (claim.get("subject") or "", claim.get("attr") or "",
+                                 claim.get("value") or "")
+            if len(text) < 4:
+                continue
+            try:
+                vec = embed_fn(text)
+            except Exception:
+                continue
+            score = _E2._cos(qv, vec)
+            if score >= min_score:
+                picked.append((score, claim, ev, text))
+    picked.sort(key=lambda item: item[0], reverse=True)
+    lines = []
+    seen = set()
+    for score, claim, ev, text in picked[:top]:
+        key = "%s|%s|%s" % (claim.get("subject"), claim.get("attr"), claim.get("value"))
+        if key in seen:
+            continue
+        seen.add(key)
+        turn = int(claim.get("turn") or 0)
+        evidence = ""
+        for row in ev.get("entries") or []:
+            if int(row.get("turn") or 0) == turn:
+                evidence = str(row.get("text") or "")
+                break
+        head = "【事实】%s（第%d轮｜相关度 %.2f）" % (text, turn, score)
+        if claim.get("status") == "coexist":
+            head += " ［两种说法并存］"
+        lines.append(head)
+        if evidence:
+            lines.append("  - 原句：" + evidence[:160])
+    return lines
+
+def _event_entry_ids(store, session_id):
+    """Entry ids the event table still refers to (old tables carry none)."""
+    ids = set()
+    try:
+        state = _load_event_state(store, session_id)
+    except Exception:
+        return ids
+    for ev in state.get("events") or []:
+        for item in ev.get("entries") or []:
+            if isinstance(item, dict) and item.get("id"):
+                ids.add(str(item.get("id")))
+    return ids
+
+
+def _capacity_guard(store, session_id, entries):
+    """Above MAX_ENTRIES: protect everything an event points at.
+
+    No eviction policy is configured, so nothing is dropped: losing a row here
+    is what silently emptied whole events (an entry vanished while the event
+    that quoted it stayed), and the event table is the only reason those rows
+    are alive at all.
+    """
+    keep = list(entries)
+    protected = _event_entry_ids(store, session_id)
+    if not protected:
+        return keep
+    # when an eviction policy lands it must consult this set; until then the
+    # answer is "keep everything", which is exactly what the guard returns
+    keep_ids = {str(row.get("id") or "") for row in keep}
+    return [row for row in keep
+            if str(row.get("id") or "") in protected or str(row.get("id") or "") in keep_ids]
 
 
 def _event_layer_block(session_id, store, query, budget, rerank_config=None,
@@ -2413,7 +2555,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         turn = int(row.get("turn") or (seen + offset + 1))
         item = {"turn": turn, "ts": float(row.get("ts") or 0.0),
                 "role": row.get("role") or "user", "text": str(row.get("text") or ""),
-                "vector": vec}
+                "vector": vec, "id": str(row.get("id") or "")}
         if buf:
             gap = float(item["ts"]) - float(buf[-1]["ts"])
             sim = _E._cos(_mean_vector([b.get("vector") for b in buf]), vec) if vec else 1.0
@@ -2438,7 +2580,22 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         _save_event_state(store, session_id,
                           {"seen": len(entries), "events": events,
                            "state": global_state, "open": buf})
-    if as_of is not None:
+    _as_of_ts = None
+    if isinstance(payload, dict):
+        try:
+            _as_of_ts = float(payload.get("as_of_ts")) if payload.get("as_of_ts") else None
+        except Exception:
+            _as_of_ts = None
+    if _as_of_ts is not None:
+        # time is the only stable identity across rebuilds: never filter by position
+        _kept = []
+        for ev in events:
+            _ts = [float(item.get("ts") or 0.0) for item in ev.get("entries") or []]
+            _last = max(_ts) if _ts else 0.0
+            if _last and _last <= _as_of_ts:
+                _kept.append(ev)
+        events = _kept
+    elif as_of is not None:
         try:
             limit = float(as_of)
         except Exception:
@@ -2480,10 +2637,22 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                           {"seen": int(stored.get("seen") or 0), "events": events,
                            "state": global_state})
     rerank_fn = _rerank_fn_from(payload if isinstance(payload, dict) else {}, config)
+    try:
+        _journal(store, session_id, "rerank_probe",
+                 enabled=bool(rerank_fn), base=(payload or {}).get("rerank_base_url")
+                 if isinstance(payload, dict) else None)
+    except Exception:
+        pass
     selected = _E.event_recall(
         query, events, budget_tokens=8000, flags={_E.FLAG_KEY: True},
-        embed=embed_fn, entry=("two_stage" if embed_fn is not None else "summary"),
-        entries=live, coarse_events=30, fine_pool=100, fine_keep=30,
+        embed=embed_fn,
+        entry=(os.environ.get("BIOCORE_ENTRY") or
+               ("two_stage" if embed_fn is not None else "summary")),
+        entries=live,
+        coarse_events=int(os.environ.get("BIOCORE_COARSE_EVENTS") or 30),
+        fine_pool=int(os.environ.get("BIOCORE_FINE_POOL") or 100),
+        fine_keep=int(os.environ.get("BIOCORE_FINE_KEEP") or 30),
+        sent_pool=int(os.environ.get("BIOCORE_SENT_POOL") or 60),
         rerank=rerank_fn, rerank_text="sentence")
     lines = []
     try:
@@ -2513,13 +2682,31 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         except Exception:
             return 0.0
     by_turn2 = {}
-    # memory rows carry neither turn nor ts; the event entries carry both
+    by_id2 = {}
+    by_evid2 = {}
+    # an event row is self-contained (id + text); the store is only a hint for
+    # rows written before ids existed, and for refreshing an empty body
+    for _row in entries:
+        _rid = str(_row.get("id") or "")
+        if _rid:
+            by_id2[_rid] = _row
     for _ev_row in events:
+        _evid = str(_ev_row.get("event_id") or "")
+        _bundle = []
         for _item in _ev_row.get("entries") or []:
+            _rid = str(_item.get("id") or "")
+            if _rid and _rid in by_id2 and not str(_item.get("text") or "").strip():
+                _live = by_id2[_rid]
+                _item = dict(_item)
+                _item["text"] = str(_live.get("text") or "")
+                _item["ts"] = float(_live.get("ts") or _item.get("ts") or 0.0)
+            _bundle.append(_item)
             try:
                 by_turn2.setdefault(int(_item.get("turn") or 0), []).append(_item)
             except Exception:
                 continue
+        if _evid:
+            by_evid2[_evid] = _bundle
     _ordered = list(selected)
     if os.environ.get("BIOCORE_DEBUG_EV"):
         print("DBG-EV selected=%d ordered=%d entries=%d bt2_keys=%s row_keys=%s"
@@ -2540,9 +2727,11 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             pass
     for ev in _ordered:
         start, end = int(ev.get("start") or 0), int(ev.get("end") or 0)
-        rows = []
-        for turn in range(start, end + 1):
-            rows.extend(by_turn2.get(turn) or [])
+        # the event carries its own rows: never look them up by store position
+        rows = list(by_evid2.get(str(ev.get("event_id") or "")) or [])
+        if not rows:                      # legacy events without an event id
+            for turn in range(start, end + 1):
+                rows.extend(by_turn2.get(turn) or [])
         if not rows:
             continue
         _cap = 5
@@ -2615,7 +2804,12 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
     except Exception:
         _private = []
     head = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"]
-    lines = head + _private + state_lines + lines
+    _claims = []
+    try:
+        _claims = _claim_lines(query, _ordered, embed_fn)
+    except Exception:
+        _claims = []
+    lines = head + _private + state_lines + (_claims + [""] if _claims else []) + lines
     text = "你记得这些事：\n" + "\n".join(lines)
     try:
         _journal(store, session_id, "inject", query=str(query)[:60],
@@ -2623,11 +2817,32 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                  state_lines=len(state_lines), chars=len(text))
     except Exception:
         pass
-    if budget and len(text) > budget:
-        text = text[:max(0, budget - 1)]
+    text = _trim_lines(text, budget)
     return {"text": text, "chars": len(text),
             "ids": [str(ev.get("event_id") or "") for ev in selected]}
 
+
+
+
+def _trim_lines(text, budget):
+    """Trim to the budget on line boundaries; never cut mid-sentence."""
+    raw = str(text or "")
+    try:
+        budget = int(budget or 0)
+    except Exception:
+        return raw
+    if budget <= 0 or len(raw) <= budget:
+        return raw
+    lines = raw.split("\n")
+    kept, used = [], 0
+    for line in lines:
+        if used + len(line) + 1 > budget - 24:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    dropped = len(lines) - len(kept)
+    note = "（已省略 %d 行，超出本次注入预算）" % dropped
+    return "\n".join(kept) + "\n" + note
 
 def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                  query="", mode="query", rerank_config=None, now=None,
@@ -3637,7 +3852,7 @@ def tool_call(name, args, store, session_id=None):
             except Exception:
                 pass
         if len(entries) > MAX_ENTRIES:
-            doc["entries"] = entries[-MAX_ENTRIES:]
+            doc["entries"] = _capacity_guard(store, sid, entries)
         save_memory(store, sid, doc)
         return {"ok": True, "entry": _compact(entry), "deduped": False}
     if name == "recall":
