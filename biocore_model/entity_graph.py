@@ -139,12 +139,18 @@ def resolve_name(graph, name):
     return _id("e_", _norm(key)) if key else ""
 
 
-def upsert_entity(graph, name, type=None, aliases=None, now=None, entry_id=""):
-    """Add or merge one entity; returns (graph_or_store, entity_id)."""
+def upsert_entity(graph, name, type=None, aliases=None, now=None, entry_id="",
+                  inplace=False):
+    """Add or merge one entity; returns (graph_or_store, entity_id).
+
+    A caller that already owns a normalized graph passes inplace=True: copying
+    the whole graph on every upsert made graph building O(n^2) with a deepcopy
+    per call (the 12 s injection).
+    """
     if isinstance(graph, GraphStore):
         return graph.upsert_entity(name, type=type, aliases=aliases, now=now,
                                    entry_id=entry_id)
-    out = normalize_graph(copy.deepcopy(graph))
+    out = graph if inplace else normalize_graph(copy.deepcopy(graph))
     key = _clean_text(name)
     norm = _norm(key)
     if not norm:
@@ -200,22 +206,22 @@ def upsert_entity(graph, name, type=None, aliases=None, now=None, entry_id=""):
 
 
 def upsert_edge(graph, src, rel, dst, ts=None, confidence=1.0, source_entry="",
-                src_type=None, dst_type=None, now=None):
+                src_type=None, dst_type=None, now=None, inplace=False):
     """Add one typed, timestamped edge (auto-creating entities); returns graph/id."""
     if isinstance(graph, GraphStore):
         return graph.upsert_edge(src, rel, dst, ts=ts, confidence=confidence,
                                  source_entry=source_entry, src_type=src_type,
                                  dst_type=dst_type, now=now)
-    out = normalize_graph(copy.deepcopy(graph))
+    out = graph if inplace else normalize_graph(copy.deepcopy(graph))
     source = _clean_text(src)
     target = _clean_text(dst)
     relation = str(rel or "").strip().lower()
     if not source or not target or not relation:
         return out, ""
     out, src_id = upsert_entity(out, source, type=src_type, now=now,
-                                entry_id=source_entry)
+                                entry_id=source_entry, inplace=True)
     out, dst_id = upsert_entity(out, target, type=dst_type, now=now,
-                                entry_id=source_entry)
+                                entry_id=source_entry, inplace=True)
     if not src_id or not dst_id or src_id == dst_id:
         # P0-1: both spellings resolved to one node -> a self-loop is noise.
         return out, ""

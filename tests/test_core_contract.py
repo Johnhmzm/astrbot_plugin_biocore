@@ -31,6 +31,11 @@ DISPLAY_ONLY = {
     os.path.join("biocore_memory", "identity", "ledger.py"),
     os.path.join("biocore_memory", "identity", "writeback.py"),
     os.path.join("biocore_memory", "relay", "card.py"),
+    # Closed-class time deixis (yesterday/tomorrow/next Tuesday). Grammar, not
+    # domain knowledge: it converts a phrase to a date and never picks a memory.
+    os.path.join("biocore_memory", "event", "timerender.py"),
+    # claim extraction prompt: field names and status words, resolves dates
+    os.path.join("biocore_memory", "event", "claims.py"),
     os.path.join("biocore_memory", "recall", "constraints.py"),
     os.path.join("biocore_memory", "store", "media.py"),
     os.path.join("biocore_memory", "store", "source_consistency.py"),

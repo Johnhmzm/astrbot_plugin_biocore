@@ -1558,6 +1558,14 @@ class MemoryEngine:
                 pass
         if self._flag("activation_update") and rows:
             rows = self._apply_activation_update(rows, at)
+            # hits/last_hit must survive the call, not just the in-memory copy
+            try:
+                if getattr(self.store, "dirty", False):
+                    self.store.save()
+                elif hasattr(self.store, "_dirty") and getattr(self.store, "_dirty", 0):
+                    self.store.save()
+            except Exception:
+                pass
         self._bump("recall_count")
         self._audit_write("recall", "", "recall",
                           "query=%s rows=%d mode=%s" % (str(query)[:40], len(rows), mode))
@@ -1675,6 +1683,17 @@ class MemoryEngine:
             if not on:
                 return rows
             base = space.weights(self.flags, os.environ)
+            # dead-axis guard: zero-variance axes must not eat 40% of the weight
+            try:
+                stats = space.stats(self.entries, now=at) if hasattr(space, "stats") else None
+                if not isinstance(stats, dict):
+                    stats = getattr(self, "_space_stats", None)
+                if isinstance(stats, dict):
+                    std_w = space.standardized_weights(stats, base)
+                    if std_w and sum(std_w.values()) > 0:
+                        base = {axis: std_w.get(axis, 0.0) for axis in base}
+            except Exception:
+                pass
             target = space.query_space(query, vector=vector, now=at)
             used = base
             for row in rows:

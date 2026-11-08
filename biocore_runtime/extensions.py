@@ -103,13 +103,13 @@ def _entity_graph(entries):
                 try:
                     updated = _graph.upsert_edge(
                         graph, left, right, "co_occurs",
-                        ts=float(entry.get("ts") or 0.0))
+                        ts=float(entry.get("ts") or 0.0), inplace=True)
                     graph = updated[0] if isinstance(updated, tuple) else updated
                 except Exception:
                     pass
     for token in names:
         try:
-            updated = _graph.upsert_entity(graph, token, "topic")
+            updated = _graph.upsert_entity(graph, token, "topic", inplace=True)
             graph = updated[0] if isinstance(updated, tuple) else updated
         except Exception:
             pass

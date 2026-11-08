@@ -77,6 +77,11 @@ EVENT_CAP_MODE = os.environ.get("BIOCORE_EVENT_CAP_MODE") or "flat"
 #          the guard row below already keeps the best-matching turn)
 #   min3 = at least 3, so a dense-note event still shows its best turn
 EVENT_CAP_STATS = {"events": 0, "skipped": 0, "rows": 0}
+ADAPTIVE_WINDOW = int(os.environ.get("BIOCORE_ADAPTIVE_WINDOW") or 200)
+# [engineering] the drift threshold is learned from the *recent* distribution:
+# scanning the whole session on every recall grew with the store and never
+# mattered (old turns cannot change the current boundary)
+_THR_MEMO = {"stamp": None, "thr": None}
 SENT_POOL = int(os.environ.get("BIOCORE_SENT_POOL") or 0)
 # [engineering] 0 = every row of the event competes for the cap; N = only the
 # N best rows by cosine do, so a long noisy event cannot flood the block
@@ -612,6 +617,7 @@ def capture(session_id, role, text, store, config=None):
     decision = capture_decision(session_id, role, text, state)
     summarizer = cfg.get("event_summarizer")
     entry = None
+    position = 0
     if decision["capture"]:
         result = tool_call("remember", {
             "text": decision["text"], "role": decision["role"], "ts": now,
@@ -619,6 +625,7 @@ def capture(session_id, role, text, store, config=None):
             "participants": cfg.get("participants"),
         }, store, session_id=session_id)
         entry = result.get("entry") if result.get("ok") else None
+        position = int(result.get("position") or 0) if result.get("ok") else 0
         if entry is not None:
             hourly = _stamps_for(state, session_id) + [now]
             recent = _recent_for(state, session_id) + [decision["text"]]
@@ -631,7 +638,7 @@ def capture(session_id, role, text, store, config=None):
     if summarizer is not None and _store_root(store) is not None:
         # same incremental path as injection; new entries only
         _event_layer_block(session_id, store, "", 0, summarizer=summarizer)
-    return {"ok": True, "decision": decision, "entry": entry}
+    return {"ok": True, "decision": decision, "entry": entry, "position": position}
 
 
 # ---------------------------------------------------------------- governance
@@ -2541,10 +2548,16 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             buf.append(dict(row))          # an event that was still open last call
     new_rows = entries[seen:]
     # drift threshold from this session's own adjacent-turn similarities
+    _thr = None
     try:
         from biocore_memory.event import segment_adaptive as _SA
-        _thr = _SA.adaptive_threshold(
-            _SA.adjacent_similarities([row.get("vector") for row in entries]))
+        _window = entries[-ADAPTIVE_WINDOW:] if ADAPTIVE_WINDOW > 0 else entries
+        _stamp = (len(entries), str((_window[-1].get("id") if _window else "") or ""))
+        if _THR_MEMO.get("stamp") != _stamp:
+            _THR_MEMO["stamp"] = _stamp
+            _THR_MEMO["thr"] = _SA.adaptive_threshold(
+                _SA.adjacent_similarities([row.get("vector") for row in _window]))
+        _thr = _THR_MEMO.get("thr")
     except Exception:
         _thr = None
     thr = EVENT_SIM_CLOSE if _thr is None else _thr
@@ -2804,6 +2817,12 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
     except Exception:
         _private = []
     head = ["【注意】若记录里同一件事出现过两种不同说法，先说明两种说法并注明记录不足以确定、需向用户确认；若后一种是对前一种的更正或核对过的结果，采用后一种。"]
+    if _private:
+        _keys = [str(line).split("：")[0].replace("【不可外传】", "") for line in _private]
+        _keys = [k for k in _keys if k]
+        if _keys:
+            head.append("【禁止主动披露】以下条目只有用户直接问起时才可提及，不要主动展开："
+                        + "、".join(_keys[:6]))
     _claims = []
     try:
         _claims = _claim_lines(query, _ordered, embed_fn)
@@ -3854,7 +3873,17 @@ def tool_call(name, args, store, session_id=None):
         if len(entries) > MAX_ENTRIES:
             doc["entries"] = _capacity_guard(store, sid, entries)
         save_memory(store, sid, doc)
-        return {"ok": True, "entry": _compact(entry), "deduped": False}
+        # the position the event layer will give this row, computed from the list
+        # we already hold: avoids a full memory read per capture
+        visible_rows = [row for row in _visible(doc.get("entries") or [])
+                        if str(row.get("text") or "").strip()]
+        position = len(visible_rows)
+        for spot, row in enumerate(visible_rows, 1):
+            if str(row.get("id") or "") == str(entry.get("id") or ""):
+                position = spot
+                break
+        return {"ok": True, "entry": _compact(entry), "deduped": False,
+                "position": position}
     if name == "recall":
         query = str(args.get("query") or "").strip()
         if not query:

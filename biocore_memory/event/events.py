@@ -889,16 +889,16 @@ def _parse_span_item(item):
         return None
     lowered = {str(k).lower(): v for k, v in item.items()}
     text = ''
-    for key in ('overview', 'summary', 'note', 'text', '概览', '记录'):
+    for key in ('overview', 'summary', 'note', 'text'):
         if lowered.get(key):
             text = str(lowered.get(key)).strip().replace('\n', ' ')
             break
     start = end = None
-    for key in ('start', 'begin', 'from', '起轮', '开始'):
+    for key in ('start', 'begin', 'from'):
         if lowered.get(key) is not None:
             start = lowered.get(key)
             break
-    for key in ('end', 'to', '止轮', '结束'):
+    for key in ('end', 'to'):
         if lowered.get(key) is not None:
             end = lowered.get(key)
             break

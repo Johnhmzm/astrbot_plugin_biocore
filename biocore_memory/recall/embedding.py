@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -245,15 +246,178 @@ def write_cache(rows, path=None):
         return False
 
 
+def cache_backend(path=None):
+    """'sqlite' when the incremental cache is switched on, else 'json'.
+
+    Default stays json: the json cache has its own contract (temp file, corrupt
+    file is a miss, one readable file) that the suite pins down, so the switch
+    is opt-in until those expectations are re-verified against the db.
+    """
+    mode = str(os.environ.get("BIOCORE_EMBED_CACHE") or "").strip().lower()
+    return "sqlite" if mode in ("sqlite", "db", "1", "on") else "json"
+
+
+def sqlite_cache_path(path=None):
+    """The incremental cache beside the legacy json file (None when unset)."""
+    target = path or configured_cache_file()
+    if not target:
+        return None
+    return os.path.splitext(str(target))[0] + ".sqlite"
+
+
+_SQL_READY = {"path": None, "ready": False}
+_SQL_CONN = {"path": None, "conn": None}
+
+
+def _shared_conn(db):
+    """One write connection per process: opening sqlite per vector dominated the write."""
+    if _SQL_CONN["path"] == db and _SQL_CONN["conn"] is not None:
+        return _SQL_CONN["conn"]
+    conn = _sql_connect(db)
+    _SQL_CONN.update({"path": db, "conn": conn})
+    return conn
+
+
+def _sql_connect(db, create=True):
+    import sqlite3
+    folder = os.path.dirname(os.path.abspath(db))
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    conn = sqlite3.connect(db, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    if create:
+        conn.execute("CREATE TABLE IF NOT EXISTS vec ("
+                     "key TEXT PRIMARY KEY, vector BLOB, dim INTEGER, updated REAL)")
+    return conn
+
+
+def cache_init(path=None):
+    """Create the db and import the legacy json once; the json is renamed after.
+
+    A partial or corrupt import leaves the json in place: nothing is deleted
+    until every row it held has been written and counted.
+    """
+    target = path or configured_cache_file()
+    db = sqlite_cache_path(target)
+    if not db:
+        return None
+    if _SQL_READY["path"] == db and _SQL_READY["ready"]:
+        return db
+    try:
+        conn = _shared_conn(db)
+        try:
+            have = conn.execute("SELECT COUNT(*) FROM vec").fetchone()[0]
+            legacy = target if os.path.isfile(target) else None
+            if legacy:
+                rows = read_cache(legacy)
+                if rows:
+                    now = time.time()
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO vec (key, vector, dim, updated) VALUES (?,?,?,?)",
+                        [(str(k), pack_vector(v), len(v), now)
+                         for k, v in rows.items() if _validate_vector(v) is not None])
+                    conn.commit()
+                total = conn.execute("SELECT COUNT(*) FROM vec").fetchone()[0]
+                if total >= len(rows):
+                    os.replace(legacy, legacy + ".migrated")
+                else:
+                    return db          # keep the json: the import lost rows
+        except Exception:
+            return db
+    except Exception:
+        return db
+    _SQL_READY.update({"path": db, "ready": True})
+    return db
+
+
+def pack_vector(vector):
+    """float32 blob: 4 KB per 1024-d vector, written one row at a time."""
+    try:
+        import struct
+        rows = [float(x) for x in (vector or [])]
+        if not rows:
+            return None
+        return struct.pack("<%df" % len(rows), *rows)
+    except Exception:
+        return None
+
+
+def unpack_vector(blob):
+    try:
+        import struct
+        if not blob:
+            return []
+        return list(struct.unpack("<%df" % (len(blob) // 4), blob))
+    except Exception:
+        return []
+
+
+def cache_get_many(keys, path=None):
+    """{key: vector} in one query; empty when the db is absent."""
+    db = cache_init(path)
+    rows = [str(k) for k in (keys or [])]
+    if not db or not rows:
+        return {}
+    try:
+        conn = _sql_connect(db, create=False)
+        try:
+            out = {}
+            for spot in range(0, len(rows), 500):
+                chunk = rows[spot:spot + 500]
+                marks = ",".join("?" * len(chunk))
+                for key, blob in conn.execute(
+                        "SELECT key, vector FROM vec WHERE key IN (%s)" % marks, chunk):
+                    vector = unpack_vector(blob)
+                    if vector:
+                        out[str(key)] = vector
+            return out
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+
+
+def cache_put(key, vector, path=None):
+    """Upsert one vector; the write is one row, not the whole cache."""
+    db = cache_init(path)
+    if not db:
+        return False
+    try:
+        conn = _shared_conn(db)
+        conn.execute(
+            "INSERT OR REPLACE INTO vec (key, vector, dim, updated) VALUES (?,?,?,?)",
+            (str(key), pack_vector(vector), len(vector or []), time.time()))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+
+
+def cache_count(path=None):
+    db = sqlite_cache_path(path)
+    if not db or not os.path.isfile(db):
+        return 0
+    try:
+        conn = _sql_connect(db, create=False)
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM vec").fetchone()[0])
+        finally:
+            conn.close()
+    except Exception:
+        return 0
+
+
 def cache_summary(path=None, data_dir=None):
     """hit / miss / size for /state; hit already includes the disk hits."""
     target = path or configured_cache_file() or cache_file(None, data_dir)
-    rows = read_cache(target) if target else {}
+    size = cache_count(target) if target else 0
+    rows = read_cache(target) if (target and not size) else {}
     memory_hit = int(EMBED_STATS.get("hit", 0))
     disk_hit = int(EMBED_STATS.get("disk_hit", 0))
     miss = int(EMBED_STATS.get("miss", 0))
     total = memory_hit + disk_hit + miss
-    return {"hit": memory_hit + disk_hit, "miss": miss, "size": len(rows),
+    return {"hit": memory_hit + disk_hit, "miss": miss, "size": size or len(rows),
             "hit_rate": (round((memory_hit + disk_hit) / float(total), 4)
                          if total else 0.0),
             "memory_hit": memory_hit, "disk_hit": disk_hit,
@@ -903,8 +1067,12 @@ def embed(text, provider, cache=None, timeout=None, path=None):
             pass
         return cached
     target = path or configured_cache_file()
-    rows = read_cache(target) if target else {}
-    from_disk = rows.get(key)
+    if target and cache_backend(target) == "sqlite":
+        from_disk = cache_get_many([key], target).get(key)
+        rows = None
+    else:
+        rows = read_cache(target) if target else {}
+        from_disk = rows.get(key)
     if from_disk is not None:
         EMBED_STATS["disk_hit"] += 1
         _cache_put(cache, key, from_disk)
@@ -916,9 +1084,12 @@ def embed(text, provider, cache=None, timeout=None, path=None):
         EMBED_STATS["remote"] += 1
         _cache_put(cache, key, checked)
         if target:
-            rows.pop(key, None)
-            rows[key] = list(checked)
-            write_cache(_cache_trim(rows), target)
+            if rows is None:
+                cache_put(key, checked, target)          # one row, not the file
+            else:
+                rows.pop(key, None)
+                rows[key] = list(checked)
+                write_cache(_cache_trim(rows), target)
         return checked
     # Remote failed / timed out / missing key: try the local CPU int8 model.
     local = _fallback_embed(provider, normalized)
@@ -928,7 +1099,10 @@ def embed(text, provider, cache=None, timeout=None, path=None):
     EMBED_STATS["local"] += 1
     _cache_put(cache, key, local)
     if target:
-        rows.pop(key, None)
-        rows[key] = list(local)
-        write_cache(_cache_trim(rows), target)
+        if rows is None:
+            cache_put(key, local, target)
+        else:
+            rows.pop(key, None)
+            rows[key] = list(local)
+            write_cache(_cache_trim(rows), target)
     return local
