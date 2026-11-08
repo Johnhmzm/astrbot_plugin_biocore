@@ -36,6 +36,9 @@ def _release_handles():
     try:
         from biocore_memory.recall import embedding
         embedding.cache_close()
+        # a suite that pins a cache file must not leak that pin into the next
+        # suite: env/config win only when no override is set
+        embedding.set_cache_file(None)
     except Exception:
         pass
 
