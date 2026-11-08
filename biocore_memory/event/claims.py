@@ -437,23 +437,27 @@ def render_claims(table, limit=8):
     for key in sorted(table):
         slot = table[key]
         rows = list(slot.get("values") or [])[-3:]
+        dicts = [row for row in rows if isinstance(row, dict)]
+        current = [row for row in dicts if row.get("status") != "superseded"]
+        retired = [row for row in dicts if row.get("status") == "superseded"]
         parts = []
-        for row in rows:
-            tag = ""
-            if isinstance(row, dict):
-                mark = ""
-                if row.get("status") == "superseded":
-                    mark = "，【已作废】以较新的说法为准"
-                elif float(row.get("confidence") or 1.0) < 0.5:
-                    mark = "，可信度低"
-                tag = "（第%d轮%s）" % (int(row.get("turn") or 0), mark)
-                parts.append("%s%s" % (row.get("value"), tag))
-            else:
-                value, turn = row
-                parts.append("%s（第%d轮）" % (value, turn))
-        shown = " / ".join(parts)
-        if any(isinstance(row, dict) and row.get("status") == "superseded" for row in rows):
-            shown = "已作废（仅作历史参考）：" + shown
+        # The current value is labelled first: a line that only says
+        # "superseded" leaves the reader with two candidates and no way to
+        # pick one, which is how "八月十八 -> 八月十六" became "无法确定".
+        if current:
+            row = current[-1]
+            weak = float(row.get("confidence") or 1.0) < 0.5
+            parts.append("【当前】%s（第%d轮%s）"
+                         % (row.get("value"), int(row.get("turn") or 0),
+                            "，可信度低" if weak else ""))
+        # At most one retired value: the newest one. Two candidates are a
+        # question, three are noise.
+        for row in retired[-1:]:
+            parts.append("【已作废，仅供参考】%s（第%d轮）"
+                         % (row.get("value"), int(row.get("turn") or 0)))
+        for value, turn in [row for row in rows if not isinstance(row, dict)]:
+            parts.append("%s（第%d轮）" % (value, turn))
+        shown = "，".join(parts)
         state = {"coexist": "，两种说法并存，记录不足以确定",
                  "private": "，不能对第三方透露",
                  "current": ""}.get(slot.get("status"), "")
