@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -66,6 +67,8 @@ from pathlib import Path
 _PLUGIN_ROOT = str(Path(__file__).resolve().parents[1])
 if _PLUGIN_ROOT not in sys.path:
     sys.path.insert(0, _PLUGIN_ROOT)
+
+logger = logging.getLogger(__name__)
 
 MAX_CHARS = 420           # [engineering] default budget when the caller says nothing
 INJECT_MAX_CHARS = 12000  # [engineering] ceiling for an explicit caller request
@@ -1077,7 +1080,17 @@ def summarizer_from_config(store, payload=None):
     try:
         timeout = float(block.get("timeout") or cfg.get("summarizer_timeout") or 90.0)
     except Exception:
-        timeout = 60.0
+        timeout = 90.0
+    # thinking must be switched off explicitly: left to think, a reasoning model
+    # burns the whole completion budget on reasoning and answers with "" (2.20 s
+    # / 200 reasoning tokens / empty, measured live)
+    thinking = block.get("thinking") or cfg.get("summarizer_thinking") or "disabled"
+    if isinstance(thinking, dict):
+        thinking_payload = dict(thinking)
+    else:
+        state = str(thinking).strip().lower()
+        thinking_payload = {"type": "enabled" if state in ("enabled", "on", "true", "1")
+                            else "disabled"}
     if not base_url or not model:
         raise RuntimeError(
             "event_layer 已启用，但 core_config.json 里没有可用的 summarizer 段"
@@ -1093,6 +1106,7 @@ def summarizer_from_config(store, payload=None):
         import urllib.request
         url = base_url.rstrip("/") + "/chat/completions"
         request_payload = {"model": model, "temperature": 0,
+                           "thinking": dict(thinking_payload),
                            "messages": [{"role": "user",
                                          "content": str(prompt or "")}]}
         headers = {"Content-Type": "application/json"}
@@ -1103,30 +1117,44 @@ def summarizer_from_config(store, payload=None):
             headers=headers, method="POST")
         # a build run must not die on one slow summariser call: one retry, and
         # the default timeout is 90 s because a 31-entry build hit it live
-        body = b""
+        started = time.time()
         last_error = None
+        content = ""
         for attempt in range(2):
+            body = b""
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     body = response.read()
-                last_error = None
-                break
             except Exception as exc:      # timeout / connection reset
                 last_error = exc
                 if attempt == 0:
                     time.sleep(1.0)
                     continue
+                break
+            last_error = None
+            try:
+                doc = json.loads(body.decode("utf-8", "replace"))
+            except Exception:
+                doc = {}
+            choices = doc.get("choices") if isinstance(doc, dict) else None
+            message = (choices[0].get("message") if isinstance(choices, list)
+                       and choices and isinstance(choices[0], dict) else {}) or {}
+            content = str(message.get("content") or "")
+            if content.strip():
+                break
+            if attempt == 0:              # empty content: one more try, then fail
+                time.sleep(1.0)
+        logger.info("[summarizer] ms=%d model=%s thinking=%s chars=%d",
+                    int((time.time() - started) * 1000), model,
+                    thinking_payload.get("type"), len(content.strip()))
         if last_error is not None:
             raise last_error
-        try:
-            doc = json.loads(body.decode("utf-8", "replace"))
-        except Exception:
-            return ""
-        choices = doc.get("choices") if isinstance(doc, dict) else None
-        if not isinstance(choices, list) or not choices:
-            return ""
-        message = choices[0].get("message") if isinstance(choices[0], dict) else {}
-        return str((message or {}).get("content") or "")
+        if not content.strip():
+            raise RuntimeError(
+                "summarizer returned EMPTY content twice (model=%s, thinking=%s): "
+                "reasoning likely ate the completion budget; an empty note must "
+                "never be written into an event" % (model, thinking_payload.get("type")))
+        return content
 
     _SUMMARIZER_CACHE[cache_key] = _summarise
     return _summarise
