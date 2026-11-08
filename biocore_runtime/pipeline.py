@@ -3622,14 +3622,14 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         _budget_chars = int(budget or 0)
         if _budget_chars > 0 and _compact.should_compact(events, _budget_chars):
             _report = _compact.compact(events, _budget_chars, ask=summarizer)
-            self_report = getattr(_event_layer_block, "_last_compaction", None)
             _event_layer_block._last_compaction = _report
     except Exception as exc:
-        if isinstance(exc, RuntimeError) and "整理" in str(exc):
-            raise
-        # a broken compaction must not break injection, but it must be visible
-        if isinstance(exc, RuntimeError):
-            raise
+        # compaction is an enhancement, never a precondition: a bad model
+        # answer must not take the whole injection (and the question) down
+        logger.warning("[compact] skipped: %s: %s", type(exc).__name__, str(exc)[:160])
+        _event_layer_block._last_compaction = {"triggered": False,
+                                               "reason": "error",
+                                               "detail": type(exc).__name__}
     if len(events) > 1:
         events[:] = _merge_small_events(events)
     for index, ev in enumerate(events, 1):

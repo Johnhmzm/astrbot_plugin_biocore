@@ -15,6 +15,7 @@ injected block, still on disk, still reachable.
 from __future__ import annotations
 
 import json
+import os
 
 DEFAULT_TRIGGER_RATIO = 0.70
 
@@ -87,18 +88,73 @@ def compaction_prompt(events, budget_chars, notes=None):
     return "\n".join(lines)
 
 
+def _strip_fence(text):
+    """Drop a markdown fence and any prose around the payload."""
+    body = str(text or "").strip()
+    if body.startswith("```"):
+        body = body.split(chr(10), 1)[-1] if chr(10) in body else body
+        if body.rstrip().endswith("```"):
+            body = body.rstrip()[:-3]
+    body = body.strip("`").strip()
+    return body
+
+
+def _cut_json(body):
+    """The first opening bracket to the last matching close, prose dropped."""
+    for left, right in (("[", "]"), ("{", "}")):
+        start, end = body.find(left), body.rfind(right)
+        if 0 <= start < end:
+            return body[start:end + 1]
+    return ""
+
+
+def _drop_trailing_commas(body):
+    """A trailing comma before ] or } is the most common model JSON slip."""
+    out = []
+    index = 0
+    length = len(body)
+    while index < length:
+        ch = body[index]
+        if ch == ",":
+            look = index + 1
+            while look < length and body[look] in " \t\r\n":
+                look += 1
+            if look < length and body[look] in "]}":
+                index += 1
+                continue
+        out.append(ch)
+        index += 1
+    return "".join(out)
+
+
+def _tolerant_loads(text):
+    """Three attempts: as-is, de-fenced/bracket-cut, then commas repaired."""
+    for candidate in _candidates(text):
+        try:
+            return json.loads(candidate)
+        except Exception:
+            continue
+    raise CompactionError("整理结果无法解析：%r" % str(text or "")[:120])
+
+
+def _candidates(text):
+    body = _strip_fence(text)
+    out = []
+    if body:
+        out.append(body)
+    cut = _cut_json(body)
+    if cut and cut != body:
+        out.append(cut)
+    for candidate in list(out):
+        fixed = _drop_trailing_commas(candidate)
+        if fixed != candidate:
+            out.append(fixed)
+    return out
+
+
 def parse_decisions(raw):
     """Validated [{event_id, keep, drop, note}]; anything else raises."""
-    text = str(raw or "").strip()
-    if text.startswith("```"):
-        text = text.strip("`").split("\n", 1)[-1]
-    start, end = text.find("["), text.rfind("]")
-    if start < 0 or end <= start:
-        raise CompactionError("整理结果不是 JSON 数组：%r" % text[:80])
-    try:
-        rows = json.loads(text[start:end + 1])
-    except Exception as exc:
-        raise CompactionError("整理结果无法解析：%s" % exc)
+    rows = _tolerant_loads(raw)
     if not isinstance(rows, list):
         raise CompactionError("整理结果必须是数组")
     out = []
@@ -152,6 +208,8 @@ def compact(events, budget_chars, ask, ratio=None, unarchived=None):
     ask(prompt) -> raw model text. A missing ask is an error: falling back to
     "cut the context" is the silent degradation this module exists to avoid.
     """
+    if str(os.environ.get("BIOCORE_COMPACT", "1")).strip().lower() in ("0", "off", "false", "no"):
+        return {"triggered": False, "reason": "disabled", "applied": []}
     if not should_compact(events, budget_chars, ratio=ratio, unarchived=unarchived):
         return {"triggered": False, "reason": "under_capacity", "applied": []}
     if not callable(ask):

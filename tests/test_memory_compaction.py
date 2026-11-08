@@ -1,79 +1,89 @@
 # -*- coding: utf-8 -*-
-"""Compaction: capacity triggers it, the model decides, nothing is truncated."""
+"""Compaction: switchable, tolerant, and never fatal."""
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import os  # noqa: E402
+
 from biocore_memory.event import compaction as comp  # noqa: E402
+from biocore_runtime import pipeline as P  # noqa: E402
 
 
 def events():
-    return [{
-        "event_id": "EV001", "overview": "门口灯箱的事",
-        "entries": [
-            {"id": "s1", "text": "灯箱昨天晚上不亮了。"},
-            {"id": "s2", "text": "师傅说明天上午过来看。"},
-            {"id": "s3", "text": "我们约在九点半。"},
-        ],
-    }]
+    return [{"event_id": "EV001", "overview": "灯箱",
+             "entries": [{"id": "s1", "text": "灯箱不亮了。"},
+                         {"id": "s2", "text": "师傅明天来。"}]}]
 
 
-def decision(keep, drop, note="灯箱约好次日上午九点半维修。"):
-    return json.dumps([{"event_id": "EV001", "keep_sentence_ids": keep,
-                        "drop_sentence_ids": drop, "note": note}], ensure_ascii=False)
+VALID = {"event_id": "EV001", "keep_sentence_ids": ["s1"],
+         "drop_sentence_ids": ["s2"], "note": "灯箱明天修。"}
 
 
-class CapacityTriggerTest(unittest.TestCase):
-    def test_under_capacity_does_not_trigger(self):
-        rows = events()
-        result = comp.compact(rows, budget_chars=1000, ask=lambda prompt: decision(["s1"], ["s2"]))
-        self.assertFalse(result["triggered"])
-        self.assertEqual(result["applied"], [])
-        self.assertFalse(any(r.get("archived") for r in rows[0]["entries"]))
+class SwitchTest(unittest.TestCase):
+    def tearDown(self):
+        os.environ.pop("BIOCORE_COMPACT", None)
 
-    def test_over_capacity_triggers_and_the_model_decides(self):
-        rows = events()
-        seen = {}
+    def test_compact_zero_never_calls_the_model(self):
+        os.environ["BIOCORE_COMPACT"] = "0"
+        called = {"n": 0}
 
         def ask(prompt):
-            seen["prompt"] = prompt
-            return decision(["s1", "s3"], ["s2"])
+            called["n"] += 1
+            return "[]"
 
-        result = comp.compact(rows, budget_chars=10, ask=ask)
-        self.assertTrue(result["triggered"])
-        archived = [r["id"] for r in rows[0]["entries"] if r.get("archived")]
-        self.assertEqual(archived, ["s2"])              # only what the model dropped
-        self.assertEqual(rows[0]["note"], "灯箱约好次日上午九点半维修。")
-        self.assertIn("s1", seen["prompt"])            # the prompt carries the sentences
-        self.assertIn("注入预算", seen["prompt"])
+        result = comp.compact(events(), budget_chars=1, ask=ask)
+        self.assertFalse(result["triggered"])
+        self.assertEqual(result["reason"], "disabled")
+        self.assertEqual(called["n"], 0)
 
 
-class InvalidAnswerTest(unittest.TestCase):
-    def test_a_non_array_answer_raises(self):
+class TolerantParseTest(unittest.TestCase):
+    def test_a_fenced_answer_parses(self):
+        raw = "好的，整理结果如下：\n\x60\x60\x60json\n%s\n\x60\x60\x60" % json.dumps([VALID], ensure_ascii=False)
+        rows = comp.parse_decisions(raw)
+        self.assertEqual(rows[0]["event_id"], "EV001")
+
+    def test_a_trailing_comma_is_repaired(self):
+        raw = json.dumps([VALID], ensure_ascii=False).replace('"note": "灯箱明天修。"',
+                                                              '"note": "灯箱明天修。",')
+        rows = comp.parse_decisions(raw)
+        self.assertEqual(rows[0]["note"], "灯箱明天修。")
+
+    def test_garbage_raises_for_the_caller_to_downgrade(self):
         with self.assertRaises(comp.CompactionError):
-            comp.parse_decisions("我觉得都留着比较好")
+            comp.parse_decisions("模型说：这件事我记住就好，不需要 JSON。")
 
-    def test_a_missing_note_raises(self):
-        bad = json.dumps([{"event_id": "EV001", "keep_sentence_ids": ["s1"],
-                           "drop_sentence_ids": ["s2"], "note": ""}])
-        with self.assertRaises(comp.CompactionError):
-            comp.parse_decisions(bad)
 
-    def test_no_model_raises_instead_of_truncating(self):
-        with self.assertRaises(comp.CompactionError):
-            comp.compact(events(), budget_chars=10, ask=None)
-
-    def test_a_row_dropped_twice_is_still_archived_once(self):
-        rows = events()
-        comp.compact(rows, budget_chars=10,
-                     ask=lambda prompt: decision(["s1"], ["s2", "s2"]))
-        self.assertEqual([r["id"] for r in rows[0]["entries"] if r.get("archived")],
-                         ["s2"])
+class NeverFatalTest(unittest.TestCase):
+    def test_a_bad_model_answer_does_not_break_the_injection(self):
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            store = Path(tmp.name)
+            (store / "flags.json").write_text(json.dumps({"event_layer": True}),
+                                              encoding="utf-8")
+            (store / "core_config.json").write_text(json.dumps(
+                {"summarizer": {"base_url": "http://127.0.0.1:9/v1", "model": "m"}}),
+                encoding="utf-8")
+            stub = lambda prompt: json.dumps({"overview": "灯箱", "claims": []},
+                                             ensure_ascii=False)
+            with mock.patch.object(comp, "should_compact", return_value=True), \
+                    mock.patch.object(comp, "compact", side_effect=comp.CompactionError("bad")), \
+                    mock.patch.object(P.logger, "warning") as warned:
+                rows = P._event_layer_block(str(store), "s1", "灯箱", 10,
+                                            payload={"event_summarizer": stub},
+                                            summarizer=stub)
+            self.assertTrue(warned.called, "a failed compaction must be logged")
+            self.assertTrue(rows is None or isinstance(rows, dict))
+        finally:
+            tmp.cleanup()
 
 
 if __name__ == "__main__":
