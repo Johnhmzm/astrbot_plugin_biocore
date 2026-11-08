@@ -193,8 +193,7 @@ class HostRefreshTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def stored(self, session="s1"):
-        path = Path(self.store) / "sessions" / session / "memory.json"
-        return json.loads(path.read_text(encoding="utf-8"))["entries"]
+        return pipeline.export_session_json(self.store, session)["entries"]
 
     def test_host_recall_rewrites_and_saves(self):
         pipeline.tool_call("remember", {"text": TEXT, "ts": NOW - DAY},

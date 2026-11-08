@@ -85,6 +85,8 @@ class EventLayerWiringTest(unittest.TestCase):
         first = len(state.get('events') or [])
         mem = Path(store) / 'sessions' / 's1' / 'memory.json'
         mem.write_text(json.dumps({'entries': ROWS}), encoding='utf-8')
+        # the store is sqlite now: the JSON file above is the import format
+        pipeline.import_session_json(store, 's1', force=True)
         state = pipeline._load_event_state(store, 's1')
         self.assertEqual(state.get('seen'), 1)
         pipeline.inject_block('s1', store, query='生日', max_chars=800, top_k=3,

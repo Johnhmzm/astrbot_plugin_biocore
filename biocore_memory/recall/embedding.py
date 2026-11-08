@@ -249,9 +249,10 @@ def write_cache(rows, path=None):
 def cache_backend(path=None):
     """'sqlite' when the incremental cache is switched on, else 'json'.
 
-    Default stays json: the json cache has its own contract (temp file, corrupt
-    file is a miss, one readable file) that the suite pins down, so the switch
-    is opt-in until those expectations are re-verified against the db.
+    Still opt-in (BIOCORE_EMBED_CACHE=sqlite): flipping the default needs the
+    connection lifetime fixed first -- the pooled writer keeps a handle on the
+    file, and on Windows that breaks temp-dir cleanup in ~45 unrelated tests
+    (WinError 32). Tracked in task-246 as the one open item for this switch.
     """
     mode = str(os.environ.get("BIOCORE_EMBED_CACHE") or "").strip().lower()
     return "sqlite" if mode in ("sqlite", "db", "1", "on") else "json"

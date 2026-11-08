@@ -119,8 +119,7 @@ class HostAffectTest(unittest.TestCase):
                     "state": {"core": {"v": 0.6, "a": 0.7}},
                     "now": NOW})
                 reported = (out.get("state") or {}).get("core") or {}
-                path = Path(store) / "sessions" / "s1" / "memory.json"
-                rows = json.loads(path.read_text(encoding="utf-8"))["entries"]
+                rows = pipeline.export_session_json(store, "s1")["entries"]
                 self.assertEqual(len(rows), 1)
                 row = rows[0]
                 self.assertAlmostEqual(row["affect"]["v"], reported["v"], places=6)

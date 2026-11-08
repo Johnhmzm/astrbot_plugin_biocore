@@ -493,23 +493,228 @@ def _atomic_write(path, data):
     os.replace(tmp, path)
 
 
+STORE_MODE_ENV = "BIOCORE_STORE"
+_MEM_DOC_CACHE = {}          # db path -> (mtime_ns, size, doc, {id: raw json})
+_MEM_DOC_CACHE_MAX = 8
+
+
+def store_mode():
+    """sqlite (default) | json (rollback: the old single-file behaviour).
+
+    One switch for the whole store, deliberately coarse: mixing the two backends
+    per call is what produced the position drift this task started from.
+    """
+    value = str(os.environ.get(STORE_MODE_ENV) or "").strip().lower()
+    return "json" if value in ("json", "legacy", "file") else "sqlite"
+
+
+def _sql_store():
+    from biocore_memory.store import sql_store
+    return sql_store
+
+
+_EVEC_CACHE = {}             # db path -> (mtime_ns, size, {id: vector})
+_EVEC_CACHE_MAX = 4
+
+
+def _entry_vectors(store, session_id):
+    """Entry coordinates, memoised on the database stamp."""
+    root = _store_root(store)
+    if root is None:
+        return {}
+    path = _db_path(root, session_id)
+    token = _db_stamp(root, session_id)
+    cached = _EVEC_CACHE.get(str(path))
+    if cached is not None and token is not None and cached[0] == token:
+        return cached[2]
+    try:
+        vectors = _sql_store().read_entry_vectors(root, session_id)
+    except Exception:
+        return {}
+    try:
+        if len(_EVEC_CACHE) >= _EVEC_CACHE_MAX:
+            _EVEC_CACHE.pop(next(iter(_EVEC_CACHE)), None)
+        if stamp is not None:
+            _EVEC_CACHE[str(path)] = (stamp[0], stamp[1], vectors)
+    except Exception:
+        pass
+    return vectors
+
+
+def _sql_backed(store):
+    """True when this call should read/write the sqlite store."""
+    return _store_root(store) is not None and store_mode() != "json"
+
+
+def _db_path(root, session_id):
+    return _sql_store().db_path(root, sanitize_session_id(session_id))
+
+
+def _db_stamp(root, session_id):
+    """Change token for one database: only ANOTHER connection's commit moves it.
+
+    A file (mtime, size) stamp was useless here: sqlite's WAL checkpoints touch
+    the file after our own writes, so every cache missed once per turn. Our own
+    writes refresh the memos explicitly, so this only has to catch strangers.
+    """
+    try:
+        conn = _sql_store().connect(root, session_id)
+        return int(conn.execute("PRAGMA data_version").fetchone()[0])
+    except Exception:
+        return None
+
+
+def _file_stamp(path):
+    try:
+        info = Path(path).stat()
+        return (info.st_mtime_ns, info.st_size)
+    except OSError:
+        return None
+
+
+def _copy_doc(doc):
+    out = dict(doc or {})
+    out["entries"] = [dict(row) for row in (out.get("entries") or [])
+                      if isinstance(row, dict)]
+    return out
+
+
+def _refresh_stamps(token, path, entry_cache=None, vector_cache=None):
+    """Our own event write bumps the db stamp; entries/vectors did not change.
+
+    Both memos are keyed on the file stamp so an outside writer still wins, but
+    a write that only touched the events table must not throw away 759 parsed
+    rows (that was the 440 ms per capture this task is removing).
+    """
+    if token is None:
+        return
+    for cache in (entry_cache, vector_cache):
+        if not isinstance(cache, dict):
+            continue
+        cached = cache.get(str(path))
+        if cached is None:
+            continue
+        cache[str(path)] = (token, 0) + tuple(cached[2:])
+
+
+def _remember_doc(path, doc, serialized, token=None):
+    try:
+        if len(_MEM_DOC_CACHE) >= _MEM_DOC_CACHE_MAX:
+            _MEM_DOC_CACHE.pop(next(iter(_MEM_DOC_CACHE)), None)
+        _MEM_DOC_CACHE[str(path)] = (token, 0, _copy_doc(doc), dict(serialized))
+    except Exception:
+        pass
+
+
+def _serialize_entries(entries):
+    out = {}
+    for row in entries or []:
+        if not isinstance(row, dict):
+            continue
+        out[str(row.get("id") or "")] = json.dumps(row, ensure_ascii=False)
+    return out
+
+
 def load_memory(store, session_id):
+    """Session document. sqlite is the store; memory.json is import/export only."""
     root = _store_root(store)
     if root is None:
         return {"entries": []}
-    doc = _load_json(memory_path(store, session_id), _empty_doc(session_id))
-    entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
-    doc["entries"] = entries
-    doc.setdefault("session_id", sanitize_session_id(session_id))
-    return doc
+    session_id = sanitize_session_id(session_id)
+    if store_mode() == "json":
+        doc = _load_json(memory_path(store, session_id), _empty_doc(session_id))
+        entries = doc.get("entries") if isinstance(doc.get("entries"), list) else []
+        doc["entries"] = entries
+        doc.setdefault("session_id", session_id)
+        return doc
+    path = _db_path(root, session_id)
+    token = _db_stamp(root, session_id)
+    cached = _MEM_DOC_CACHE.get(str(path))
+    if cached is not None and token is not None and cached[0] == token:
+        return _copy_doc(cached[2])
+    store_api = _sql_store()
+    # an install that only ever had JSON imports once, on first open
+    store_api.open_or_import(root, session_id,
+                             events_path=_event_state_path(store, session_id))
+    doc = store_api.read_doc(root, session_id)
+    doc["session_id"] = str(doc.get("session_id") or session_id)
+    _remember_doc(path, doc, _serialize_entries(doc["entries"]), token)
+    return _copy_doc(doc)
 
 
 def save_memory(store, session_id, doc):
-    if _store_root(store) is None:
+    """Persist one session document; only changed rows reach the database."""
+    root = _store_root(store)
+    if root is None:
+        return False
+    session_id = sanitize_session_id(session_id)
+    if store_mode() == "json":
+        try:
+            _atomic_write(memory_path(store, session_id), doc)
+            return True
+        except Exception:
+            return False
+    path = _db_path(root, session_id)
+    try:
+        store_api = _sql_store()
+        entries = [row for row in (doc.get("entries") or [])
+                   if isinstance(row, dict)]
+        serialized = _serialize_entries(entries)
+        cached = _MEM_DOC_CACHE.get(str(path))
+        previous = cached[3] if cached is not None else None
+        if previous is None:
+            previous = {row_id: raw for row_id, raw in
+                        store_api.read_entry_rows(root, session_id)}
+        changed = [row for row in entries
+                   if previous.get(str(row.get("id") or ""))
+                   != serialized.get(str(row.get("id") or ""))]
+        deleted = [row_id for row_id in previous if row_id not in serialized]
+        store_api.write_doc(root, session_id, doc, changed=changed, deleted=deleted)
+        _remember_doc(path, doc, serialized, _db_stamp(root, session_id))
+        return True
+    except Exception:
+        return False
+
+
+def export_session_json(store, session_id):
+    """Write this session's JSON view out of the store (debug / interop / proof).
+
+    JSON is an export format now: nothing in the write path produces it, so a
+    reader that wants the file has to ask for it.
+    """
+    store = store or _default_store()
+    root = _store_root(store)          # sessions/ lives under the store root
+    session_id = sanitize_session_id(session_id)
+    if root is None:
+        return {"entries": []}
+    if store_mode() == "json":
+        return _load_json(memory_path(store, session_id), _empty_doc(session_id))
+    store_api = _sql_store()
+    store_api.export_doc_json(root, session_id,
+                              path=memory_path(store, session_id))
+    events_path = _event_state_path(store, session_id)
+    if events_path is not None:
+        store_api.export_events_json(root, session_id, path=events_path)
+    return store_api.read_doc(root, session_id)
+
+
+def import_session_json(store, session_id, force=False):
+    """Import a JSON-only session into the store (migration and tests)."""
+    store = store or _default_store()
+    root = _store_root(store)
+    session_id = sanitize_session_id(session_id)
+    if root is None:
+        return False
+    if store_mode() == "json":
         return False
     try:
-        _atomic_write(memory_path(store, session_id), doc)
-        return True
+        store_api = _sql_store()
+        _conn, info = store_api.import_session(
+            root, session_id, force=force,
+            events_path=_event_state_path(store, session_id))
+        _MEM_DOC_CACHE.pop(str(_db_path(root, session_id)), None)
+        _EVENT_STATE_CACHE.pop(str(_db_path(root, session_id)), None)
+        return bool(info)
     except Exception:
         return False
 
@@ -543,6 +748,19 @@ def _compact(entry):
     return {key: entry.get(key) for key in
             ("id", "text", "role", "ts", "tags", "pin", "importance", "hits")
             if key in entry}
+
+
+def _entry_position(entries):
+    """Visible non-empty row count: the event layer's cursor after a write.
+
+    The event layer numbers rows by their index in this same filtered list
+    (pipeline.py:2585 assigns seen+offset+1 to a row without a turn), so the
+    cursor and the length are the same number. A deduped write adds no row and
+    must NOT report the matched row's index: the cutoff is "how many memories
+    exist at this turn", which is what the bench maps dataset turns onto.
+    """
+    return len([row for row in _visible(entries)
+                if str(row.get("text") or "").strip()])
 
 
 # ---------------------------------------------------------------- capture
@@ -2004,11 +2222,105 @@ def _event_state_path(store, session_id):
     return Path(data_dir) / EVENT_STATE_DIRNAME / (sanitize_session_id(session_id) + ".json")
 
 
+_EVENT_STATE_CACHE = {}          # path -> (mtime_ns, size, state); bounded below
+_EVENT_STATE_CACHE_MAX = 4
+
+
+def _copy_event_state(state):
+    """Copy the containers a caller may mutate, so the cache never leaks writes.
+
+    Event dicts and their entry/claim lists are copied (a few thousand small
+    dicts); the heavy part -- per-entry vectors -- is shared, because nothing
+    outside the event layer rewrites a vector in place and a derivable field is
+    never the thing a caller needs isolated.
+    """
+    out = {"seen": int(state.get("seen") or 0), "events": [], "state": {},
+           "open": []}
+    for ev in state.get("events") or []:
+        if not isinstance(ev, dict):
+            continue
+        row = dict(ev)
+        for key in ("entries", "claims", "members"):
+            value = row.get(key)
+            if isinstance(value, list):
+                row[key] = [dict(item) if isinstance(item, dict) else item
+                            for item in value]
+        out["events"].append(row)
+    out["state"] = dict(state.get("state") or {})
+    out["open"] = [dict(item) if isinstance(item, dict) else item
+                   for item in (state.get("open") or [])]
+    return out
+
+
+def _event_state_stamp(path):
+    try:
+        info = path.stat()
+        return (info.st_mtime_ns, info.st_size)
+    except OSError:
+        return None
+
+
+def _cache_event_state(path, state, token=None):
+    """Remember one parsed state; a change token mismatch invalidates it."""
+    try:
+        if len(_EVENT_STATE_CACHE) >= _EVENT_STATE_CACHE_MAX:
+            _EVENT_STATE_CACHE.pop(next(iter(_EVENT_STATE_CACHE)), None)
+        _EVENT_STATE_CACHE[str(path)] = (token, 0, _copy_event_state(state))
+    except Exception:
+        pass
+
+
+def _load_event_state_sql(root, session_id):
+    """Event state straight out of sqlite (one row per event, centroid as BLOB)."""
+    store_api = _sql_store()
+    path = _db_path(root, session_id)
+    token = _db_stamp(root, session_id)
+    cached = _EVENT_STATE_CACHE.get(str(path))
+    if cached is not None and token is not None and cached[0] == token:
+        return _copy_event_state(cached[2])
+    state = store_api.load_event_state(root, session_id)
+    if state is None:
+        # first open of an install that only has the old JSON file
+        legacy = _load_event_state_json(root, session_id)
+        if legacy.get("events") or legacy.get("seen"):
+            try:
+                store_api.save_event_state(root, session_id, legacy.get("seen") or 0,
+                                           legacy.get("events") or [],
+                                           legacy.get("state") or {},
+                                           legacy.get("open") or [])
+            except Exception:
+                pass
+        state = legacy
+    _cache_event_state(path, state)
+    return _copy_event_state(state)
+
+
 def _load_event_state(store, session_id):
+    """Parsed event state: sqlite by default, memoised on (mtime, size)."""
+    root = _store_root(store)
+    if root is not None and store_mode() != "json":
+        return _load_event_state_sql(root, session_id)
+    return _load_event_state_json(store, session_id)
+
+
+def _load_event_state_json(store, session_id):
+    """Parsed event state, memoised on (mtime, size): 31.8 MB must not be re-read.
+
+    The event layer is consulted several times per turn (capacity guard, capture
+    maintenance, injection), and each call used to parse the whole file. A stat
+    is O(1); any external writer still invalidates because the stamp changes.
+    """
     path = _event_state_path(store, session_id)
     blank = {"seen": 0, "events": [], "state": {}, "open": []}
     if path is None or not path.exists():
+        if path is not None:
+            _EVENT_STATE_CACHE.pop(str(path), None)
         return blank
+    stamp = _event_state_stamp(path)
+    cached = _EVENT_STATE_CACHE.get(str(path))
+    if cached is not None and stamp is not None and cached[0] == stamp[0] \
+            and cached[1] == stamp[1]:
+        return _copy_event_state(cached[2])
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -2019,13 +2331,43 @@ def _load_event_state(store, session_id):
     out["state"] = data.get("state") if isinstance(data.get("state"), dict) else {}
     # the event that was still open when the last call saved
     out["open"] = data.get("open") if isinstance(data.get("open"), list) else []
-    return out
+    _cache_event_state(path, out, None)
+    return _copy_event_state(out)
 
 
 def _save_event_state(store, session_id, state):
-    """Structured state goes to sqlite; the json file stays as a readable mirror."""
+    """Persist the event layer: sqlite rows only (JSON is an export format now)."""
     payload = dict(state or {})
     root = _store_root(store)
+    if root is not None and store_mode() != "json":
+        try:
+            store_api = _sql_store()
+            events = payload.get("events") or []
+            opened = payload.get("open") or []
+            # the vector of a row lives in the event that quotes it: keep the
+            # entries table authoritative for coordinates before the payload
+            # drops them (the JSON payload is id/turn/ts/role/text only)
+            try:
+                written = store_api.update_entry_vectors(
+                    root, session_id,
+                    store_api.harvest_event_vectors(events, opened))
+                if written:
+                    _EVEC_CACHE.pop(str(_db_path(root, session_id)), None)
+            except Exception:
+                pass
+            store_api.save_event_state(root, session_id,
+                                       payload.get("seen") or 0,
+                                       events,
+                                       payload.get("state") or {},
+                                       opened)
+        except Exception:
+            return False
+        # seed the memo with what we just wrote: the next turn must not reparse
+        db_file = _db_path(root, session_id)
+        token = _db_stamp(root, session_id)
+        _cache_event_state(db_file, payload, token)
+        _refresh_stamps(token, db_file, _MEM_DOC_CACHE, _EVEC_CACHE)
+        return True
     if root is not None:
         try:
             from biocore_memory.store import sql_store as _S
@@ -2040,9 +2382,12 @@ def _save_event_state(store, session_id, state):
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, payload)
-        return True
     except Exception:
         return False
+    # the write we just made is the freshest state there is: seed the memo with
+    # it instead of letting the next turn re-parse 31.8 MB of our own output
+    _cache_event_state(path, payload)
+    return True
 
 
 def _entry_vector(store, entry, config=None, payload=None):
@@ -2538,6 +2883,18 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         config = _load_runtime_config(store) if store else {}
     except Exception:
         config = {}
+    if _sql_backed(store):
+        # sqlite keeps a row's vector in entries.vector, not in the event payload:
+        # hydrate here so the two-stage recall sees what the JSON store carried
+        vectors = _entry_vectors(store, session_id)
+        if vectors:
+            for row in events:
+                for item in row.get("entries") or []:
+                    if item.get("vector"):
+                        continue
+                    vector = vectors.get(str(item.get("id") or ""))
+                    if vector:
+                        item["vector"] = list(vector)
     for row in events:
         for item in row.get("entries") or []:
             if not item.get("vector"):
@@ -2638,6 +2995,10 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                 except Exception:
                     continue
     if not live:
+        if os.environ.get("BIOCORE_DEBUG_EV"):
+            print("DBG-EV no-live events=%d entries=%d seen=%d side=%s"
+                  % (len(events), len(entries), seen, "sql" if _sql_backed(store) else "json"),
+                  file=sys.stderr)
         return None
     for ev in events:
         if not ev.get("vector"):
@@ -3819,7 +4180,10 @@ def tool_call(name, args, store, session_id=None):
                     if isinstance(merged, dict):
                         existing["space"] = merged
                 save_memory(store, sid, doc)
-                return {"ok": True, "entry": _compact(existing), "deduped": True}
+                # a deduped write adds no row, but the caller still needs the
+                # position of the row it hit (the bench maps turns by position)
+                return {"ok": True, "entry": _compact(existing), "deduped": True,
+                        "position": _entry_position(doc.get("entries"))}
         entry = _new_entry(text, role, args.get("tags"), now)
         # explicit fact annotation only: the caller names the attribute, the
         # core never guesses one from the text (version resolution needs it).
@@ -3875,15 +4239,8 @@ def tool_call(name, args, store, session_id=None):
         save_memory(store, sid, doc)
         # the position the event layer will give this row, computed from the list
         # we already hold: avoids a full memory read per capture
-        visible_rows = [row for row in _visible(doc.get("entries") or [])
-                        if str(row.get("text") or "").strip()]
-        position = len(visible_rows)
-        for spot, row in enumerate(visible_rows, 1):
-            if str(row.get("id") or "") == str(entry.get("id") or ""):
-                position = spot
-                break
         return {"ok": True, "entry": _compact(entry), "deduped": False,
-                "position": position}
+                "position": _entry_position(doc.get("entries"))}
     if name == "recall":
         query = str(args.get("query") or "").strip()
         if not query:
@@ -6598,6 +6955,30 @@ def dispatch(action, payload=None):
             return {"ok": True, "captured": bool(decision.get("capture")),
                     "reason": str(decision.get("reason") or ""),
                     "entry_id": entry.get("id") or ""}
+        if action in ("export", "export-json"):
+            # JSON exists only because this command made it: debug, interop, and
+            # the byte-equality check that proves a migration changed nothing.
+            session_id = sanitize_session_id(
+                data.get("session_id") or data.get("session") or "default")
+            root = _store_data_dir(store)
+            if root is None or store_mode() == "json":
+                return {"ok": False, "reason": "sqlite_store_required"}
+            try:
+                store_api = _sql_store()
+                store_root = _store_root(store)
+                memory_file = store_api.export_doc_json(
+                    store_root, session_id, path=memory_path(store, session_id))
+                events_file = store_api.export_events_json(
+                    store_root, session_id,
+                    path=_event_state_path(store, session_id))
+            except Exception as exc:
+                return {"ok": False, "reason": "export_failed",
+                        "detail": type(exc).__name__}
+            doc = store_api.read_doc(_store_root(store), session_id)
+            return {"ok": True, "session_id": session_id,
+                    "entries": len(doc.get("entries") or []),
+                    "memory_json": str(memory_file),
+                    "events_json": str(events_file)}
         if action == "tool":
             session_id = data.get("session_id") or data.get("session") or "default"
             result = tool_call(data.get("name", ""), data.get("args") or {},

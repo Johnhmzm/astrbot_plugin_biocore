@@ -52,8 +52,8 @@ class Store:
 
 
 def stored(store, session="s1"):
-    path = Path(store) / "sessions" / session / "memory.json"
-    return json.loads(path.read_text(encoding="utf-8"))["entries"]
+    # JSON is an export format now: ask the store for it (same bytes as before)
+    return pipeline.export_session_json(store, session)["entries"]
 
 
 class AffectTest(unittest.TestCase):

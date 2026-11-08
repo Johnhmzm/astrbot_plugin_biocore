@@ -95,8 +95,7 @@ class HostParticipantsTest(unittest.TestCase):
                 "text": "\u5c0f\u590f\u8bf4\u5468\u4e94\u53bb\u770b\u7535\u5f71",
                 "ts": NOW, "participants": ["\u5c0f\u590f", "\u5c0f\u738b"]},
                 store, session_id="s1")
-            rows = json.loads((Path(store) / "sessions" / "s1"
-                               / "memory.json").read_text(encoding="utf-8"))["entries"]
+            rows = pipeline.export_session_json(store, "s1")["entries"]
             self.assertEqual(rows[0]["participants"], ["\u5c0f\u590f", "\u5c0f\u738b"])
             self.assertEqual(rows[0]["space"]["social"]["participants"],
                              ["\u5c0f\u590f", "\u5c0f\u738b"])
@@ -106,8 +105,7 @@ class HostParticipantsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as store:
             pipeline.tool_call("remember", {"text": "\u4eca\u5929\u5929\u6c14\u4e0d\u9519",
                                             "ts": NOW}, store, session_id="s1")
-            rows = json.loads((Path(store) / "sessions" / "s1"
-                               / "memory.json").read_text(encoding="utf-8"))["entries"]
+            rows = pipeline.export_session_json(store, "s1")["entries"]
             self.assertNotIn("participants", rows[0])
 
 

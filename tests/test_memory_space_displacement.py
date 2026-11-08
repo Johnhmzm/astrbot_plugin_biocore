@@ -106,8 +106,7 @@ class HostDisplacementTest(unittest.TestCase):
         self._tmp.cleanup()
 
     def stored(self, session="s1"):
-        path = Path(self.store) / "sessions" / session / "memory.json"
-        return json.loads(path.read_text(encoding="utf-8"))["entries"]
+        return pipeline.export_session_json(self.store, session)["entries"]
 
     def test_host_remember_records_the_displacement(self):
         first = pipeline.tool_call(
