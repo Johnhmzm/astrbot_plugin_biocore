@@ -92,9 +92,9 @@ EVENT_SIM_CLOSE = float(os.environ.get("BIOCORE_EVENT_SIM_CLOSE") or 0.30)
 EVENT_MAX_TURNS = int(os.environ.get("BIOCORE_EVENT_MAX_TURNS") or 12)
 # 0 = no hard cap; else split at N turns (a long event that never closes drags
 # its tail into every later query, so this is a ceiling, not a target)
-EVENT_MIN_TURNS = int(os.environ.get("BIOCORE_EVENT_MIN_TURNS") or 2)
+EVENT_MIN_TURNS = int(os.environ.get("BIOCORE_EVENT_MIN_TURNS") or 3)
 # a single line is never an event on its own
-EVENT_CLOSE_CHARS = int(os.environ.get("BIOCORE_EVENT_CLOSE_CHARS") or 750)
+EVENT_CLOSE_CHARS = int(os.environ.get("BIOCORE_EVENT_CLOSE_CHARS") or 2000)
 # the primary signal: turns are a bad proxy for information (8 x "嗯" is 20
 # characters; 3 long descriptions are 2000), so an event closes when the text it
 # holds reaches this size -- roughly 3-5 sentences
@@ -1069,7 +1069,7 @@ def summarizer_from_config(store, payload=None):
     model = str(block.get("model") or cfg.get("summarizer_model") or "").strip()
     key = str(block.get("key") or cfg.get("summarizer_key") or "")
     try:
-        timeout = float(block.get("timeout") or cfg.get("summarizer_timeout") or 60.0)
+        timeout = float(block.get("timeout") or cfg.get("summarizer_timeout") or 90.0)
     except Exception:
         timeout = 60.0
     if not base_url or not model:
@@ -1095,8 +1095,23 @@ def summarizer_from_config(store, payload=None):
         request = urllib.request.Request(
             url, data=json.dumps(request_payload, ensure_ascii=False).encode("utf-8"),
             headers=headers, method="POST")
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read()
+        # a build run must not die on one slow summariser call: one retry, and
+        # the default timeout is 90 s because a 31-entry build hit it live
+        body = b""
+        last_error = None
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    body = response.read()
+                last_error = None
+                break
+            except Exception as exc:      # timeout / connection reset
+                last_error = exc
+                if attempt == 0:
+                    time.sleep(1.0)
+                    continue
+        if last_error is not None:
+            raise last_error
         try:
             doc = json.loads(body.decode("utf-8", "replace"))
         except Exception:
@@ -3272,13 +3287,17 @@ def _event_should_close(buf, item, sim, gap, thr, close_chars=None,
     rows = list(buf or [])
     if not rows:
         return ""
+    # 1. a topic change or a long silence always closes: those are "must split"
     if sim < thr:
         return "topic"
     if gap > EVENT_GAP_S:
         return "gap"
     turns = len(rows)
+    # the ceiling: an event that never closes drags its tail into every query
     if max_turns > 0 and turns >= max_turns:
         return "max_turns"
+    # the information budget, gated by the turn floor: fewer than MIN_TURNS
+    # turns is a fragment, however long the text happens to be
     if close_chars > 0 and turns >= max(1, min_turns):
         chars = sum(len(str(row.get("text") or "")) for row in rows)
         chars += len(str((item or {}).get("text") or ""))
