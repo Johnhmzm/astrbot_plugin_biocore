@@ -3332,9 +3332,14 @@ def _sim_threshold(series, log=True):
         if log:
             logger.info("[segment] thr=%.3f source=default (no samples)", EVENT_SIM_CLOSE)
         return EVENT_SIM_CLOSE
+    # mean - 1 sigma, not a low quantile: a low quantile sits *near* the body of
+    # a stable conversation, so a session where nothing changes gets a threshold
+    # it keeps tripping (fragments). mean - sigma sits below the body: only a
+    # real drop closes, and a split distribution puts it between the two peaks.
     try:
-        from biocore_memory.event import segment_adaptive as _SA2
-        value = _SA2.adaptive_threshold(rows, low=EVENT_SIM_MIN, high=EVENT_SIM_MAX)
+        mean = sum(rows) / float(len(rows))
+        var = sum((row - mean) ** 2 for row in rows) / float(len(rows))
+        value = mean - math.sqrt(var)
     except Exception:
         value = None
     if value is None:
