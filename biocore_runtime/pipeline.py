@@ -3644,31 +3644,20 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         return "  · %s%s%s" % (note, ("（%s）" % when) if when else "", tail)
 
     rows = [(score, row, _sentence_line(score, row)) for score, row in picked]
-    folded = []                      # ids folded into the reference line
-    notes_used = set()
-    render = [line for _s, _r, line in rows]
-    # room for the fold trailer: the reference line plus the counter. Reserving
-    # it up front is what keeps the final block inside the budget -- appending
-    # the trailer after the loop used to overshoot by exactly its length
-    reserve = 90
-    while True:
-        total = len(header) + sum(len(line) + 1 for line in render)
-        if total <= max(100, budget - reserve) or len(render) <= 1:
-            break
-        index = len(render) - 1      # lowest score first
-        score, row, line = rows[index]
-        if row.get("id") in folded:
-            break
-        note_line = _note_line(score, row)
-        eid = str(row.get("event_id") or "")
-        if note_line and eid and eid not in notes_used and len(note_line) < len(line):
-            render[index] = note_line
-            notes_used.add(eid)
-            continue
-        folded.append(str(row.get("id") or ""))
-        render.pop(index)
-        rows.pop(index)
-    lines = list(render)
+    # Greedy fill that SKIPS what does not fit instead of stopping at it:
+    # P01 sentences vary a lot in length, so stopping at the first overflow
+    # dropped every later short sentence, and that is often the evidence
+    reserve = 90            # room for the fold trailer
+    limit = max(100, budget - reserve)
+    lines, folded = [], []
+    used = len(header)
+    for score, row, line in rows:
+        cost = len(line) + 1
+        if used + cost > limit:
+            folded.append(str(row.get("id") or ""))
+            continue                      # skip it, keep scanning
+        lines.append(line)
+        used += cost
     if folded:
         stamps = [float(row.get("ts") or 0.0) for _s, row, _l in rows if row.get("ts")]
         a = _day_str(min(stamps)) if stamps else ""
@@ -3680,7 +3669,7 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         lines.append("已折叠 %d 条" % len(folded))
     body = header + "\n" + "\n".join(lines)
     return {"text": body, "chars": len(body), "mode": mode,
-            "seeds": len(seeds), "kept": len(rows) + len(folded),
+            "seeds": len(seeds), "kept": len(rows), "shown": len(lines),
             "folded": len(folded), "folded_ids": folded,
             "ids": [str(row.get("id") or "") for _s, row, _l in rows]}
 
