@@ -3666,7 +3666,7 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                                            order.index(key)))
     picked_events = ranked[:EVENT_TOP] if EVENT_TOP > 0 else list(ranked)
     notes = _event_notes_by_id(events)
-    budget = max(200, int(budget_chars or RECALL_INJECT_CHARS))
+    budget = int(budget_chars) if budget_chars else int(RECALL_INJECT_CHARS)
     header = "【相关记忆】"
     reserve = 90            # room for the fold trailer
     limit = max(100, budget - reserve)
@@ -3711,54 +3711,79 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
     lines, folded, folded_events = [], [], []
     used = len(header)
     shown_events = 0
+    blocks = []                     # one entry per delivered event, for budget trimming
     for key in picked_events:
         members = sorted(grouped[key]["rows"], key=lambda item: float(item[1].get("ts") or 0.0))
         rendered = []
         for score, row in members:
             when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
-            body = str(row.get("text") or "").strip()
-            rendered.append("- %s%s" % (body, ("（%s）" % when) if when else ""))
+            body_text = str(row.get("text") or "").strip()
+            rendered.append("- %s%s" % (body_text, ("（%s）" % when) if when else ""))
         cost = sum(len(line) + 1 for line in rendered)
         if used + cost <= limit:
             lines.extend(rendered)
             used += cost
             shown_events += 1
+            blocks.append((key, rendered, []))
             continue
-        # the event does not fit whole: before folding it, compress it with its
-        # subnotes -- the hit lines stay verbatim, the rest becomes one line
-        # per group. Nothing is lost: compressed ids go to folded_ids.
         if SUBNOTES_ON and grouped[key].get("rows") and subnotes_for(key):
-            compressed = _compress_event(members, subnotes_for(key),
-                                            used, limit)
+            compressed = _compress_event(members, subnotes_for(key), used, limit)
             if compressed:
                 lines.extend(compressed["lines"])
                 used += compressed["used"]
                 folded.extend(compressed["compressed_ids"])
                 shown_events += 1
+                blocks.append((key, compressed["lines"], compressed["compressed_ids"]))
                 continue
         label = key if not key.startswith("ID:") else key[3:]
         folded_events.append(label)
         folded.extend(str(row.get("id") or "") for _s, row in members)
         line = "- %s 共%d句，已折叠" % (label, len(members))
-        lines.append(line)
-        used += len(line) + 1
+        if used + len(line) + 1 <= limit:      # the trailer already reports the count
+            lines.append(line)
+            used += len(line) + 1
     if EVENT_TOP > 0:
-        # a debugging clamp: the events beyond it are still accounted for,
-        # they simply never get a line of their own
         for key in ranked[EVENT_TOP:]:
             label = key if not key.startswith("ID:") else key[3:]
             folded_events.append(label)
             folded.extend(str(row.get("id") or "") for _s, row in grouped[key]["rows"])
-    if folded:
-        stamps = [float(row.get("ts") or 0.0) for _s, row in scored if row.get("ts")]
-        a = _day_str(min(stamps)) if stamps else ""
-        b = _day_str(max(stamps)) if stamps else ""
-        span = ("%s 至 %s" % (a, b)) if a and b and a != b else (a or "无时间")
-        lines.append("另有 %d 条相关记忆（%s，相关度 %.2f-%.2f，id 见 meta）"
-                     % (len(folded), span,
-                        min([s for s, _r in scored] or [0.0]),
-                        max([s for s, _r in scored] or [0.0])))
-        lines.append("已折叠 %d 条（%d 个事件）" % (len(folded), len(folded_events)))
+    def _trailer(rows):
+        out = []
+        if folded:
+            stamps = [float(row.get("ts") or 0.0) for _s, row in scored if row.get("ts")]
+            a = _day_str(min(stamps)) if stamps else ""
+            b = _day_str(max(stamps)) if stamps else ""
+            span = ("%s 至 %s" % (a, b)) if a and b and a != b else (a or "无时间")
+            out.append("另有 %d 条相关记忆（%s，相关度 %.2f-%.2f，id 见 meta）"
+                       % (len(folded), span,
+                          min([s for s, _r in scored] or [0.0]),
+                          max([s for s, _r in scored] or [0.0])))
+            out.append("已折叠 %d 条（%d 个事件）" % (len(folded), len(folded_events)))
+        return out
+    body = header + chr(10) + chr(10).join(lines + _trailer(lines))
+    # the caller budget is a ceiling, not a hint: while the body is over it,
+    # push the last delivered event back into the folded bucket and rebuild
+    while len(body) > budget and lines and not body.startswith(header + chr(10) + "已折叠") :
+        lines.pop()
+        body = header + chr(10) + chr(10).join(lines + _trailer(lines))
+    while len(body) > budget and blocks:
+        key, block_lines, compressed_ids = blocks.pop()
+        for line in block_lines:
+            if line in lines:
+                lines.remove(line)
+        folded.extend(compressed_ids)
+        members = grouped[key]["rows"]
+        folded.extend(str(row.get("id") or "") for _s, row in members
+                      if str(row.get("id") or "") not in set(folded))
+        label = key if not key.startswith("ID:") else key[3:]
+        folded_events.append(label)
+        shown_events -= 1
+        body = header + chr(10) + chr(10).join(lines + _trailer(lines))
+    if len(body) > budget:
+        # nothing left to give up: keep only the header and the trailer
+        body = header + chr(10) + chr(10).join(_trailer(lines))
+        body = body[:budget]
+
     body = header + chr(10) + chr(10).join(lines)
     shown_ids = []
     for key in picked_events[:shown_events]:
@@ -4248,7 +4273,7 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                 _sent_probe = _sentence_recall_block(
                     store, session_id, text_query, _pool, _evs, payload=payload,
                     rerank_config=rerank_config, now=None,
-                    budget_chars=RECALL_INJECT_CHARS)
+                    budget_chars=budget)
                 # point to surface: the claims come from the events the hit
                 # sentences belong to, never from the whole history
                 _hit_ids = set(str(x) for x in ((_sent_probe or {}).get("ids") or []))
