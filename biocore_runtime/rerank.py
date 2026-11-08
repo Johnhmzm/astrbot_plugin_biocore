@@ -35,6 +35,11 @@ DEFAULTS = {
     "rerank_api_key": "",
     "rerank_timeout": 8.0,
     "rerank_top_n": 20,
+    # how the endpoint reports relevance: "score_array" (a 0..1 relevance score,
+    # bge-reranker-v2-m3) or "logit_margin" (a (P(no), P(yes)) logit pair,
+    # Qwen3-Reranker). Config, never a guess: reading one as the other inverts
+    # the order, which is exactly the bug this key exists to prevent.
+    "rerank_scoring": "score_array",
 }
 
 
@@ -67,11 +72,26 @@ def normalize_config(config=None):
     out["rerank_enabled"] = _as_bool(data.get("rerank_enabled"), False)
     for key in ("rerank_base_url", "rerank_model", "rerank_api_key"):
         out[key] = str(data.get(key) or "").strip()
+    out["rerank_scoring"] = (str(data.get("rerank_scoring")
+                                 or DEFAULTS["rerank_scoring"]).strip().lower())
     timeout = _num(data.get("rerank_timeout"), DEFAULTS["rerank_timeout"])
     out["rerank_timeout"] = max(0.1, min(60.0, timeout))
     top_n = int(_num(data.get("rerank_top_n"), DEFAULTS["rerank_top_n"]))
     out["rerank_top_n"] = max(1, min(1000, top_n))
     return out
+
+
+def score_of(item, scoring):
+    """Model-free scoring rules live in the provider module (one definition)."""
+    from biocore_memory.recall.providers import RerankProvider
+
+    class _ScoringOnly(RerankProvider):
+        """Skip the config/transport setup: only the scoring rule is needed."""
+
+        def __init__(self, kind):
+            self.cfg = {"scoring": kind}
+
+    return _ScoringOnly(scoring)._score_of(item)
 
 
 def _document_text(item):
@@ -136,6 +156,13 @@ def rerank_documents(query, documents, config=None, transport=None,
     if not text_docs:
         _notify(on_reason, "empty_documents")
         return None
+    try:
+        from biocore_memory.recall.providers import SCORING_KINDS
+    except Exception:          # flat checkout (plugin root on sys.path)
+        SCORING_KINDS = ("score_array", "logit_margin")
+    if cfg["rerank_scoring"] not in SCORING_KINDS:
+        _notify(on_reason, "unknown_scoring:" + cfg["rerank_scoring"])
+        return None
     top_n = min(cfg["rerank_top_n"], len(text_docs))
     payload = {
         "model": cfg["rerank_model"],
@@ -185,11 +212,12 @@ def rerank_documents(query, documents, config=None, transport=None,
                 continue
             try:
                 index = int(item.get("index"))
-                score = float(item.get("relevance_score"))
+                score = score_of(item, cfg["rerank_scoring"])
             except Exception:
                 continue
-            if index not in by_index or not math.isfinite(score):
+            if index not in by_index or not math.isfinite(float(score)):
                 continue
+            score = float(score)
             parsed.append({"index": index, "document": by_index[index],
                            "relevance_score": round(score, 6)})
         if not parsed:

@@ -517,6 +517,175 @@ _EVEC_CACHE = {}             # db path -> (mtime_ns, size, {id: vector})
 _EVEC_CACHE_MAX = 4
 
 
+VECTOR_META_KEYS = ("embed_model", "dim", "embed_metric", "rerank_model")
+
+
+def _vector_space_config(store):
+    """The embedding/rerank config this store should be using (one combo)."""
+    try:
+        from biocore_memory.recall import providers as _prov
+    except Exception:
+        return None, None
+    try:
+        cfg = _load_runtime_config(store) if store else {}
+    except Exception:
+        cfg = {}
+    try:
+        embed_cfg = _prov.resolve_embedding_config(cfg)
+    except Exception:
+        embed_cfg = None
+    try:
+        rerank_cfg = _prov.resolve_rerank_config(cfg)
+    except Exception:
+        rerank_cfg = None
+    return embed_cfg, rerank_cfg
+
+
+def _read_vector_meta(root, session_id):
+    try:
+        store_api = _sql_store()
+        conn = store_api.connect(root, session_id)
+        try:
+            rows = conn.execute("SELECT k, v FROM meta").fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    return {str(k): str(v) for k, v in rows}
+
+
+def _write_vector_meta(root, session_id, meta):
+    if not meta:
+        return False
+    try:
+        store_api = _sql_store()
+        conn = store_api.connect(root, session_id)
+        try:
+            for key, value in meta.items():
+                conn.execute("INSERT INTO meta (k, v) VALUES (?, ?)"
+                             " ON CONFLICT(k) DO UPDATE SET v=excluded.v",
+                             (str(key), str(value)))
+            conn.commit()
+        finally:
+            conn.close()
+        return True
+    except Exception:
+        return False
+
+
+def ensure_vector_space(store, session_id, embed_cfg=None, rerank_cfg=None):
+    """Refuse to read a store whose vectors came from another model/dimension.
+
+    Cosine across two embedding spaces is a number with no meaning, and its only
+    symptom is a ranking that quietly went wrong. So this raises with the two
+    dimensions, the two models and the command that rebuilds the store.
+    """
+    try:
+        from biocore_memory.recall.providers import EmbeddingSpaceMismatch
+    except Exception:
+        return {}
+    root = _store_root(store)
+    if root is None:
+        return {}
+    session_id = sanitize_session_id(session_id)
+    if embed_cfg is None or rerank_cfg is None:
+        cfg_embed, cfg_rerank = _vector_space_config(store)
+        embed_cfg = embed_cfg if embed_cfg is not None else cfg_embed
+        rerank_cfg = rerank_cfg if rerank_cfg is not None else cfg_rerank
+    meta = _read_vector_meta(root, session_id)
+    known_model = str(meta.get("embed_model") or "")
+    known_dim = int(_num(meta.get("dim"), 0))
+    want_model = str((embed_cfg or {}).get("model") or "")
+    want_dim = int((embed_cfg or {}).get("dim") or 0)
+    problems = []
+    if known_model and want_model and known_model != want_model:
+        problems.append("model %r -> %r" % (known_model, want_model))
+    if known_dim and want_dim and known_dim != want_dim:
+        problems.append("dim %d -> %d" % (known_dim, want_dim))
+    if problems:
+        raise EmbeddingSpaceMismatch(
+            "store %s was built with a different embedding space (%s). "
+            "Vector spaces cannot be mixed. Rebuild it with: "
+            "python -m biocore_memory.adapters.dsh_cli reembed --store %s --session %s"
+            % (str(root), ", ".join(problems), str(root), session_id))
+    update = {}
+    if want_model and meta.get("embed_model") != want_model:
+        update["embed_model"] = want_model
+    if want_dim and str(meta.get("dim")) != str(want_dim):
+        update["dim"] = want_dim
+    if (embed_cfg or {}).get("normalize") is not None:
+        update.setdefault("embed_metric", "cosine")
+    if rerank_cfg is not None and rerank_cfg.get("model"):
+        update.setdefault("rerank_model", rerank_cfg.get("model"))
+    if update:
+        _write_vector_meta(root, session_id, update)
+    return dict(meta, **update)
+
+
+def reembed_store(store, session_id, provider=None, batch_size=32):
+    """Rebuild every vector in this store with the configured provider.
+
+    The only supported way out of an EmbeddingSpaceMismatch: recompute the
+    entries, re-derive the event centroids from the new vectors, and stamp the
+    new space into the meta. Old vectors are never blended with new ones.
+    """
+    root = _store_root(store)
+    if root is None:
+        return {"ok": False, "reason": "no_store"}
+    session_id = sanitize_session_id(session_id)
+    embed_cfg, rerank_cfg = _vector_space_config(store)
+    if provider is None:
+        try:
+            from biocore_memory.recall import providers as _prov
+            provider = _prov.load_embedding_provider(embed_cfg)
+        except Exception as exc:
+            return {"ok": False, "reason": "no_provider", "detail": type(exc).__name__}
+    doc = load_memory(store, session_id)
+    entries = [row for row in doc.get("entries") or [] if isinstance(row, dict)]
+    texts = [str(row.get("text") or "") for row in entries]
+    vectors = []
+    for start in range(0, len(texts), max(1, int(batch_size))):
+        chunk = texts[start:start + max(1, int(batch_size))]
+        vectors.extend(provider.embed(chunk) or [])
+    if len(vectors) != len(entries):
+        return {"ok": False, "reason": "provider_returned_%d_of_%d"
+                % (len(vectors), len(entries))}
+    dim = len(vectors[0]) if vectors else 0
+    for row, vector in zip(entries, vectors):
+        if not isinstance(vector, (list, tuple)) or not vector:
+            continue
+        row["vector"] = [float(x) for x in vector]
+    store_api = _sql_store()
+    store_api.write_doc(root, session_id, doc, changed=entries, deleted=[])
+    _MEM_DOC_CACHE.pop(str(_db_path(root, session_id)), None)
+    _EVEC_CACHE.pop(str(_db_path(root, session_id)), None)
+    _EVENT_STATE_CACHE.pop(str(_db_path(root, session_id)), None)
+    state = _load_event_state(store, session_id)
+    by_id = {str(row.get("id") or ""): row.get("vector") for row in entries}
+    changed_events = 0
+    for ev in state.get("events") or []:
+        vectors_here = []
+        for item in ev.get("entries") or []:
+            vector = by_id.get(str(item.get("id") or ""))
+            if vector:
+                item["vector"] = list(vector)
+                vectors_here.append(vector)
+        if vectors_here:
+            ev["vector"] = _mean_vector(vectors_here)
+            changed_events += 1
+    if changed_events:
+        _save_event_state(store, session_id, state)
+    _write_vector_meta(root, session_id, {
+        "embed_model": str((embed_cfg or {}).get("model") or ""),
+        "dim": dim,
+        "embed_metric": "cosine",
+        "rerank_model": str((rerank_cfg or {}).get("model") or ""),
+    })
+    return {"ok": True, "session_id": session_id, "entries": len(entries),
+            "events": changed_events, "dim": dim,
+            "embed_model": str((embed_cfg or {}).get("model") or "")}
+
+
 def _entry_vectors(store, session_id):
     """Entry coordinates, memoised on the database stamp."""
     root = _store_root(store)
@@ -3234,6 +3403,8 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     mode="recent" keep the pin+ts ordering.
     """
     session_id = sanitize_session_id(session_id)
+    # a store whose vectors came from another model must never be read silently
+    ensure_vector_space(store, session_id)
     budget = _int_param(max_chars, MAX_CHARS, 0, max(MAX_CHARS, INJECT_MAX_CHARS))
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
@@ -4158,6 +4329,7 @@ def tool_call(name, args, store, session_id=None):
     doc = load_memory(store, sid)
     entries = doc.setdefault("entries", [])
     if name == "remember":
+        ensure_vector_space(store, sid)
         text = clean_text(args.get("text"))
         role = str(args.get("role") or "user").strip().lower()
         if not text:
@@ -6955,6 +7127,12 @@ def dispatch(action, payload=None):
             return {"ok": True, "captured": bool(decision.get("capture")),
                     "reason": str(decision.get("reason") or ""),
                     "entry_id": entry.get("id") or ""}
+        if action in ("reembed", "rebuild-embeddings"):
+            session_id = sanitize_session_id(
+                data.get("session_id") or data.get("session") or "default")
+            return reembed_store(store, session_id,
+                                 provider=data.get("provider") or None,
+                                 batch_size=int(_num(data.get("batch_size"), 32) or 32))
         if action in ("export", "export-json"):
             # JSON exists only because this command made it: debug, interop, and
             # the byte-equality check that proves a migration changed nothing.
@@ -6975,10 +7153,20 @@ def dispatch(action, payload=None):
                 return {"ok": False, "reason": "export_failed",
                         "detail": type(exc).__name__}
             doc = store_api.read_doc(_store_root(store), session_id)
+            meta = _read_vector_meta(_store_root(store), session_id)
+            try:   # the export carries the vector-space stamp, so a later run
+                   # can tell which model produced the file it is reading
+                Path(memory_file).parent.joinpath("meta.json").write_text(
+                    json.dumps({key: meta.get(key, "")
+                                for key in VECTOR_META_KEYS},
+                               ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception:
+                pass
             return {"ok": True, "session_id": session_id,
                     "entries": len(doc.get("entries") or []),
                     "memory_json": str(memory_file),
-                    "events_json": str(events_file)}
+                    "events_json": str(events_file),
+                    "meta": {key: meta.get(key, "") for key in VECTOR_META_KEYS}}
         if action == "tool":
             session_id = data.get("session_id") or data.get("session") or "default"
             result = tool_call(data.get("name", ""), data.get("args") or {},

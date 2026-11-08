@@ -258,6 +258,20 @@ def cmd_export(args):
     return _emit({"ok": True, "command": "export", "payload": payload})
 
 
+def cmd_reembed(args):
+    """Rebuild every vector in the store with the configured provider.
+
+    The supported way out of an embedding-space mismatch: the store is read
+    through the runtime pipeline (sqlite primary), every entry is re-embedded,
+    event centroids are re-derived and the meta is re-stamped.
+    """
+    from biocore_runtime import pipeline as P
+    session = str(getattr(args, "session", "") or "default")
+    result = P.reembed_store(args.store, session,
+                            batch_size=int(getattr(args, "batch_size", 0) or 32))
+    return _emit(dict(result, command="reembed"))
+
+
 def cmd_stats(args):
     engine = _engine_class()(data_dir=args.store)
     return _emit({"ok": True, "command": "stats", "monitor": engine.monitor()})
@@ -353,6 +367,12 @@ def build_parser():
     r.set_defaults(func=cmd_snapshot)
     r = sp.add_parser("consolidate-run", help="run gated consolidation")
     r.set_defaults(func=cmd_consolidate_run)
+    r = sp.add_parser("reembed",
+                      help="rebuild vectors after changing the embedding model/dim")
+    r.add_argument("--store", required=True)
+    r.add_argument("--session", default="default")
+    r.add_argument("--batch-size", dest="batch_size", type=int, default=32)
+    r.set_defaults(func=cmd_reembed)
     return p
 
 
