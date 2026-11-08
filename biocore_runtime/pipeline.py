@@ -89,8 +89,15 @@ SENT_POOL = int(os.environ.get("BIOCORE_SENT_POOL") or 0)
 # a value that decides behaviour is configuration, not a constant to recompile.
 EVENT_SIM_CLOSE = float(os.environ.get("BIOCORE_EVENT_SIM_CLOSE") or 0.30)
 # below EVENT_SIM_CLOSE a turn starts a new event
-EVENT_MAX_TURNS = int(os.environ.get("BIOCORE_EVENT_MAX_TURNS") or 8)
-# 0 = no hard cap; else split at N turns
+EVENT_MAX_TURNS = int(os.environ.get("BIOCORE_EVENT_MAX_TURNS") or 12)
+# 0 = no hard cap; else split at N turns (a long event that never closes drags
+# its tail into every later query, so this is a ceiling, not a target)
+EVENT_MIN_TURNS = int(os.environ.get("BIOCORE_EVENT_MIN_TURNS") or 2)
+# a single line is never an event on its own
+EVENT_CLOSE_CHARS = int(os.environ.get("BIOCORE_EVENT_CLOSE_CHARS") or 750)
+# the primary signal: turns are a bad proxy for information (8 x "嗯" is 20
+# characters; 3 long descriptions are 2000), so an event closes when the text it
+# holds reaches this size -- roughly 3-5 sentences
 EVENT_MAX_CHARS = int(os.environ.get("BIOCORE_EVENT_MAX_CHARS") or 900)  # safety net
 EVENT_GAP_S = float(os.environ.get("BIOCORE_EVENT_GAP_S") or 86400.0)
 # a day of silence also splits an event
@@ -3250,6 +3257,35 @@ def _capacity_guard(store, session_id, entries):
             if str(row.get("id") or "") in protected or str(row.get("id") or "") in keep_ids]
 
 
+def _event_should_close(buf, item, sim, gap, thr, close_chars=None,
+                       min_turns=None, max_turns=None):
+    """Why this turn should start a new event, or "" to keep accumulating.
+
+    Order matters: a topic change or a long silence closes immediately; the
+    character budget closes once the event actually holds information; the
+    turn bounds are only a floor (a single line is not an event) and a
+    ceiling (a never-closing event poisons its tail).
+    """
+    close_chars = EVENT_CLOSE_CHARS if close_chars is None else int(close_chars)
+    min_turns = EVENT_MIN_TURNS if min_turns is None else int(min_turns)
+    max_turns = EVENT_MAX_TURNS if max_turns is None else int(max_turns)
+    rows = list(buf or [])
+    if not rows:
+        return ""
+    if sim < thr:
+        return "topic"
+    if gap > EVENT_GAP_S:
+        return "gap"
+    turns = len(rows)
+    if max_turns > 0 and turns >= max_turns:
+        return "max_turns"
+    if close_chars > 0 and turns >= max(1, min_turns):
+        chars = sum(len(str(row.get("text") or "")) for row in rows)
+        chars += len(str((item or {}).get("text") or ""))
+        if chars >= close_chars:
+            return "chars"
+    return ""
+
 def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                        payload=None, summarizer=None, as_of=None):
     """Incremental event maintenance + two-stage recall, rendered for injection."""
@@ -3329,7 +3365,7 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         if buf:
             gap = float(item["ts"]) - float(buf[-1]["ts"])
             sim = _E._cos(_mean_vector([b.get("vector") for b in buf]), vec) if vec else 1.0
-            if sim < thr or gap > EVENT_GAP_S:
+            if _event_should_close(buf, item, sim, gap, thr):
                 _event_layer_close_adaptive(events, buf, summarizer, global_state,
                                             _entry_embedder)
                 buf = []
@@ -3341,6 +3377,21 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                                     _entry_embedder, store=store, session_id=session_id)
         buf = []
         tail_closed = True
+    # compaction is capacity-triggered and model-decided; segmentation above is
+    # structural. Two different questions, so they are answered separately.
+    try:
+        from biocore_memory.event import compaction as _compact
+        _budget_chars = int(budget or 0)
+        if _budget_chars > 0 and _compact.should_compact(events, _budget_chars):
+            _report = _compact.compact(events, _budget_chars, ask=summarizer)
+            self_report = getattr(_event_layer_block, "_last_compaction", None)
+            _event_layer_block._last_compaction = _report
+    except Exception as exc:
+        if isinstance(exc, RuntimeError) and "整理" in str(exc):
+            raise
+        # a broken compaction must not break injection, but it must be visible
+        if isinstance(exc, RuntimeError):
+            raise
     if len(events) > 1:
         events[:] = _merge_small_events(events)
     for index, ev in enumerate(events, 1):
@@ -3537,6 +3588,8 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         for row in ranked_rows[:1]:
             if all(row is not kept for kept in rows):
                 rows.append(row)
+        # compaction marks a row archived: out of the block, still on disk
+        rows = [r for r in rows if not r.get("archived")]
         rows.sort(key=lambda r: float(r.get("ts") or 0.0))
         EVENT_CAP_STATS["rows"] += len(rows)
         if os.environ.get("BIOCORE_DEBUG_EV"):
@@ -3550,6 +3603,10 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
             _span = _a if _a == _b else "%s 至 %s" % (_a, _b)
         lines.append("【事件｜%s】%s" % (_span or "无时间",
                                       str(ev.get("overview") or ev.get("summary") or "")[:60]))
+        _note = str(ev.get("note") or "").strip()
+        if _note:
+            # the compaction summary is the one line that must survive verbatim
+            lines.append("  要点：" + _note)
         for row in rows:
             body = str(row.get("text") or "")
             if _nrt is not None:
