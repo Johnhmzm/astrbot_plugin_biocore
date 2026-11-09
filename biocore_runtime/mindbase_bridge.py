@@ -149,12 +149,22 @@ class DialogueBody:
         """Advance the body by one user message."""
         from mindbase.types import Event
         d = dims or {}
-        ev = Event(text=str(text or ""), speaker="user", kind="message",
-                   domain="chat",
-                   valence=d.get("valence"), arousal=d.get("arousal"),
-                   social=d.get("social"), control=d.get("control"),
-                   relevance=d.get("relevance"))
-        self.mind.step(ev)
+        # The model's appraisal used to arrive as the event's own dimensions,
+        # which made it the body's target: one message reset 18 hours of drift
+        # (stress 0.152 -> 0.000). A word from outside should push, not replace.
+        if d:
+            try:
+                self.mind.inject_affect(float(d.get("valence") or 0.0),
+                                        float(d.get("arousal") or 0.5),
+                                        float(d.get("dominance") or 0.0),
+                                        intensity=PUSH_GAIN, blend=PUSH_GAIN)
+            except Exception:
+                pass
+        if not d:
+            self.mind.step(Event(text=str(text or ""), speaker="user",
+                                 kind="message", domain="chat"))
+        # else: the push above is the whole effect. step() would re-derive a
+        # neutral target and drag the body back, erasing the hours it lived.
         for _ in range(max(0, int(ticks))):
             self._tick_once()
         return self.state()
@@ -238,6 +248,8 @@ import os as _os
 # 0.30 is where spontaneous choice appears: at 200 idle ticks, 3 of 12 seeds
 # pick silence instead of speak. Below 0.15 every seed does the same thing.
 BODY_NOISE_AMP = float(_os.environ.get("BIOCORE_BODY_NOISE_AMP") or 0.30)
+# how hard one message pushes the body: 1.0 = replace, 0.35 = nudge
+PUSH_GAIN = float(_os.environ.get("BIOCORE_BODY_PUSH") or 0.35)
 
 
 def _body_path(store, session_id):

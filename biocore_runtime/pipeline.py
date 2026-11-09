@@ -7771,6 +7771,18 @@ def dispatch(action, payload=None):
                     _b = body_state(store, session_id)
                     if _b:
                         session_state["body"] = _b
+                        # ONE source of truth: the body owns v/a/stress. The
+                        # bio layer keeps explaining and constraining, but it
+                        # no longer re-derives a second set of numbers beside
+                        # the body (that is why a greeting erased 18 hours).
+                        _core = session_state.get("core")
+                        if isinstance(_core, dict):
+                            _core = dict(_core)
+                            _core["v"] = float(_b.get("valence") or 0.0)
+                            _core["a"] = float(_b.get("arousal") or 0.5)
+                            _core["stress"] = float(_b.get("stress") or 0.0)
+                            session_state["core"] = _core
+                        session_state["v"] = _core.get("v", 0.0) if isinstance(_core, dict) else 0.0
                         # continuous iteration: one hill-climb step per turn
                         from biocore_runtime import mindbase_bridge as _mbx
                         session_state["needs"] = _mbx.micro_evolve(
