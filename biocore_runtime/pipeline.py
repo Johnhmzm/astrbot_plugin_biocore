@@ -8422,6 +8422,31 @@ def dispatch(action, payload=None):
             except Exception:
                 pass
             return {"ok": True, **result}
+        if action == "body_evolve":
+            # Offline evolution of the substrate. Explicitly NOT on the per-turn
+            # path: it runs the fly body in its own environment for a while and
+            # returns the best genome, which a caller may then pin.
+            from biocore_runtime import mindbase_bridge as _mb
+            if not _mb.available():
+                return {"ok": False, "reason": "mindbase_unavailable"}
+            gens = _int_param(data.get("generations"), 3, 1, 200)
+            pop = _int_param(data.get("population"), 6, 4, 64)
+            steps = _int_param(data.get("steps"), 40, 10, 2000)
+            out = _mb.evolve(generations=gens, population=pop, steps=steps,
+                             seed=_int_param(data.get("seed"), 1, 1, 10 ** 6))
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                target = _Path(_store_data_dir(store)) / "mindbase_genome.json"
+                target.write_text(_json.dumps({"genome": out.get("best"),
+                                               "fitness": out.get("fitness"),
+                                               "bounds": out.get("bounds")},
+                                              ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+            return {"ok": True, "best": out.get("best"),
+                    "fitness": out.get("fitness"),
+                    "history": out.get("history")}
         if action == "configure":
             return configure(data)
         return {"ok": False, "reason": "unknown_action", "action": action}
