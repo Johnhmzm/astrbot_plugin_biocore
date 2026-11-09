@@ -7862,6 +7862,11 @@ def dispatch(action, payload=None):
                     if _grade:
                         q_reward_last(store, session_id, True, None, data,
                                       reward=_grade.get("reward"))
+                        # the layer under the policy: DAN writes the cue->value
+                        # association into the mushroom body
+                        _mbj.teach(store, session_id,
+                                   str(data.get("user_text") or "")[:120],
+                                   _grade.get("reward"))
                         _mbj.micro_evolve(store, session_id,
                                           body_state(store, session_id))
                         data["exchange_grade"] = _grade

@@ -91,3 +91,13 @@ def test_q_table_learns_both_directions(tmp_path):
     good = P.q_decision(store, 'good', {'now': 1000.0, 'gap_minutes': 5})
     assert good['samples'] == 5
     assert good['rows'][0]['q'] > 0.2
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_mushroom_body_learns_from_reward(tmp_path):
+    for _ in range(5):
+        up = B.teach(str(tmp_path), 'pos', '退稿 难受', 0.8)
+    for _ in range(5):
+        down = B.teach(str(tmp_path), 'neg', '退稿 难受', -0.8)
+    assert up.get('reward', 0) > down.get('reward', 0), 'reward must move the prediction'
+    assert B.load_mb(str(tmp_path), 'pos'), 'weights must persist'

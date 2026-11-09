@@ -297,6 +297,7 @@ def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
             pass
     try:
         replay_mirror(body, store, session_id)
+        restore_mb(body, store, session_id)
     except Exception:
         pass
     return body
@@ -564,3 +565,83 @@ def judge_exchange(user_text, reply_text, config=None, timeout=60.0):
     if "note" in data:
         out["note"] = str(data["note"])[:24]
     return out
+
+
+MB_FILE = "mindbase_mb.json"
+
+
+def _mb_path(store, session_id):
+    return _body_path(store, session_id).replace(BODY_STATE_FILE, MB_FILE)
+
+
+def load_mb(store, session_id):
+    import json
+    try:
+        with open(_mb_path(store, session_id), "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def save_mb(store, session_id, data):
+    import json
+    import os
+    path = _mb_path(store, session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh)
+        return True
+    except Exception:
+        return False
+
+
+def teach(store, session_id, cue, reward):
+    """One teaching trial: DAN writes into the KC->MBON weights.
+
+    This is the layer below the policy table. The policy learns *whether* to
+    reach out; the mushroom body learns *which cue* predicts what. Both now
+    consume the same number, graded by the model.
+    """
+    if _IMPORT_ERROR:
+        return {}
+    body = body_for(store, session_id)
+    mb = getattr(body.mind, "mb", None)
+    if mb is None:
+        return {}
+    try:
+        out = mb.learn(str(cue or ""), float(reward or 0.0))
+    except Exception as exc:
+        return {"error": type(exc).__name__}
+    try:
+        save_mb(store, session_id, {
+            "reward": list(getattr(mb.mbon_reward, "w", [])),
+            "punish": list(getattr(mb.mbon_punishment, "w", [])),
+        })
+    except Exception:
+        pass
+    out = dict(out or {})
+    out["cue"] = str(cue or "")[:40]
+    return out
+
+
+def restore_mb(body, store, session_id):
+    data = load_mb(store, session_id)
+    if not data:
+        return 0
+    mb = getattr(body.mind, "mb", None)
+    if mb is None:
+        return 0
+    n = 0
+    for key, target in (("reward", getattr(mb, "mbon_reward", None)),
+                        ("punish", getattr(mb, "mbon_punishment", None))):
+        vec = data.get(key)
+        if not isinstance(vec, list) or target is None:
+            continue
+        try:
+            if len(vec) == len(target.w):
+                target.w = [float(x) for x in vec]
+                n += 1
+        except Exception:
+            continue
+    return n
