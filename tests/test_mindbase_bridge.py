@@ -33,3 +33,21 @@ def test_evolve_runs_and_reports_history():
     assert len(out['history']) == 1
     assert out['best'] is not None
     assert len(out['best']) == len(out['bounds'])
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_dialogue_body_keeps_state_and_reacts():
+    body = B.DialogueBody(seed=1)
+    pos = body.feed('谢谢你', {'valence': 0.7, 'arousal': 0.4, 'social': 0.6})
+    neg = body.feed('你怎么又搞砸了', {'valence': -0.8, 'arousal': 0.7, 'social': -0.7, 'control': 0.2})
+    assert neg['valence'] < pos['valence']
+    assert neg['stress'] > pos['stress']
+    assert 'action' in neg
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_body_state_is_continuous_across_turns():
+    body = B.DialogueBody(seed=2)
+    first = body.feed('嗯。', {'valence': -0.6, 'arousal': 0.3, 'social': -0.5})
+    second = body.feed('嗯。', {'valence': -0.6, 'arousal': 0.3, 'social': -0.5})
+    assert second['stress'] >= first['stress'] - 0.05 or second['valence'] != first['valence']

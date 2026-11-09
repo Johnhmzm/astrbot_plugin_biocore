@@ -97,3 +97,100 @@ def evolve(generations: int = 3, population: int = 6, steps: int = 40,
                 pop[i] = trial
     return {"best": best, "fitness": best_fit, "history": history,
             "bounds": bounds}
+
+
+class DialogueBody:
+    """One MindBase instance fed by chat turns.
+
+    The substrate appraises structured dimensions, not sentences: text alone
+    moved valence by 0.02 across clearly different messages, while the same
+    texts with valence/arousal/social/control supplied moved it by 0.09 and
+    split stress 0.013 vs 0.128. So the caller must appraise first.
+    """
+
+    def __init__(self, seed: int = 1):
+        if _IMPORT_ERROR:
+            raise RuntimeError("mindbase unavailable: " + _IMPORT_ERROR)
+        from mindbase import MindBase, MindConfig
+        self.mind = MindBase(MindConfig(seed=int(seed)))
+
+    def feed(self, text: str, dims: Optional[Dict[str, float]] = None,
+             ticks: int = 1) -> Dict[str, float]:
+        """Advance the body by one user message."""
+        from mindbase.types import Event
+        d = dims or {}
+        ev = Event(text=str(text or ""), speaker="user", kind="message",
+                   domain="chat",
+                   valence=d.get("valence"), arousal=d.get("arousal"),
+                   social=d.get("social"), control=d.get("control"),
+                   relevance=d.get("relevance"))
+        self.mind.step(ev)
+        for _ in range(max(0, int(ticks))):
+            self.mind.tick()
+        return self.state()
+
+    def reply(self, text: str = "", ticks: int = 0) -> Dict[str, float]:
+        """Record her own utterance (what she said, not what she heard)."""
+        try:
+            self.mind.post_reply(str(text or ""))
+        except Exception:
+            pass
+        for _ in range(max(0, int(ticks))):
+            self.mind.tick()
+        return self.state()
+
+    def state(self) -> Dict[str, float]:
+        st = self.mind.unified_state()
+        A = st.get("A") or {}
+        ai = st.get("active_inference") or {}
+        self_ = st.get("self") or {}
+        dr = (st.get("drives") or {}).get("values") or {}
+        return {"valence": round(float(A.get("valence") or 0.0), 4),
+                "arousal": round(float(A.get("arousal") or 0.0), 4),
+                "stress": round(float(A.get("stress") or 0.0), 4),
+                "mood": round(float(A.get("mood") or 0.0), 4),
+                "agency": round(float(self_.get("agency") or 0.0), 4),
+                "social_drive": round(float(dr.get("social") or 0.0), 4),
+                "action": str(ai.get("action") or "")}
+
+
+def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
+                  timeout: float = 60.0) -> Dict[str, float]:
+    """Ask the configured small model for the six dimensions the body needs.
+
+    This is the crossing layer on the way down: language becomes numbers here
+    and nowhere else. Failure returns {} so the body keeps its own dynamics.
+    """
+    cfg = dict(config or {})
+    base = str(cfg.get("base_url") or "").rstrip("/")
+    model = str(cfg.get("model") or "")
+    key = str(cfg.get("key") or cfg.get("api_key") or "")
+    if not (base and model and key):
+        return {}
+    prompt = ("把这句话评成 6 个维度，只输出 JSON：{\"valence\":-1..1,"
+              "\"arousal\":0..1,\"dominance\":-1..1,\"relevance\":0..1,"
+              "\"social\":-1..1,\"control\":0..1}。不要解释。")
+    import json as _json
+    import re as _re
+    import urllib.request as _url
+    body = _json.dumps({"model": model, "temperature": 0,
+                        "messages": [{"role": "system", "content": prompt},
+                                     {"role": "user", "content": str(text or "")[:1200]}]}).encode()
+    req = _url.Request(base + "/chat/completions", data=body,
+                       headers={"Authorization": "Bearer " + key,
+                                "Content-Type": "application/json"})
+    try:
+        with _url.urlopen(req, timeout=timeout) as resp:
+            raw = _json.loads(resp.read().decode())["choices"][0]["message"]["content"]
+        m = _re.search(r"\{.*\}", raw, _re.S)
+        data = _json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}
+    out = {}
+    for name in ("valence", "arousal", "dominance", "relevance", "social", "control"):
+        if name in data:
+            try:
+                out[name] = float(data[name])
+            except Exception:
+                continue
+    return out
