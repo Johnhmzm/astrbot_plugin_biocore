@@ -424,3 +424,96 @@ def replay_mirror(body, store, session_id, now: float = 0.0) -> int:
         except Exception:
             continue
     return written
+
+
+NEEDS_FILE = "mindbase_needs.json"
+
+
+def _needs_path(store, session_id):
+    return _body_path(store, session_id).replace(BODY_STATE_FILE, NEEDS_FILE)
+
+
+def higher_needs(state, history=None):
+    """L3-L5: the needs the substrate's fitness never measured.
+
+    Survival is a gate, not a goal: every organism clears it, so it cannot rank
+    anything. These three are what separate alive from living well.
+    """
+    v = float((state or {}).get("valence") or 0.0)
+    s = float((state or {}).get("stress") or 0.0)
+    hist = list(history or [])[-12:]
+    vals = [float(h.get("valence") or 0.0) for h in hist] or [v]
+    mean_v = sum(vals) / len(vals)
+    spread = (sum((x - mean_v) ** 2 for x in vals) / len(vals)) ** 0.5
+    competence = max(0.0, min(1.0, 0.5 + 0.4 * mean_v - 0.5 * s - 0.3 * spread))
+    speaks = sum(1 for h in hist if str(h.get("action") or "") == "speak")
+    silences = sum(1 for h in hist if str(h.get("action") or "") == "silence")
+    total = max(1, speaks + silences)
+    balance = 1.0 - abs(speaks / total - 0.65)
+    autonomy = max(0.0, min(1.0, 0.5 * balance + 0.5 * (1.0 - abs(v))))
+    opened = float((state or {}).get("commit_open") or 0.0)
+    kept = float((state or {}).get("commit_kept") or 0.0)
+    meaning = kept / (opened + kept) if (opened + kept) > 0 else 0.5
+    return {"competence": round(competence, 4), "autonomy": round(autonomy, 4),
+            "meaning": round(meaning, 4)}
+
+
+def fitness_of(state, history=None, survival=1.0):
+    """Survival is a gate; the higher needs decide the ordering."""
+    if survival < 0.5:
+        return 0.0
+    n = higher_needs(state, history)
+    return round(0.45 * survival + 0.20 * n["competence"]
+                 + 0.20 * n["autonomy"] + 0.15 * n["meaning"], 4)
+
+
+def load_history(store, session_id):
+    import json
+    try:
+        with open(_needs_path(store, session_id), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_history(store, session_id, data):
+    import json
+    import os
+    path = _needs_path(store, session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def micro_evolve(store, session_id, state=None, step=0.03):
+    """One tiny hill-climb per turn: continuous iteration, no batch run.
+
+    At a few turns a day a real search never collects enough samples, but a
+    hill-climb on one bounded knob still improves with one observation per turn.
+    """
+    hist = load_history(store, session_id)
+    rows = list(hist.get("turns") or [])[-24:]
+    if state:
+        rows.append({"valence": float(state.get("valence") or 0.0),
+                     "stress": float(state.get("stress") or 0.0),
+                     "action": str(state.get("action") or "")})
+    hist["turns"] = rows[-24:]
+    fit = fitness_of(state or {}, rows)
+    prev = float(hist.get("fitness") or 0.0)
+    knob = float(hist.get("noise_amp") or BODY_NOISE_AMP)
+    if rows and fit >= prev:
+        knob = min(0.6, knob * (1.0 + step))
+    else:
+        knob = max(0.05, knob * (1.0 - step))
+    hist["fitness"] = fit
+    hist["noise_amp"] = round(knob, 4)
+    hist["needs"] = higher_needs(state or {}, rows)
+    save_history(store, session_id, hist)
+    out = {"fitness": fit, "noise_amp": round(knob, 4)}
+    out.update(hist["needs"])
+    return out

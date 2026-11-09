@@ -117,6 +117,11 @@ EVENT_TOP = int(os.environ.get("BIOCORE_EVENT_TOP") or 0)
 # 0 = no cap: the budget decides how many events are delivered. A positive
 # value is a debugging clamp (P20 has 163 events; a hard 12 threw away 151)
 # how many events the block may try to place (not sentences)
+try:  # learned proactive policy (Q table); optional
+    from biocore_model import policy_learning as _policy_learning
+except Exception:  # pragma: no cover
+    _policy_learning = None
+
 BODY_SWITCH_KEY = "body"
 BODY_ON = str(os.environ.get("BIOCORE_BODY") or "0").strip().lower() in ("1", "true", "on", "yes")
 SENTENCE_RERANK_ON = str(os.environ.get("BIOCORE_SENTENCE_RERANK") or "1").strip().lower() not in ("0", "false", "off", "no")
@@ -4693,6 +4698,15 @@ def _state_block(state, budget):
         # Measured range after one turn: 0.008 after praise, 0.068 after being
         # cursed at. A 0.2 threshold never fired, so the body was invisible.
         stress = _num(body.get("stress"), 0.0)
+        needs = state.get("needs") if isinstance(state.get("needs"), dict) else {}
+        if needs:
+            # L3-L5 are what survival-only fitness could never rank
+            if _num(needs.get("competence"), 0.5) >= 0.6:
+                parts.append("还算拿得出手")
+            elif _num(needs.get("competence"), 0.5) <= 0.4:
+                parts.append("有点没底气")
+            if _num(needs.get("autonomy"), 0.5) <= 0.35:
+                parts.append("像被推着走")
         if stress >= 0.15:
             parts.append("身上绷得紧(%.2f)" % stress)
         elif stress >= 0.05:
@@ -5884,6 +5898,18 @@ def proactive_tick(session_id, last_human_ts=None, switches=None, store=None,
         result["reason"] = "no_commitment"
         return result
 
+    # the learned policy finally has a reader: if this hour and this mood have
+    # taught it that reaching out backfires, stay quiet
+    try:
+        _pol = q_decision(store, sid, data)
+        if _pol.get("samples", 0) >= 5 and _pol.get("top") in ("withdraw", "rest"):
+            result["reason"] = "learned_withdraw"
+            result["policy"] = _pol
+            return result
+        q_note_choice(store, sid, _pol.get("top") or "approach", data)
+        result["policy"] = _pol
+    except Exception:
+        pass
     text = _proactive_compose(loop, max_chars)
     result.update({"should_send": True, "text": text, "reason": "ok",
                    "trust": round(trust, 4),
@@ -7726,6 +7752,13 @@ def dispatch(action, payload=None):
                 session_state = apply_intero_to_state(session_state,
                                                       data.get("state"))
             session_state["last_human_ts"] = time.time()
+            # credit the previous proactive choice: the human just spoke, so
+            # whatever it did, it worked (or did not, when the gap was long)
+            try:
+                _gap_min = _num(data.get("gap_minutes"), 0.0)
+                q_reward_last(store, session_id, True, _gap_min * 60.0, data)
+            except Exception:
+                pass
             # prompt_block renders session_state, not data["state"]; the body
             # has to sit here or the line never shows
             if _body_enabled(store, data):
@@ -7733,6 +7766,10 @@ def dispatch(action, payload=None):
                     _b = body_state(store, session_id)
                     if _b:
                         session_state["body"] = _b
+                        # continuous iteration: one hill-climb step per turn
+                        from biocore_runtime import mindbase_bridge as _mbx
+                        session_state["needs"] = _mbx.micro_evolve(
+                            store, session_id, _b)
                 except Exception:
                     pass
             if state_store is not None:
@@ -8484,3 +8521,112 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+# ---------------------------------------------------------------- learned policy
+Q_FILE = "policy_q.json"
+
+
+def _q_path(store, session_id):
+    import os as _o
+    import re as _r
+    sid = _r.sub(r"[^0-9A-Za-z_.-]", "_", str(session_id or "s1"))[:60]
+    return _o.path.join(str(store), "sessions", sid, Q_FILE)
+
+
+def _q_load(store, session_id):
+    import json as _j
+    try:
+        with open(_q_path(store, session_id), "r", encoding="utf-8") as fh:
+            data = _j.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _q_save(store, session_id, table):
+    import json as _j
+    import os as _o
+    try:
+        path = _q_path(store, session_id)
+        _o.makedirs(_o.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            _j.dump(table, fh, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def q_context(payload=None):
+    """Context key for the learned policy: gap phase x attachment x hour."""
+    if _policy_learning is None:
+        return ""
+    data = payload if isinstance(payload, dict) else {}
+    now = data.get("now")
+    hour = int(((float(now) if isinstance(now, (int, float)) else time.time())
+                % 86400) // 3600)
+    gap_min = _num(data.get("gap_minutes"), 0.0)
+    phase = ("expect" if gap_min < 30 else
+             "protest" if gap_min < 180 else
+             "loss" if gap_min < 720 else "withdraw")
+    rel = data.get("relationship") if isinstance(data.get("relationship"), dict) else {}
+    style = str(rel.get("attachment") or data.get("attachment") or "secure")
+    return _policy_learning.make_context(phase, style, hour)
+
+
+def q_decision(store, session_id, payload=None):
+    """What the policy has learned about this hour and this mood."""
+    if _policy_learning is None:
+        return {}
+    table = _q_load(store, session_id)
+    key = q_context(payload)
+    if not key:
+        return {}
+    rows = _policy_learning.policy_view(table, key)
+    return {"context": key, "rows": rows,
+            "top": (rows[0]["action"] if rows else ""),
+            "samples": sum(int(r.get("n") or 0) for r in rows)}
+
+
+def q_reward_last(store, session_id, responded, gap_s=None, payload=None):
+    """Credit the last chosen action with what actually happened."""
+    if _policy_learning is None:
+        return {}
+    table = _q_load(store, session_id)
+    meta = table.get("__last__") if isinstance(table.get("__last__"), dict) else {}
+    if not meta:
+        return {}
+    try:
+        if gap_s is None:
+            gap_s = max(0.0, time.time() - float(meta.get("ts") or time.time()))
+        r = _policy_learning.reward(bool(responded), float(gap_s), 0.0)
+    except Exception:
+        r = 1.0 if responded else -0.5
+    table = _policy_learning.update(table, str(meta.get("context") or ""),
+                                    str(meta.get("action") or ""), r)
+    table.pop("__last__", None)
+    _q_save(store, session_id, table)
+    return {"reward": r, "action": meta.get("action"), "context": meta.get("context")}
+
+
+def q_note_choice(store, session_id, action, payload=None):
+    """Remember the choice so the next turn can score it."""
+    if _policy_learning is None:
+        return False
+    table = _q_load(store, session_id)
+    # an unanswered choice must still teach the policy something: score the
+    # previous one as ignored once it has gone stale
+    prev = table.get("__last__")
+    if isinstance(prev, dict):
+        try:
+            age = time.time() - float(prev.get("ts") or 0.0)
+        except Exception:
+            age = 0.0
+        if age > 1800.0:
+            table = _policy_learning.update(
+                table, str(prev.get("context") or ""),
+                str(prev.get("action") or ""),
+                _policy_learning.reward(False, age, 0.0))
+    table["__last__"] = {"action": str(action), "context": q_context(payload),
+                         "ts": round(time.time(), 3)}
+    return _q_save(store, session_id, table)

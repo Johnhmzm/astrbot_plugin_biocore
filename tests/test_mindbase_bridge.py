@@ -80,3 +80,14 @@ def test_mirror_recall_reaches_body_memory(tmp_path):
     hit = body.mind.memory.retrieve('五月一号', float(body.mind.t))
     assert hit is not None, 'the substrate memory lost the mirrored line'
     assert '五月一号' in getattr(hit, 'text', '')
+
+
+def test_q_table_learns_both_directions(tmp_path):
+    from biocore_runtime import pipeline as P
+    store = str(tmp_path)
+    for _ in range(5):
+        P.q_note_choice(store, 'good', 'approach', {'now': 1000.0, 'gap_minutes': 5})
+        P.q_reward_last(store, 'good', True, 300.0, {'now': 1000.0})
+    good = P.q_decision(store, 'good', {'now': 1000.0, 'gap_minutes': 5})
+    assert good['samples'] == 5
+    assert good['rows'][0]['q'] > 0.2
