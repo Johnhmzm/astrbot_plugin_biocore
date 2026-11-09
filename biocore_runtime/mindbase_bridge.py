@@ -507,7 +507,10 @@ def higher_needs(state, history=None):
     autonomy = max(0.0, min(1.0, 0.5 * balance + 0.5 * (1.0 - abs(v))))
     opened = float((state or {}).get("commit_open") or 0.0)
     kept = float((state or {}).get("commit_kept") or 0.0)
-    meaning = kept / (opened + kept) if (opened + kept) > 0 else 0.5
+    # An outstanding promise is not a broken one: counting it as zero punished
+    # her for agreeing to anything. Half credit while it is still pending.
+    total_c = opened + kept
+    meaning = ((kept + 0.5 * opened) / total_c) if total_c > 0 else 0.5
     return {"competence": round(competence, 4), "autonomy": round(autonomy, 4),
             "meaning": round(meaning, 4)}
 
