@@ -362,6 +362,11 @@ def snapshot(store, session_id="s1", payload=None, state=None, now=None,
     out = {"schema": SCHEMA, "enabled": True, "ts": stamp,
            "session_id": str(session_id), "affect": affect,
            "modules": {name: False for name in MODULES}}
+    # the substrate body (mindbase), when the host supplies it: rendered by
+    # expr_state._section_body, not as a separate line in the memory block
+    body_state = data.get("body_state")
+    if isinstance(body_state, dict) and body_state:
+        out["body"] = dict(body_state)
 
     # 1) emotion_geometry: the continuous point -> soft label distribution
     geo = _call("emotion_geometry", "classify",

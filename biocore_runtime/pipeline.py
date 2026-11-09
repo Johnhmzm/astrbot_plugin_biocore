@@ -4353,18 +4353,26 @@ def inject_block(session_id, store, max_chars=None, top_k=TOP_K,
         mode=mode, rerank_config=rerank_config, now=now,
         include_superseded=include_superseded, payload=payload, as_of=as_of)
     try:
-        if not _body_enabled(store, payload):
-            return _core
-        text_query = str(query or "").strip()
-        if text_query:
-            body_turn(store, session_id, text_query, payload)
-        line = body_line(store, session_id)
-        if line and isinstance(_core, dict) and _core.get("text"):
-            merged = line + chr(10) + _core["text"]
-            return dict(_core, text=merged, chars=len(merged), body=line)
+        # Feed the body; do NOT render it here. The reverse injection already
+        # exists (expr_state.render_state_block): one render path, one source of
+        # truth. Adding a second line in the block made her feel two things at
+        # once, from two different states.
+        if _body_enabled(store, payload):
+            text_query = str(query or "").strip()
+            if text_query:
+                body_turn(store, session_id, text_query, payload)
     except Exception as exc:
-        logger.warning("[body] inject failed: %s: %s", type(exc).__name__, str(exc)[:120])
+        logger.warning("[body] feed failed: %s: %s", type(exc).__name__, str(exc)[:120])
     return _core
+
+
+def body_state(store, session_id):
+    """Body state for the host to pass as payload['body_state']."""
+    try:
+        from biocore_runtime import mindbase_bridge as _mb
+        return _mb.load_state(store, session_id)
+    except Exception:
+        return {}
 
 
 def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,

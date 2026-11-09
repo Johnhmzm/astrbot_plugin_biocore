@@ -166,9 +166,32 @@ def _section_attribution(core):
     return "觉得是「%s」%s" % (who, ("（%s）" % stable) if stable else "")
 
 
+def _section_body(core):
+    """The substrate body (mindbase): speak/silence and tension, nothing else.
+
+    Everything a person could name about feeling is already rendered above from
+    the core snapshot. What the substrate adds is a decision (whether it wants
+    to speak at all) and a second, slower tension signal. Keep it to that.
+    """
+    body = core.get("body") if isinstance(core, dict) else None
+    if not isinstance(body, dict) or not body:
+        return ""
+    parts = []
+    action = str(body.get("action") or "")
+    if action == "speak":
+        parts.append("有话想说")
+    elif action:
+        parts.append("不想开口")
+    stress = body.get("stress")
+    if isinstance(stress, (int, float)):
+        parts.append("身体紧张 %.2f" % float(stress))
+    return ("身体：" + "，".join(parts)) if parts else ""
+
+
 def render_state_block(core_snapshot, relationship=None, now=None, budget_chars=600):
     core = core_snapshot if isinstance(core_snapshot, dict) else {}
     sections = []
+    sections.append(("body", _section_body(core)))
     if _labels(core)[0] or core.get("spectrum_probs"):
         sections.append(("emotion", _section_emotion(core)))
     sections.append(("spectrum", _section_spectrum(core)))
