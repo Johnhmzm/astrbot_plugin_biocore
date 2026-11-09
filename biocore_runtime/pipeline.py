@@ -4328,8 +4328,14 @@ def body_turn(store, session_id, text, payload=None):
         if not _mb.available():
             return {}
         cfg = _load_runtime_config(store) or {}
-        dims = _mb.appraise_text(text, cfg.get("summarizer") or {})
-        return _mb.turn(store, session_id, text, dims)
+        digest = _mb.load_digest(store, session_id)
+        # one appraisal call covers both: what was said now, and what she just
+        # recalled. A second call for the memory would double the turn cost.
+        probe = text
+        if digest:
+            probe = text + "\n（她刚想起：" + digest[:200] + "）"
+        dims = _mb.appraise_text(probe, cfg.get("summarizer") or {})
+        return _mb.turn(store, session_id, text, dims, with_memory=False)
     except Exception as exc:
         logger.warning("[body] turn failed: %s: %s", type(exc).__name__, str(exc)[:120])
         return {}
@@ -8404,6 +8410,17 @@ def dispatch(action, payload=None):
                                or _rerank_config_from(
                                    _load_runtime_config(store).get("rerank"))),
                 payload=data)
+            # keep the top recalled lines: next turn's appraisal rides on them,
+            # so memory colours the body without a second model call
+            try:
+                if _body_enabled(store, data):
+                    from biocore_runtime import mindbase_bridge as _mb
+                    _lines = [ln for ln in str((result or {}).get("text") or "").splitlines()
+                              if ln.startswith("- ")][:3]
+                    if _lines:
+                        _mb.save_digest(store, session_id, _lines)
+            except Exception:
+                pass
             return {"ok": True, **result}
         if action == "configure":
             return configure(data)

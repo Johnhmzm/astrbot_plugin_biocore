@@ -233,6 +233,7 @@ def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
 
 
 BODY_STATE_FILE = "mindbase_body.json"
+RECALL_DIGEST_FILE = "recall_digest.txt"
 import os as _os
 # 0.30 is where spontaneous choice appears: at 200 idle ticks, 3 of 12 seeds
 # pick silence instead of speak. Below 0.15 every seed does the same thing.
@@ -297,11 +298,45 @@ def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
     return body
 
 
+def save_digest(store, session_id, lines) -> bool:
+    """Remember what she just recalled, so it can colour the next turn.
+
+    A separate model call for recalled text would double the per-turn cost.
+    Instead the digest rides along with the next turn's own appraisal, which
+    is also truer to how memory works: something surfaces, then colours what
+    comes after it.
+    """
+    import os
+    path = _body_path(store, session_id).replace(BODY_STATE_FILE, RECALL_DIGEST_FILE)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(str(x) for x in (lines or []))[:600])
+        return True
+    except Exception:
+        return False
+
+
+def load_digest(store, session_id) -> str:
+    import os
+    path = _body_path(store, session_id).replace(BODY_STATE_FILE, RECALL_DIGEST_FILE)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    except Exception:
+        return ""
+
+
 def turn(store, session_id, text: str, dims: Optional[Dict[str, float]] = None,
-         seed: int = 1) -> Dict[str, float]:
+         seed: int = 1, with_memory: bool = True) -> Dict[str, float]:
     """One user turn: resume, feed, persist, return the new state."""
     body = body_for(store, session_id, seed=seed)
     state = body.feed(text, dims)
+    if with_memory:
+        digest = load_digest(store, session_id)
+        if digest:
+            # what she recalled last turn is still in the room
+            state = body.feed(digest, dims, ticks=0)
     save_state(store, session_id, state)
     return state
 
