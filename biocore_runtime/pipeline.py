@@ -3672,10 +3672,12 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             _pinned = set(_governance.lookup(store, query)) if _governance else set()
         except Exception:
             _pinned = set()
-        if _pinned:
-            scored = sorted(scored, key=lambda pair: (
-                0 if str(pair[1].get("id") or "") in _pinned else 1,
-                -float(pair[0])))
+        # Always order by score. This used to run only when a concept pin
+        # existed, so an ordinary query got the pool in chronological order --
+        # the block then had nothing to do with the question.
+        scored = sorted(scored, key=lambda pair: (
+            0 if str(pair[1].get("id") or "") in _pinned else 1,
+            -float(pair[0])))
         # flat sentence delivery: every sentence ranked by cosine, packed
         # until the budget is spent -- no event grouping, no event order
         header_s = "【相关记忆】"
