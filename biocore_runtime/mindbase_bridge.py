@@ -295,6 +295,10 @@ def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
                                     intensity=1.0, blend=1.0)
         except Exception:
             pass
+    try:
+        replay_mirror(body, store, session_id)
+    except Exception:
+        pass
     return body
 
 
@@ -351,3 +355,72 @@ def state_line(state: Dict[str, float]) -> str:
     mood = "低落" if v <= -0.15 else ("轻快" if v >= 0.15 else "平稳")
     tension = "紧绷" if s >= 0.25 else ("松弛" if s <= 0.08 else "适中")
     return "【身体】情绪%s（%.2f）· 紧张度%s（%.2f）· 唤醒%.2f" % (mood, v, tension, s, a)
+
+
+MIRROR_FILE = "mindbase_mirror.json"
+
+
+def _mirror_path(store, session_id):
+    return _body_path(store, session_id).replace(BODY_STATE_FILE, MIRROR_FILE)
+
+
+def load_mirror(store, session_id):
+    """Remembered lines mirrored from the main memory (survives the process)."""
+    import json
+    try:
+        with open(_mirror_path(store, session_id), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_mirror(store, session_id, rows, cap: int = 200):
+    import json
+    import os
+    rows = list(rows or [])[-int(cap):]
+    path = _mirror_path(store, session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(rows, fh, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def mirror_recall(store, session_id, lines, valence: float = 0.0):
+    """Copy recalled lines into the substrate's own memory.
+
+    The two memories were separate systems that never exchanged anything. The
+    substrate memory is not persisted (no restore path), so the mirrored rows
+    are kept here and replayed into each fresh body.
+    """
+    rows = load_mirror(store, session_id)
+    seen = {str(r.get("text") or "") for r in rows}
+    for line in lines or []:
+        text = str(line or "").lstrip("- ").strip()
+        if not text or text in seen:
+            continue
+        rows.append({"text": text[:400], "valence": float(valence or 0.0)})
+        seen.add(text)
+    save_mirror(store, session_id, rows)
+    return len(rows)
+
+
+def replay_mirror(body, store, session_id, now: float = 0.0) -> int:
+    """Write mirrored rows back into a fresh body's memory."""
+    rows = load_mirror(store, session_id)
+    written = 0
+    mem = getattr(body.mind, "memory", None)
+    if mem is None or not rows:
+        return 0
+    for row in rows:
+        try:
+            mem.write(str(row.get("text") or ""), importance=0.5, rpe=0.1,
+                      now=now or float(body.mind.t),
+                      valence=float(row.get("valence") or 0.0))
+            written += 1
+        except Exception:
+            continue
+    return written

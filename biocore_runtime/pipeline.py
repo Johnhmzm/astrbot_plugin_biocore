@@ -8419,6 +8419,9 @@ def dispatch(action, payload=None):
                               if ln.startswith("- ")][:3]
                     if _lines:
                         _mb.save_digest(store, session_id, _lines)
+                        # and into the substrate's own memory, so the fly brain
+                        # holds the same episodes the prompt does
+                        _mb.mirror_recall(store, session_id, _lines)
             except Exception:
                 pass
             return {"ok": True, **result}

@@ -71,3 +71,12 @@ def test_persisted_state_keeps_the_action(tmp_path):
     back = B.load_state(str(tmp_path), 's1')
     assert 'action' in back, 'the body decision must survive a process restart'
     assert back['action'] in ('speak', 'silence')
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_mirror_recall_reaches_body_memory(tmp_path):
+    B.mirror_recall(str(tmp_path), 's1', ['- 她答应过五月一号前写完'])
+    body = B.body_for(str(tmp_path), 's1')
+    hit = body.mind.memory.retrieve('五月一号', float(body.mind.t))
+    assert hit is not None, 'the substrate memory lost the mirrored line'
+    assert '五月一号' in getattr(hit, 'text', '')
