@@ -51,3 +51,13 @@ def test_body_state_is_continuous_across_turns():
     first = body.feed('嗯。', {'valence': -0.6, 'arousal': 0.3, 'social': -0.5})
     second = body.feed('嗯。', {'valence': -0.6, 'arousal': 0.3, 'social': -0.5})
     assert second['stress'] >= first['stress'] - 0.05 or second['valence'] != first['valence']
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_idle_noise_produces_spontaneous_choice():
+    """Idle ticks must not be identical across seeds: noise creates options."""
+    actions = set()
+    for seed in range(12):
+        body = B.DialogueBody(seed=seed)
+        actions.add(body.idle(200)['action'])
+    assert len(actions) > 1, 'every seed chose the same action at rest'

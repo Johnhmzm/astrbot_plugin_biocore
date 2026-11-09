@@ -108,11 +108,41 @@ class DialogueBody:
     split stress 0.013 vs 0.128. So the caller must appraise first.
     """
 
-    def __init__(self, seed: int = 1):
+    def __init__(self, seed: int = 1, noise: bool = True):
         if _IMPORT_ERROR:
             raise RuntimeError("mindbase unavailable: " + _IMPORT_ERROR)
         from mindbase import MindBase, MindConfig
         self.mind = MindBase(MindConfig(seed=int(seed)))
+        # The substrate ships an endogenous noise source (critical network,
+        # 1/f OU, criticality controller) with inject(mind) built for exactly
+        # this. Nothing in the runtime ever called it: idle ticks used the
+        # 0.03 white noise in affect and drifted 0.035 over 200 steps, with
+        # every seed choosing the same action. Wire the real source.
+        self.noise = None
+        if noise:
+            try:
+                from mindbase.noise import EndogenousNoise
+                self.noise = EndogenousNoise(seed=int(seed))
+            except Exception:
+                self.noise = None
+
+    def _tick_once(self, dt: float = 60.0) -> None:
+        if self.noise is not None:
+            try:
+                self.noise.step(dt=float(dt))
+                # Drives are the integrator; affect is recomputed from its
+                # target every tick, so a push there is erased within one
+                # step (0.9 -> 0.02). EndogenousNoise.inject writes affect,
+                # which is why wiring it changed nothing: the numbers were
+                # identical at gain 0.18, 0.6 and 1.2 with 1x and 3x calls.
+                nv = float(self.noise.network.last_noise)
+                for name in ("energy", "social", "safety", "curiosity"):
+                    cur = float(self.mind.drives.values.get(name, 0.5))
+                    val = cur + BODY_NOISE_AMP * nv * 0.5
+                    self.mind.drives.values[name] = max(0.0, min(1.0, val))
+            except Exception:
+                pass
+        self.mind.tick()
 
     def feed(self, text: str, dims: Optional[Dict[str, float]] = None,
              ticks: int = 1) -> Dict[str, float]:
@@ -126,7 +156,7 @@ class DialogueBody:
                    relevance=d.get("relevance"))
         self.mind.step(ev)
         for _ in range(max(0, int(ticks))):
-            self.mind.tick()
+            self._tick_once()
         return self.state()
 
     def reply(self, text: str = "", ticks: int = 0) -> Dict[str, float]:
@@ -136,7 +166,13 @@ class DialogueBody:
         except Exception:
             pass
         for _ in range(max(0, int(ticks))):
-            self.mind.tick()
+            self._tick_once()
+        return self.state()
+
+    def idle(self, ticks: int = 1) -> Dict[str, float]:
+        """Pass time with no input: this is where the noise shows up."""
+        for _ in range(max(0, int(ticks))):
+            self._tick_once()
         return self.state()
 
     def state(self) -> Dict[str, float]:
@@ -197,6 +233,10 @@ def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
 
 
 BODY_STATE_FILE = "mindbase_body.json"
+import os as _os
+# 0.30 is where spontaneous choice appears: at 200 idle ticks, 3 of 12 seeds
+# pick silence instead of speak. Below 0.15 every seed does the same thing.
+BODY_NOISE_AMP = float(_os.environ.get("BIOCORE_BODY_NOISE_AMP") or 0.30)
 
 
 def _body_path(store, session_id):
