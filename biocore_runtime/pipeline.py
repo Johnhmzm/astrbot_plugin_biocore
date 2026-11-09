@@ -3629,6 +3629,14 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                     qvecs.append(list(vector))
     except Exception:
         qvecs = []
+    # mood-congruent recall (Bower 1981): entries encoded in a mood close to the
+    # current one are easier to bring back. The label has been written at capture
+    # time all along and never read; the term is inert when labels are absent.
+    _state_now = (payload or {}).get("state") if isinstance(payload, dict) else {}
+    _now_v = 0.0
+    if isinstance(_state_now, dict):
+        _now_v = _num(_state_now.get("v", _state_now.get("valence")), 0.0)
+    _mood_w = float(os.environ.get("BIOCORE_MOOD_WEIGHT") or 0.06)
     scored = []
     for row in pool:
         if qvecs:
@@ -3636,6 +3644,13 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             value = max((_ch.cosine(qv, vector) for qv in qvecs), default=0.0)
         else:
             value = _ch.lexical_score(text, str(row.get("text") or ""))
+        _aff = row.get("affect")
+        if _mood_w and isinstance(_aff, dict):
+            try:
+                _env_v = float(_aff.get("v", _aff.get("valence")) or 0.0)
+                value = float(value) + _mood_w * (1.0 - abs(_env_v - _now_v) / 2.0)
+            except Exception:
+                pass
         scored.append((float(value), row))
     grouped = {}
     order = []
@@ -4418,8 +4433,7 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
     # An enabled switch with zero events is not a working event layer: it
     # returns a two-line shell and the merge below then hands that shell back,
     # which is how a 14k budget produced a 326-character block.
-    _events_ready = bool((_load_event_state(store, session_id).get("events") or []))
-    if _event_layer_on(store, payload) and _events_ready:
+    if _event_layer_on(store, payload):
         # both views, not either/or: claims carry the correction/conflict state,
         # sentences carry the fact itself. The event layer used to return first,
         # which made the sentence branch below unreachable.
@@ -4462,7 +4476,12 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
             except Exception as exc:
                 logger.warning("[sentence] merge fallback: %s: %s",
                                type(exc).__name__, str(exc)[:160])
-        return event_block
+        if not (event_block.get("events_shown") or event_block.get("events_picked")):
+            # A layer that has nothing to show must not hand back a shell and
+            # pretend: fall through to the sentence path below.
+            event_block = None
+        else:
+            return event_block
     if SENTENCE_RECALL_ON and str(text_query).strip():
         # reachable without the event layer: production runs segment recall,
         # so a block nested inside _event_layer_block never executed

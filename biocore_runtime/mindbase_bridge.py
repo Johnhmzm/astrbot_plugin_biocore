@@ -245,12 +245,7 @@ def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
     key = str(cfg.get("key") or cfg.get("api_key") or "")
     if not (base and model and key):
         return {}
-    prompt = ("把这句话评成 6 个维度并判断有没有承诺，只输出 JSON："
-              "{\"valence\":-1..1,\"arousal\":0..1,\"dominance\":-1..1,"
-              "\"relevance\":0..1,\"social\":-1..1,\"control\":0..1,"
-              "\"commitment\":\"none|made|kept\"}。"
-              "commitment: made=这句话里立下或接受了某件将来要做的事；"
-              "kept=提到某件此前答应的事已经兑现；其余为 none。不要解释。")
+    prompt = prompt_text("appraise")
     import json as _json
     import re as _re
     import urllib.request as _url
@@ -595,9 +590,7 @@ def judge_exchange(user_text, reply_text, config=None, timeout=60.0):
     key = str(cfg.get("key") or cfg.get("api_key") or "")
     if not (base and model and key):
         return {}
-    prompt = ("判断这一来一回接住没有。只输出 JSON："
-              "{\"reward\":-1..1,\"fit\":0..1,\"note\":\"不超过12字\"}。"
-              "reward 负=答偏/伤人/答非所问，正=接住了对方真正在意的东西。不要解释。")
+    prompt = prompt_text("judge")
     body = _json.dumps({"model": model, "temperature": 0,
                         "messages": [{"role": "system", "content": prompt},
                                      {"role": "user",
@@ -626,6 +619,26 @@ def judge_exchange(user_text, reply_text, config=None, timeout=60.0):
 
 
 MB_FILE = "mindbase_mb.json"
+
+
+_PROMPTS = None
+
+
+def prompt_text(name):
+    """Prompt text lives in data/prompts.json: the core contract forbids CJK
+    string literals in code, and prompts are data, not logic."""
+    global _PROMPTS
+    if _PROMPTS is None:
+        import json as _json
+        import os as _os2
+        path = _os2.path.join(_os2.path.dirname(_os2.path.abspath(__file__)),
+                              "data", "prompts.json")
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                _PROMPTS = _json.load(fh)
+        except Exception:
+            _PROMPTS = {}
+    return str(_PROMPTS.get(str(name)) or "")
 
 
 def _mb_path(store, session_id):
