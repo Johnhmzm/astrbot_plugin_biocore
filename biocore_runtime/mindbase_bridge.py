@@ -149,9 +149,11 @@ class DialogueBody:
         """Advance the body by one user message."""
         from mindbase.types import Event
         d = dims or {}
-        # The model's appraisal used to arrive as the event's own dimensions,
-        # which made it the body's target: one message reset 18 hours of drift
-        # (stress 0.152 -> 0.000). A word from outside should push, not replace.
+        # Tick first, push last. tick() re-derives affect from its target every
+        # call, so a push applied before it is erased within the same message
+        # (that is how 18 hours of drift vanished on one greeting).
+        for _ in range(max(0, int(ticks))):
+            self._tick_once()
         if d:
             try:
                 self.mind.inject_affect(float(d.get("valence") or 0.0),
@@ -160,13 +162,9 @@ class DialogueBody:
                                         intensity=PUSH_GAIN, blend=PUSH_GAIN)
             except Exception:
                 pass
-        if not d:
+        else:
             self.mind.step(Event(text=str(text or ""), speaker="user",
                                  kind="message", domain="chat"))
-        # else: the push above is the whole effect. step() would re-derive a
-        # neutral target and drag the body back, erasing the hours it lived.
-        for _ in range(max(0, int(ticks))):
-            self._tick_once()
         return self.state()
 
     def reply(self, text: str = "", ticks: int = 0) -> Dict[str, float]:
