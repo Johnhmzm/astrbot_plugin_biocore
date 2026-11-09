@@ -517,3 +517,50 @@ def micro_evolve(store, session_id, state=None, step=0.03):
     out = {"fitness": fit, "noise_amp": round(knob, 4)}
     out.update(hist["needs"])
     return out
+
+
+def judge_exchange(user_text, reply_text, config=None, timeout=60.0):
+    """The brain grades the exchange; the body only consumes the number.
+
+    Reward was hand-written (did the human reply? how fast?). That puts the
+    judgement in the harness instead of the model. Here the model reads both
+    sides and returns how well the reply met the moment; the biological layer
+    never invents its own meaning of success.
+    """
+    import json as _json
+    import re as _re
+    import urllib.request as _url
+    cfg = dict(config or {})
+    base = str(cfg.get("base_url") or "").rstrip("/")
+    model = str(cfg.get("model") or "")
+    key = str(cfg.get("key") or cfg.get("api_key") or "")
+    if not (base and model and key):
+        return {}
+    prompt = ("判断这一来一回接住没有。只输出 JSON："
+              "{\"reward\":-1..1,\"fit\":0..1,\"note\":\"不超过12字\"}。"
+              "reward 负=答偏/伤人/答非所问，正=接住了对方真正在意的东西。不要解释。")
+    body = _json.dumps({"model": model, "temperature": 0,
+                        "messages": [{"role": "system", "content": prompt},
+                                     {"role": "user",
+                                      "content": "对方说：" + str(user_text or "")[:600]
+                                      + chr(10) + "她回：" + str(reply_text or "")[:900]}]}).encode()
+    req = _url.Request(base + "/chat/completions", data=body,
+                       headers={"Authorization": "Bearer " + key,
+                                "Content-Type": "application/json"})
+    try:
+        with _url.urlopen(req, timeout=timeout) as resp:
+            raw = _json.loads(resp.read().decode())["choices"][0]["message"]["content"]
+        m = _re.search(r"\{.*\}", raw, _re.S)
+        data = _json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}
+    out = {}
+    for name in ("reward", "fit"):
+        if name in data:
+            try:
+                out[name] = max(-1.0, min(1.0, float(data[name])))
+            except Exception:
+                continue
+    if "note" in data:
+        out["note"] = str(data["note"])[:24]
+    return out

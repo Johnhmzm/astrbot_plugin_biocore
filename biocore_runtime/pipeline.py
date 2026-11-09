@@ -7843,13 +7843,31 @@ def dispatch(action, payload=None):
             switches = _effective_switches(store, data.get("switches"))
             data["switches"] = switches
             if not switches.get("core_enabled", True):
-                return {"ok": True, "gate": {"blocked": False, "action": "pass",
+                return {"ok": True, "exchange_grade": data.get("exchange_grade"),
+                    "gate": {"blocked": False, "action": "pass",
                                              "text": str(data.get("assistant_text") or ""),
                                              "rule": "", "label": ""},
                         "captured": None, "clean_text": str(data.get("assistant_text") or ""),
                         "trace": None, "trace_file": "", "disabled": True,
                         "reason": "core_disabled"}
             raw_assistant = clean_text(data.get("assistant_text"))
+            # the brain grades the exchange; the body only consumes the number
+            try:
+                if _body_enabled(store, data):
+                    from biocore_runtime import mindbase_bridge as _mbj
+                    _jcfg = _load_runtime_config(store) or {}
+                    _grade = _mbj.judge_exchange(
+                        str(data.get("user_text") or ""), raw_assistant,
+                        _jcfg.get("summarizer") or {})
+                    if _grade:
+                        q_reward_last(store, session_id, True, None, data,
+                                      reward=_grade.get("reward"))
+                        _mbj.micro_evolve(store, session_id,
+                                          body_state(store, session_id))
+                        data["exchange_grade"] = _grade
+            except Exception as exc:
+                logger.warning("[learn] grade failed: %s: %s",
+                               type(exc).__name__, str(exc)[:120])
             do_sanitize = _as_bool(data.get("sanitize_reply"), True)
             cleaned = raw_assistant
             sanitized = False
@@ -8049,6 +8067,7 @@ def dispatch(action, payload=None):
                 "captured": {"captured": bool(decision.get("capture")),
                              "entry_id": str(entry.get("id") or ""),
                              "reason": str(decision.get("reason") or "")},
+                "exchange_grade": data.get("exchange_grade"),
                 "clean_text": cleaned,
                 "sanitized": bool(sanitized),
                 "removed_tags": int(removed_tags),
@@ -8588,7 +8607,7 @@ def q_decision(store, session_id, payload=None):
             "samples": sum(int(r.get("n") or 0) for r in rows)}
 
 
-def q_reward_last(store, session_id, responded, gap_s=None, payload=None):
+def q_reward_last(store, session_id, responded, gap_s=None, payload=None, reward=None):
     """Credit the last chosen action with what actually happened."""
     if _policy_learning is None:
         return {}
@@ -8597,9 +8616,14 @@ def q_reward_last(store, session_id, responded, gap_s=None, payload=None):
     if not meta:
         return {}
     try:
-        if gap_s is None:
+        if reward is not None:
+            # the model's own grade wins: it read both sides of the exchange
+            r = max(-1.0, min(1.0, float(reward)))
+        elif gap_s is None:
             gap_s = max(0.0, time.time() - float(meta.get("ts") or time.time()))
-        r = _policy_learning.reward(bool(responded), float(gap_s), 0.0)
+            r = _policy_learning.reward(bool(responded), float(gap_s), 0.0)
+        else:
+            r = _policy_learning.reward(bool(responded), float(gap_s), 0.0)
     except Exception:
         r = 1.0 if responded else -0.5
     table = _policy_learning.update(table, str(meta.get("context") or ""),
