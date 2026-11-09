@@ -118,6 +118,10 @@ class DialogueBody:
         # this. Nothing in the runtime ever called it: idle ticks used the
         # 0.03 white noise in affect and drifted 0.035 over 200 steps, with
         # every seed choosing the same action. Wire the real source.
+        # A slow baseline that the message writes into. The per-tick OU pulls
+        # affect back to a target derived from the last appraisal, so a single
+        # message never survives; the anchor is what an experience changes.
+        self.anchor = {"valence": 0.0, "arousal": 0.5, "stress": 0.0}
         self.noise = None
         if noise:
             try:
@@ -143,6 +147,13 @@ class DialogueBody:
             except Exception:
                 pass
         self.mind.tick()
+        try:
+            a = self.anchor
+            aff = self.mind.affect
+            aff.v = max(-1.0, min(1.0, aff.v + ANCHOR_GAIN * (a["valence"] - aff.v)))
+            aff.stress = max(0.0, min(1.0, aff.stress + ANCHOR_GAIN * (a["stress"] - aff.stress)))
+        except Exception:
+            pass
 
     def feed(self, text: str, dims: Optional[Dict[str, float]] = None,
              ticks: int = 1) -> Dict[str, float]:
@@ -155,6 +166,15 @@ class DialogueBody:
         for _ in range(max(0, int(ticks))):
             self._tick_once()
         if d:
+            try:
+                self.anchor["valence"] = round(
+                    self.anchor["valence"] * (1 - ANCHOR_LEARN)
+                    + float(d.get("valence") or 0.0) * ANCHOR_LEARN, 4)
+                self.anchor["stress"] = round(
+                    self.anchor["stress"] * (1 - ANCHOR_LEARN)
+                    + max(0.0, -float(d.get("valence") or 0.0)) * 0.6 * ANCHOR_LEARN, 4)
+            except Exception:
+                pass
             try:
                 self.mind.inject_affect(float(d.get("valence") or 0.0),
                                         float(d.get("arousal") or 0.5),
@@ -195,7 +215,9 @@ class DialogueBody:
                 "mood": round(float(A.get("mood") or 0.0), 4),
                 "agency": round(float(self_.get("agency") or 0.0), 4),
                 "social_drive": round(float(dr.get("social") or 0.0), 4),
-                "action": str(ai.get("action") or "")}
+                "action": str(ai.get("action") or ""),
+                "anchor_valence": round(float(self.anchor["valence"]), 4),
+                "anchor_stress": round(float(self.anchor["stress"]), 4)}
 
 
 def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
@@ -248,6 +270,8 @@ import os as _os
 BODY_NOISE_AMP = float(_os.environ.get("BIOCORE_BODY_NOISE_AMP") or 0.30)
 # how hard one message pushes the body: 1.0 = replace, 0.35 = nudge
 PUSH_GAIN = float(_os.environ.get("BIOCORE_BODY_PUSH") or 0.35)
+ANCHOR_GAIN = float(_os.environ.get("BIOCORE_ANCHOR_GAIN") or 0.04)
+ANCHOR_LEARN = float(_os.environ.get("BIOCORE_ANCHOR_LEARN") or 0.25)
 
 
 def _body_path(store, session_id):
@@ -298,6 +322,11 @@ def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
     body = DialogueBody(seed=seed)
     prev = load_state(store, session_id)
     if prev:
+        try:
+            body.anchor["valence"] = float(prev.get("anchor_valence") or 0.0)
+            body.anchor["stress"] = float(prev.get("anchor_stress") or 0.0)
+        except Exception:
+            pass
         try:
             body.mind.inject_affect(prev.get("valence", 0.0),
                                     prev.get("arousal", 0.5),

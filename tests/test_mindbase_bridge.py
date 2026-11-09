@@ -110,3 +110,14 @@ def test_clock_moves_the_body_when_nobody_talks(tmp_path):
     out = B.advance(store, 's', 1794200000.0 + 18 * 3600)
     assert out['ticks'] > 0, 'time must pass without a message'
     assert out.get('state'), 'the body must have a state after the gap'
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_experience_shifts_the_baseline(tmp_path):
+    store = str(tmp_path)
+    B.advance(store, 'x', 1794200000.0)
+    B.turn(store, 'x', '滚，烦死了', {'valence': -0.85, 'arousal': 0.7, 'social': -0.8})
+    after = B.load_state(store, 'x')
+    assert after.get('anchor_valence', 0) < -0.05, 'a bad exchange must move the baseline'
+    later = B.advance(store, 'x', 1794200000.0 + 12 * 3600)['state']
+    assert later.get('anchor_valence', 0) < -0.05, 'the baseline must survive the night'
