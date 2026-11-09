@@ -4685,18 +4685,19 @@ def _state_block(state, budget):
     tone = state.get("tone") if isinstance(state.get("tone"), dict) else {}
     autonomy = state.get("autonomy") if isinstance(state.get("autonomy"), dict) else {}
     v = _num(state.get("v", core.get("v", state.get("valence"))), 0.0)
-    parts = ["心情不错" if v >= 0.35 else ("心情有点低" if v <= -0.35 else "心情平稳")]
-    for key, high, low in (
-        ("tension", "绷得有点紧", "还算松"),
-        ("warmth", "想靠近一点", None),
-        ("heaviness", "有点沉", None),
-        ("clarity", None, "没听太清"),
-    ):
-        value = _num(intero.get(key), 0.5)
-        if high and value >= 0.62:
-            parts.append(high)
-        if low and value <= 0.38:
-            parts.append(low)
+    a = _num(state.get("a", core.get("a")), 0.5)
+    d = _num(state.get("d", core.get("d")), 0.0)
+    stress = _num(core.get("stress", state.get("stress")), 0.0)
+    social = _num(core.get("social", state.get("social")), 0.5)
+    # Numbers first: a label would collapse a continuous state into a handful
+    # of words and cap what the model can infer. The dimensions are what the
+    # body actually computed; the words after them are only a gloss.
+    numbers = "效价%+.2f 唤醒%.2f 支配%+.2f 紧张%.2f 社交%+.2f" % (v, a, d, stress, social - 0.5)
+    # The interchange layer's job: numbers alone are unreadable, single words
+    # collapse them. Give the reading key, once, in the same line.
+    reading = ("读法：效价-1难受…+1舒服；唤醒0…1越高越激动；支配-1被推着…+1握得住；"
+               "紧张0…1越高越绷；社交-1想退开…+1想靠近")
+    parts = []   # no single-word gloss: the numbers and the reading key carry it
     label = str(tone.get("label") or "").strip()
     if label:
         parts.append(label)
@@ -4730,7 +4731,8 @@ def _state_block(state, budget):
             parts.append("身上绷得紧(%.2f)" % stress)
         elif stress >= 0.05:
             parts.append("身上有点紧(%.2f)" % stress)
-    text = "此刻：" + "；".join(parts) + "。"
+    tail = ("；".join(parts) + "。") if parts else ""
+    text = "此刻：" + numbers + "。" + reading + ("｜" + tail if tail else "")
     if len(text) > budget:
         text = text[:max(1, budget - 1)] + "…"
     return text
@@ -4751,8 +4753,15 @@ def _constraints_block(state, switches, payload):
     else:
         lines.append("语气自然平稳，先回应对方在意的事。")
     if _as_bool(payload.get("length_hint"), False):
-        target = _int_param(payload.get("length_target"), 10, 1, 30)
-        hard = _int_param(payload.get("length_max"), 30, target, 60)
+        base_t = _int_param(payload.get("length_target"), 10, 1, 30)
+        base_h = _int_param(payload.get("length_max"), 30, base_t, 60)
+        # How much she says is hers, not the caller's: a tense or low state
+        # shortens the sentence, a settled one allows more. The caller still
+        # owns the ceiling; the body decides where inside it she lands.
+        strain = max(0.0, -v) * 0.6 + max(0.0, tension - 0.5) * 0.8
+        scale = max(0.45, 1.0 - strain)
+        target = max(4, min(base_t, int(round(base_t * scale))))
+        hard = max(target, min(base_h, int(round(base_h * scale))))
         lines.append("一次只说一句，通常 %d 字以内，最多 %d 字；需要停顿用换行。"
                      % (target, hard))
     if _as_bool(switches.get("proactive_send"), False):
