@@ -4304,6 +4304,10 @@ def _body_enabled(store, payload=None):
     data = payload if isinstance(payload, dict) else {}
     if isinstance(data.get(BODY_SWITCH_KEY), bool):
         return bool(data[BODY_SWITCH_KEY])
+    # hosts send switches as {"switches": {"body": true}}, not at the top level
+    nested = data.get("switches")
+    if isinstance(nested, dict) and isinstance(nested.get(BODY_SWITCH_KEY), bool):
+        return bool(nested[BODY_SWITCH_KEY])
     try:
         switches = _effective_switches(store, None)
         if isinstance(switches.get(BODY_SWITCH_KEY), bool):
@@ -4672,6 +4676,21 @@ def _state_block(state, budget):
     autonomy_state = str(autonomy.get("state") or "").strip()
     if autonomy_state and autonomy_state not in ("静", ""):
         parts.append("自主" + autonomy_state)
+    # the substrate body: a decision (speak/silence) and a slower tension. This
+    # is the only place DSH renders state, so it has to appear here; the AstrBot
+    # side gets it from expr_state.render_state_block instead.
+    body = state.get("body") if isinstance(state.get("body"), dict) else {}
+    if body:
+        action = str(body.get("action") or "")
+        if action == "silence":
+            parts.append("身体不想开口")
+        # Measured range after one turn: 0.008 after praise, 0.068 after being
+        # cursed at. A 0.2 threshold never fired, so the body was invisible.
+        stress = _num(body.get("stress"), 0.0)
+        if stress >= 0.15:
+            parts.append("身上绷得紧(%.2f)" % stress)
+        elif stress >= 0.05:
+            parts.append("身上有点紧(%.2f)" % stress)
     text = "此刻：" + "；".join(parts) + "。"
     if len(text) > budget:
         text = text[:max(1, budget - 1)] + "…"
@@ -7638,6 +7657,23 @@ def dispatch(action, payload=None):
             user_text = clean_text(data.get("user_text"))
             switches = _effective_switches(store, data.get("switches"))
             data["switches"] = switches
+            # advance the substrate body with this turn, then hand its state to
+            # whatever renders the prompt (perception -> expr_state)
+            if _body_enabled(store, data):
+                try:
+                    body_turn(store, session_id, user_text, data)
+                    _body = body_state(store, session_id)
+                    data["body_state"] = _body
+                    # prompt_block renders data["state"], so the body has to sit
+                    # inside it to reach expr_state.render_state_block
+                    _st = data.get("state") if isinstance(data.get("state"), dict) else {}
+                    _st = dict(_st)
+                    if _body:
+                        _st["body"] = _body
+                    data["state"] = _st
+                except Exception as exc:
+                    logger.warning("[body] turn_start failed: %s: %s",
+                                   type(exc).__name__, str(exc)[:120])
             if not switches.get("core_enabled", True):
                 return {"ok": True, "prompt_block": "", "state": {},
                         "disabled": True, "reason": "core_disabled"}
@@ -7684,6 +7720,15 @@ def dispatch(action, payload=None):
                 session_state = apply_intero_to_state(session_state,
                                                       data.get("state"))
             session_state["last_human_ts"] = time.time()
+            # prompt_block renders session_state, not data["state"]; the body
+            # has to sit here or the line never shows
+            if _body_enabled(store, data):
+                try:
+                    _b = body_state(store, session_id)
+                    if _b:
+                        session_state["body"] = _b
+                except Exception:
+                    pass
             if state_store is not None:
                 _save_session_state(state_store, session_id, session_state)
             field_state = dict(session_state)

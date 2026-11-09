@@ -254,7 +254,15 @@ def load_state(store, session_id) -> Dict[str, float]:
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
+        out = {}
+        for key, value in data.items():
+            if isinstance(value, (int, float)):
+                out[key] = float(value)
+            elif key == "action" and isinstance(value, str):
+                # the body's decision is a string; dropping it here made every
+                # restored turn look like it wanted to speak
+                out[key] = value
+        return out
     except Exception:
         return {}
 

@@ -61,3 +61,13 @@ def test_idle_noise_produces_spontaneous_choice():
         body = B.DialogueBody(seed=seed)
         actions.add(body.idle(200)['action'])
     assert len(actions) > 1, 'every seed chose the same action at rest'
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_persisted_state_keeps_the_action(tmp_path):
+    body = B.DialogueBody(seed=1)
+    state = body.feed('嗯', {'valence': -0.4, 'arousal': 0.3, 'social': -0.4})
+    B.save_state(str(tmp_path), 's1', state)
+    back = B.load_state(str(tmp_path), 's1')
+    assert 'action' in back, 'the body decision must survive a process restart'
+    assert back['action'] in ('speak', 'silence')
