@@ -117,6 +117,11 @@ EVENT_TOP = int(os.environ.get("BIOCORE_EVENT_TOP") or 0)
 # 0 = no cap: the budget decides how many events are delivered. A positive
 # value is a debugging clamp (P20 has 163 events; a hard 12 threw away 151)
 # how many events the block may try to place (not sentences)
+BODY_SWITCH_KEY = "body"
+BODY_ON = str(os.environ.get("BIOCORE_BODY") or "0").strip().lower() in ("1", "true", "on", "yes")
+SENTENCE_RERANK_ON = str(os.environ.get("BIOCORE_SENTENCE_RERANK") or "1").strip().lower() not in ("0", "false", "off", "no")
+SENTENCE_RERANK_POOL = int(os.environ.get("BIOCORE_SENTENCE_RERANK_POOL") or 60)
+
 EVENT_SCORE_W_MAX = 0.9
 EVENT_SCORE_W_REST = 0.1
 EVENT_SCORE_TOL = 0.03
@@ -3678,7 +3683,22 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         scored = sorted(scored, key=lambda pair: (
             0 if str(pair[1].get("id") or "") in _pinned else 1,
             -float(pair[0])))
-        # flat sentence delivery: every sentence ranked by cosine, packed
+        # Optional rerank over the head of the cosine ranking. The block used to
+        # be cosine-only: rerank_config was accepted by this function and never
+        # read, so a configured reranker never took part in sentence delivery.
+        if SENTENCE_RERANK_ON and len(scored) > 1:
+            _pool_n = max(1, min(SENTENCE_RERANK_POOL, len(scored)))
+            _head_rows = [row for _value, row in scored[:_pool_n]]
+            try:
+                _ordered, _rr = _rerank_rows(store, text, _head_rows, payload,
+                                             stage="sentence")
+            except Exception:
+                _ordered, _rr = None, {"reranked": False}
+            if _ordered and (_rr or {}).get("reranked"):
+                _score_of = {id(row): value for value, row in scored}
+                scored = ([(float(_score_of.get(id(row), 0.0)), row) for row in _ordered]
+                          + scored[_pool_n:])
+        # flat sentence delivery: every sentence ranked, packed
         # until the budget is spent -- no event grouping, no event order
         header_s = "【相关记忆】"
         limit_s = max(50, budget - 90)
@@ -4279,9 +4299,77 @@ def _inject_summarizer(store, payload):
     return summarizer_from_config(store, pl)
 
 
-def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
+def _body_enabled(store, payload=None):
+    """body: payload flag > switches config > env > default OFF."""
+    data = payload if isinstance(payload, dict) else {}
+    if isinstance(data.get(BODY_SWITCH_KEY), bool):
+        return bool(data[BODY_SWITCH_KEY])
+    try:
+        switches = _effective_switches(store, None)
+        if isinstance(switches.get(BODY_SWITCH_KEY), bool):
+            return bool(switches[BODY_SWITCH_KEY])
+    except Exception:
+        pass
+    return bool(BODY_ON)
+
+
+def body_turn(store, session_id, text, payload=None):
+    """Feed one user turn into the digital-fly body and return its state.
+
+    The body lives in the substrate; this process dies every turn, so the state
+    is persisted next to the session and re-injected on the way back in.
+    """
+    try:
+        from biocore_runtime import mindbase_bridge as _mb
+        if not _mb.available():
+            return {}
+        cfg = _load_runtime_config(store) or {}
+        dims = _mb.appraise_text(text, cfg.get("summarizer") or {})
+        return _mb.turn(store, session_id, text, dims)
+    except Exception as exc:
+        logger.warning("[body] turn failed: %s: %s", type(exc).__name__, str(exc)[:120])
+        return {}
+
+
+def body_line(store, session_id):
+    try:
+        from biocore_runtime import mindbase_bridge as _mb
+        return _mb.state_line(_mb.load_state(store, session_id))
+    except Exception:
+        return ""
+
+
+def inject_block(session_id, store, max_chars=None, top_k=TOP_K,
                  query="", mode="query", rerank_config=None, now=None,
                  include_superseded=False, payload=None, as_of=None):
+    """Public entry: the block plus, when enabled, the body's own state.
+
+    The body is fed with this turn and its state is put on top of the block, so
+    the layer that decides wording can see how she feels -- not just what was
+    said. Everything is behind the body switch and never raises.
+    """
+    _core = _inject_block_core(
+        session_id, store, max_chars=max_chars, top_k=top_k, query=query,
+        mode=mode, rerank_config=rerank_config, now=now,
+        include_superseded=include_superseded, payload=payload, as_of=as_of)
+    try:
+        if not _body_enabled(store, payload):
+            return _core
+        text_query = str(query or "").strip()
+        if text_query:
+            body_turn(store, session_id, text_query, payload)
+        line = body_line(store, session_id)
+        if line and isinstance(_core, dict) and _core.get("text"):
+            merged = line + chr(10) + _core["text"]
+            return dict(_core, text=merged, chars=len(merged), body=line)
+    except Exception as exc:
+        logger.warning("[body] inject failed: %s: %s", type(exc).__name__, str(exc)[:120])
+    return _core
+
+
+def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
+                       query="", mode="query", rerank_config=None, now=None,
+                       include_superseded=False, payload=None, as_of=None):
     """Top-k session memories as one bounded Chinese prompt block.
 
     mode="query"  recall this turn's words (engine.recall + env embedder,
@@ -4304,7 +4392,11 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
     limit = _int_param(top_k, TOP_K, 1, INJECT_MAX_K)
     text_query = clean_text(query, MAX_TEXT_CHARS)
     chosen = str(mode or "query").strip().lower()
-    if _event_layer_on(store, payload):
+    # An enabled switch with zero events is not a working event layer: it
+    # returns a two-line shell and the merge below then hands that shell back,
+    # which is how a 14k budget produced a 326-character block.
+    _events_ready = bool((_load_event_state(store, session_id).get("events") or []))
+    if _event_layer_on(store, payload) and _events_ready:
         # both views, not either/or: claims carry the correction/conflict state,
         # sentences carry the fact itself. The event layer used to return first,
         # which made the sentence branch below unreachable.
@@ -4336,7 +4428,7 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                                 break
                 _lines = _claims_state_lines(_hit_events or _evs, limit=8)
                 _head = chr(10).join(_lines)
-                _room = max(200, RECALL_INJECT_CHARS - len(_head) - 1)
+                _room = max(200, budget - len(_head) - 1)
                 _sent = _sentence_recall_block(
                     store, session_id, text_query, _pool, _evs, payload=payload,
                     rerank_config=rerank_config, now=None, budget_chars=_room)
@@ -4359,7 +4451,7 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                         len(_pool), len(_evs))
             _block = _sentence_recall_block(store, session_id, text_query, _pool, _evs,
                                             payload=payload, rerank_config=rerank_config,
-                                            now=now)
+                                            now=now, budget_chars=budget)
         except Exception as exc:
             logger.warning("[sentence] fallback: %s: %s",
                            type(exc).__name__, str(exc)[:160])
@@ -4397,7 +4489,7 @@ def inject_block(session_id, store, max_chars=MAX_CHARS, top_k=TOP_K,
                 _state_lines = []
             if _state_lines:
                 _head = chr(10).join(_state_lines)
-                _room = max(200, RECALL_INJECT_CHARS - len(_head) - 1)
+                _room = max(200, budget - len(_head) - 1)
                 _again = _sentence_recall_block(
                     store, session_id, text_query, _pool, _evs, payload=payload,
                     rerank_config=rerank_config, now=now, budget_chars=_room)
@@ -4945,7 +5037,17 @@ def _spatial_rerank_switch(store, payload=None):
         return True
     if raw in ("0", "false", "off", "no"):
         return False
-    return False
+    # No explicit switch: honour a configured reranker instead of silently
+    # ignoring it. A reranker that is set up but never called is the same bug
+    # as a parameter that is accepted and never read.
+    try:
+        cfg = _rerank_config(store, data)
+        enabled = cfg.get("rerank_enabled")
+        if enabled is None:
+            enabled = cfg.get("enabled")
+        return bool(enabled and cfg.get("model"))
+    except Exception:
+        return False
 
 
 def _rerank_config(store, payload=None):
@@ -5019,8 +5121,21 @@ def _rerank_rows(store, query, rows, payload=None, stage="recall",
         return rows, status
     config = _rerank_config(store, data)
     config["rerank_enabled"] = True
+    # The store config names these base_url/model/api_key, while the reranker
+    # only reads rerank_* keys. Without this mapping every call reported
+    # missing_config and no reranker ever ran.
+    if not config.get("rerank_base_url"):
+        config["rerank_base_url"] = config.get("base_url")
+    if not config.get("rerank_model"):
+        config["rerank_model"] = config.get("model")
+    if not config.get("rerank_api_key"):
+        config["rerank_api_key"] = config.get("api_key")
+    if not config.get("rerank_timeout"):
+        config["rerank_timeout"] = config.get("timeout")
     if top_n:
         config["rerank_top_n"] = int(top_n)
+    elif not config.get("rerank_top_n"):
+        config["rerank_top_n"] = config.get("top_n")
     reasons = []
     try:
         reranked = _rerank_mod.rerank_documents(

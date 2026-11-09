@@ -194,3 +194,77 @@ def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
             except Exception:
                 continue
     return out
+
+
+BODY_STATE_FILE = "mindbase_body.json"
+
+
+def _body_path(store, session_id):
+    import os
+    import re
+    sid = re.sub(r"[^0-9A-Za-z_.-]", "_", str(session_id or "s1"))[:60]
+    return os.path.join(str(store), "sessions", sid, BODY_STATE_FILE)
+
+
+def load_state(store, session_id) -> Dict[str, float]:
+    """Read the last persisted body state for one session (may be empty)."""
+    import json
+    import os
+    path = _body_path(store, session_id)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return {k: float(v) for k, v in data.items() if isinstance(v, (int, float))}
+    except Exception:
+        return {}
+
+
+def save_state(store, session_id, state: Dict[str, float]) -> bool:
+    import json
+    import os
+    path = _body_path(store, session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(state, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        return False
+
+
+def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
+    """A body resumed from disk: the process dies every turn, the state does not."""
+    body = DialogueBody(seed=seed)
+    prev = load_state(store, session_id)
+    if prev:
+        try:
+            body.mind.inject_affect(prev.get("valence", 0.0),
+                                    prev.get("arousal", 0.5),
+                                    prev.get("dominance", 0.0),
+                                    intensity=1.0, blend=1.0)
+        except Exception:
+            pass
+    return body
+
+
+def turn(store, session_id, text: str, dims: Optional[Dict[str, float]] = None,
+         seed: int = 1) -> Dict[str, float]:
+    """One user turn: resume, feed, persist, return the new state."""
+    body = body_for(store, session_id, seed=seed)
+    state = body.feed(text, dims)
+    save_state(store, session_id, state)
+    return state
+
+
+def state_line(state: Dict[str, float]) -> str:
+    """One line of body state for the prompt. Quantities only, no advice."""
+    if not state:
+        return ""
+    v = state.get("valence", 0.0)
+    s = state.get("stress", 0.0)
+    a = state.get("arousal", 0.0)
+    mood = "低落" if v <= -0.15 else ("轻快" if v >= 0.15 else "平稳")
+    tension = "紧绷" if s >= 0.25 else ("松弛" if s <= 0.08 else "适中")
+    return "【身体】情绪%s（%.2f）· 紧张度%s（%.2f）· 唤醒%.2f" % (mood, v, tension, s, a)
