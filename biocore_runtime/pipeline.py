@@ -5898,6 +5898,18 @@ def proactive_tick(session_id, last_human_ts=None, switches=None, store=None,
         result["reason"] = "no_commitment"
         return result
 
+    # the body gets a vote: a body that does not want to open its mouth should
+    # not be overruled by a clock. Until now speak/silence only coloured wording.
+    try:
+        _bs = body_state(store, sid)
+        if _bs:
+            result["body"] = {"action": _bs.get("action"),
+                              "stress": round(float(_bs.get("stress") or 0.0), 3)}
+            if str(_bs.get("action") or "") == "silence":
+                result["reason"] = "body_silence"
+                return result
+    except Exception:
+        pass
     # the learned policy finally has a reader: if this hour and this mood have
     # taught it that reaching out backfires, stay quiet
     try:

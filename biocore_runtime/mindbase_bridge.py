@@ -122,6 +122,7 @@ class DialogueBody:
         # affect back to a target derived from the last appraisal, so a single
         # message never survives; the anchor is what an experience changes.
         self.anchor = {"valence": 0.0, "arousal": 0.5, "stress": 0.0}
+        self.commit = {"open": 0.0, "kept": 0.0}
         self.noise = None
         if noise:
             try:
@@ -176,6 +177,15 @@ class DialogueBody:
             except Exception:
                 pass
             try:
+                kind = str(d.get("commitment") or "none")
+                if kind == "made":
+                    self.commit["open"] = self.commit["open"] + 1.0
+                elif kind == "kept":
+                    self.commit["kept"] = self.commit["kept"] + 1.0
+                    self.commit["open"] = max(0.0, self.commit["open"] - 1.0)
+            except Exception:
+                pass
+            try:
                 self.mind.inject_affect(float(d.get("valence") or 0.0),
                                         float(d.get("arousal") or 0.5),
                                         float(d.get("dominance") or 0.0),
@@ -217,7 +227,9 @@ class DialogueBody:
                 "social_drive": round(float(dr.get("social") or 0.0), 4),
                 "action": str(ai.get("action") or ""),
                 "anchor_valence": round(float(self.anchor["valence"]), 4),
-                "anchor_stress": round(float(self.anchor["stress"]), 4)}
+                "anchor_stress": round(float(self.anchor["stress"]), 4),
+                "commit_open": float(self.commit["open"]),
+                "commit_kept": float(self.commit["kept"])}
 
 
 def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
@@ -233,9 +245,12 @@ def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
     key = str(cfg.get("key") or cfg.get("api_key") or "")
     if not (base and model and key):
         return {}
-    prompt = ("把这句话评成 6 个维度，只输出 JSON：{\"valence\":-1..1,"
-              "\"arousal\":0..1,\"dominance\":-1..1,\"relevance\":0..1,"
-              "\"social\":-1..1,\"control\":0..1}。不要解释。")
+    prompt = ("把这句话评成 6 个维度并判断有没有承诺，只输出 JSON："
+              "{\"valence\":-1..1,\"arousal\":0..1,\"dominance\":-1..1,"
+              "\"relevance\":0..1,\"social\":-1..1,\"control\":0..1,"
+              "\"commitment\":\"none|made|kept\"}。"
+              "commitment: made=这句话里立下或接受了某件将来要做的事；"
+              "kept=提到某件此前答应的事已经兑现；其余为 none。不要解释。")
     import json as _json
     import re as _re
     import urllib.request as _url
@@ -253,6 +268,8 @@ def appraise_text(text: str, config: Optional[Dict[str, object]] = None,
     except Exception:
         return {}
     out = {}
+    if str(data.get("commitment") or "") in ("made", "kept", "none"):
+        out["commitment"] = str(data["commitment"])
     for name in ("valence", "arousal", "dominance", "relevance", "social", "control"):
         if name in data:
             try:
@@ -325,6 +342,8 @@ def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
         try:
             body.anchor["valence"] = float(prev.get("anchor_valence") or 0.0)
             body.anchor["stress"] = float(prev.get("anchor_stress") or 0.0)
+            body.commit["open"] = float(prev.get("commit_open") or 0.0)
+            body.commit["kept"] = float(prev.get("commit_kept") or 0.0)
         except Exception:
             pass
         try:
