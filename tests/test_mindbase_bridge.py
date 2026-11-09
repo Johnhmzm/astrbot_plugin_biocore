@@ -101,3 +101,12 @@ def test_mushroom_body_learns_from_reward(tmp_path):
         down = B.teach(str(tmp_path), 'neg', '退稿 难受', -0.8)
     assert up.get('reward', 0) > down.get('reward', 0), 'reward must move the prediction'
     assert B.load_mb(str(tmp_path), 'pos'), 'weights must persist'
+
+
+@pytest.mark.skipif(not B.available(), reason='mindbase not importable here')
+def test_clock_moves_the_body_when_nobody_talks(tmp_path):
+    store = str(tmp_path)
+    B.advance(store, 's', 1794200000.0)
+    out = B.advance(store, 's', 1794200000.0 + 18 * 3600)
+    assert out['ticks'] > 0, 'time must pass without a message'
+    assert out.get('state'), 'the body must have a state after the gap'

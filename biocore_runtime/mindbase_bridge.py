@@ -645,3 +645,68 @@ def restore_mb(body, store, session_id):
         except Exception:
             continue
     return n
+
+
+CLOCK_FILE = "mindbase_clock.json"
+TICK_SECONDS = 60.0        # one body tick per simulated minute
+MAX_CATCHUP_TICKS = 480    # 8 hours: beyond that the gap is a "night", not a gap
+
+
+def _clock_path(store, session_id):
+    return _body_path(store, session_id).replace(BODY_STATE_FILE, CLOCK_FILE)
+
+
+def _clock_load(store, session_id):
+    import json
+    try:
+        with open(_clock_path(store, session_id), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _clock_save(store, session_id, ts):
+    import json
+    import os
+    try:
+        path = _clock_path(store, session_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"last_tick": float(ts)}, fh)
+        return True
+    except Exception:
+        return False
+
+
+def advance(store, session_id, now=None, seed=1):
+    """Let time pass while nobody is talking.
+
+    Until now the body only moved when a message arrived, so she had no life
+    between conversations: no drift, no settling, no waking up different.
+    Ticks are capped and batched -- eight hours is a night, not four hundred
+    separate minutes of noise.
+    """
+    if _IMPORT_ERROR:
+        return {}
+    import time as _t
+    now = float(now if now is not None else _t.time())
+    clock = _clock_load(store, session_id)
+    last = float(clock.get("last_tick") or 0.0)
+    if last <= 0:
+        _clock_save(store, session_id, now)
+        return {"ticks": 0, "seconds": 0.0}
+    elapsed = max(0.0, now - last)
+    ticks = int(elapsed // TICK_SECONDS)
+    if ticks <= 0:
+        return {"ticks": 0, "seconds": round(elapsed, 1)}
+    ticks = min(ticks, MAX_CATCHUP_TICKS)
+    body = body_for(store, session_id, seed=seed)
+    # batched: each tick carries the elapsed share so the noise integrates once
+    dt = max(1.0, elapsed / max(1, ticks))
+    for _ in range(ticks):
+        body._tick_once(dt=min(dt, 600.0))
+    state = body.state()
+    save_state(store, session_id, state)
+    _clock_save(store, session_id, now)
+    return {"ticks": ticks, "seconds": round(elapsed, 1), "state": state}

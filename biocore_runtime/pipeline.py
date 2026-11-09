@@ -7693,6 +7693,11 @@ def dispatch(action, payload=None):
             # whatever renders the prompt (perception -> expr_state)
             if _body_enabled(store, data):
                 try:
+                    # time passes even when nobody talks
+                    from biocore_runtime import mindbase_bridge as _mbc
+                    _now = data.get("now")
+                    _mbc.advance(store, session_id,
+                                 float(_now) if isinstance(_now, (int, float)) else time.time())
                     body_turn(store, session_id, user_text, data)
                     _body = body_state(store, session_id)
                     data["body_state"] = _body
