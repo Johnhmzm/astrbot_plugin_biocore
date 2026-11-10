@@ -123,6 +123,7 @@ class DialogueBody:
         # message never survives; the anchor is what an experience changes.
         self.anchor = {"valence": 0.0, "arousal": 0.5, "stress": 0.0}
         self.commit = {"open": 0.0, "kept": 0.0}
+        self.integral = {"valence": 0.0, "stress": 0.0}
         self.noise = None
         if noise:
             try:
@@ -151,8 +152,19 @@ class DialogueBody:
         try:
             a = self.anchor
             aff = self.mind.affect
-            aff.v = max(-1.0, min(1.0, aff.v + ANCHOR_GAIN * (a["valence"] - aff.v)))
-            aff.stress = max(0.0, min(1.0, aff.stress + ANCHOR_GAIN * (a["stress"] - aff.stress)))
+            # PI 控制：比例项负责快速回拉，积分项消除持续扰动留下的稳态误差；
+            # 积分限幅（anti-windup）防止长时间偏差把积分项推到饱和。
+            for key, getter, setter, lo, hi in (
+                ("valence", lambda: aff.v, lambda v: setattr(aff, "v", v), -1.0, 1.0),
+                ("stress", lambda: aff.stress, lambda v: setattr(aff, "stress", v), 0.0, 1.0),
+            ):
+                cur = float(getter())
+                err = float(a[key]) - cur
+                self.integral[key] = float(self.integral.get(key, 0.0)) + err * PI_KI_DT
+                self.integral[key] = max(-PI_I_LIMIT, min(PI_I_LIMIT, self.integral[key]))
+                u = PI_KP * err + PI_KI * self.integral[key]
+                new = cur + u
+                setter(max(lo, min(hi, new)))
         except Exception:
             pass
 
@@ -751,6 +763,115 @@ def restore_mb(body, store, session_id):
 
 
 CLOCK_FILE = "mindbase_clock.json"
+PREV_FILE = "mindbase_prev.json"
+
+
+def save_prev(store, session_id, state):
+    """Snapshot before this turn touches anything: the KL baseline."""
+    import json
+    import os
+    try:
+        path = _body_path(store, session_id).replace(BODY_STATE_FILE, PREV_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({k: float(v) for k, v in (state or {}).items()
+                       if isinstance(v, (int, float))}, fh)
+        return True
+    except Exception:
+        return False
+
+
+def load_prev(store, session_id):
+    import json
+    try:
+        with open(_body_path(store, session_id).replace(BODY_STATE_FILE, PREV_FILE),
+                  "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+# PI 控制器参数：P 沿用原来的回拉强度，I 小而慢，只负责消掉稳态误差
+PI_KP = float(_os.environ.get("BIOCORE_PI_KP") or 0.04)
+PI_KI = float(_os.environ.get("BIOCORE_PI_KI") or 0.010)
+PI_KI_DT = float(_os.environ.get("BIOCORE_PI_DT") or 1.0)
+PI_I_LIMIT = float(_os.environ.get("BIOCORE_PI_LIMIT") or 0.6)
+ANCHOR_GAIN = PI_KP
+
+NORM_FILE = "mindbase_norm.json"
+NORM_ALPHA = 0.05     # how fast the personal baseline follows her
+NORM_MIN = 8          # samples before z is trustworthy
+
+
+def _norm_path(store, session_id):
+    return _body_path(store, session_id).replace(BODY_STATE_FILE, NORM_FILE)
+
+
+def norm_update(store, session_id, state, alpha=None):
+    """Running mean/std per dimension, then her position in her own units.
+
+    Absolute numbers are not readable: "-0.15" means nothing without knowing
+    where she usually sits. z = (x - mean) / std is what a model can read.
+    """
+    import json
+    import math
+    import os
+    a = float(alpha if alpha is not None else NORM_ALPHA)
+    keys = ("valence", "arousal", "stress", "social_drive")
+    try:
+        with open(_norm_path(store, session_id), "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except Exception:
+        doc = {}
+    rows = doc.get("rows") or {}
+    out = {}
+    for key in keys:
+        val = (state or {}).get(key)
+        if not isinstance(val, (int, float)):
+            continue
+        cur = rows.get(key) or {"n": 0, "mean": 0.0, "var": 0.04}
+        n = int(cur.get("n") or 0)
+        mean = float(cur.get("mean") or 0.0)
+        var = float(cur.get("var") or 0.04)
+        if n < 1:
+            mean, var = float(val), 0.04
+        else:
+            delta = float(val) - mean
+            mean = mean + a * delta
+            var = (1 - a) * var + a * delta * delta
+        if n >= NORM_MIN:
+            sd = max(1e-3, math.sqrt(max(var, 1e-6)))
+            out[key] = round((float(val) - mean) / sd, 2)
+        else:
+            out[key] = 0.0
+        rows[key] = {"n": n + 1, "mean": round(mean, 5), "var": round(var, 5)}
+    try:
+        os.makedirs(os.path.dirname(_norm_path(store, session_id)), exist_ok=True)
+        with open(_norm_path(store, session_id), "w", encoding="utf-8") as fh:
+            json.dump({"rows": rows, "alpha": a}, fh)
+    except Exception:
+        pass
+    return out
+
+
+KL_SIGMA = {"valence": 0.25, "arousal": 0.15, "dominance": 0.30,
+            "stress": 0.20, "social_drive": 0.25}
+
+
+def state_kl(before, after):
+    """How far one exchange moved the state, in nats (diagonal Gaussian KL).
+
+    A number, not a verdict: it says "this landed" -- not "this was good".
+    """
+    import math
+    total = 0.0
+    for key, sigma in KL_SIGMA.items():
+        a = (before or {}).get(key)
+        c = (after or {}).get(key)
+        if not isinstance(a, (int, float)) or not isinstance(c, (int, float)):
+            continue
+        total += ((float(c) - float(a)) ** 2) / (2.0 * sigma * sigma)
+    return round(total, 5)
 TICK_SECONDS = 60.0        # one body tick per simulated minute
 MAX_CATCHUP_TICKS = 480    # 8 hours: beyond that the gap is a "night", not a gap
 

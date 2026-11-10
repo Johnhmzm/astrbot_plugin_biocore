@@ -34,6 +34,9 @@ BOUNDS = {
     "noise_amp": (0.05, 0.60),
 }
 STEP = 0.05          # 5% move per proposal
+# An Adam-style update was implemented and measured: it changed the endpoint by
+# 0.001 of a 0.55 target -- inside the noise. With a handful of iterations and a
+# correlation as the "gradient", momentum has nothing to average. Left out.
 MIN_VAL_GAIN = 0.004  # a proposal must beat the incumbent by this on validation
                       # (kept below one step's effect, or nothing ever passes)
 MIN_ROWS = 20        # below this there is nothing to learn from
@@ -77,7 +80,8 @@ def values(store) -> Dict[str, float]:
     return out
 
 
-def log_turn(store, theta: Dict[str, float], grade: Optional[float], state=None) -> bool:
+def log_turn(store, theta: Dict[str, float], grade: Optional[float], state=None,
+             kl: Optional[float] = None) -> bool:
     """One observation: what theta was in force, and how the exchange scored."""
     if grade is None:
         return False
@@ -86,6 +90,7 @@ def log_turn(store, theta: Dict[str, float], grade: Optional[float], state=None)
                "theta": {k: round(float(v), 4) for k, v in (theta or {}).items()
                          if k in BOUNDS},
                "grade": round(float(grade), 4),
+               "kl": (round(float(kl), 5) if isinstance(kl, (int, float)) else None),
                "state": {k: round(float(state.get(k) or 0.0), 4)
                          for k in ("valence", "stress", "action")
                          if isinstance((state or {}).get(k), (int, float))}}
