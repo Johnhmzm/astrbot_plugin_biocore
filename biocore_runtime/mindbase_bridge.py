@@ -168,8 +168,46 @@ class DialogueBody:
         except Exception:
             pass
 
+    def apply_outputs(self, outs, scale: float = 1.0) -> int:
+        """把 8 个评价输出分别落到身体字段上（而不是只推一个效价）。
+
+        之前只有一个 push_gain：所有维度压成一个推力，所以「被骂伤到的是信任
+        还是自尊」在身体里根本不存在。这里让每个输出走自己的通道。
+        """
+        applied = 0
+        if not isinstance(outs, dict):
+            return 0
+        aff = self.mind.affect
+        try:
+            for key, field in (("v", "v"), ("a", "a"), ("stress", "stress"),
+                               ("d", "dominance")):
+                if key in outs:
+                    cur = float(getattr(aff, field, 0.0))
+                    setattr(aff, field, max(-1.0, min(1.0, cur + float(outs[key]) * scale)))
+                    applied += 1
+        except Exception:
+            pass
+        try:
+            drives = self.mind.drives.values
+            for key, field in (("social", "social"), ("trust", "safety")):
+                if key in outs:
+                    cur = float(drives.get(field, 0.5))
+                    drives[field] = max(0.0, min(1.0, cur + float(outs[key]) * scale))
+                    applied += 1
+        except Exception:
+            pass
+        try:
+            if "self_esteem" in outs:
+                sm = self.mind.self_model
+                cur = float(getattr(sm, "agency", 0.5))
+                sm.agency = max(0.0, min(1.0, cur + float(outs["self_esteem"]) * scale))
+                applied += 1
+        except Exception:
+            pass
+        return applied
+
     def feed(self, text: str, dims: Optional[Dict[str, float]] = None,
-             ticks: int = 1) -> Dict[str, float]:
+             ticks: int = 1, outs=None) -> Dict[str, float]:
         """Advance the body by one user message."""
         from mindbase.types import Event
         d = dims or {}
@@ -238,6 +276,9 @@ class DialogueBody:
                 "mood": round(float(A.get("mood") or 0.0), 4),
                 "agency": round(float(self_.get("agency") or 0.0), 4),
                 "social_drive": round(float(dr.get("social") or 0.0), 4),
+                "drive_safety": round(float(dr.get("safety") or 0.5), 4),
+                "drive_energy": round(float(dr.get("energy") or 0.5), 4),
+                "drive_curiosity": round(float(dr.get("curiosity") or 0.5), 4),
                 "action": str(ai.get("action") or ""),
                 "anchor_valence": round(float(self.anchor["valence"]), 4),
                 "anchor_stress": round(float(self.anchor["stress"]), 4),
@@ -377,6 +418,16 @@ def body_for(store, session_id, seed: int = 1) -> "DialogueBody":
             body.anchor["stress"] = float(prev.get("anchor_stress") or 0.0)
             body.commit["open"] = float(prev.get("commit_open") or 0.0)
             body.commit["kept"] = float(prev.get("commit_kept") or 0.0)
+            try:
+                dv = body.mind.drives.values
+                for key, field in (("drive_safety", "safety"),
+                                   ("drive_energy", "energy"),
+                                   ("drive_curiosity", "curiosity"),
+                                   ("social_drive", "social")):
+                    if key in prev:
+                        dv[field] = max(0.0, min(1.0, float(prev[key])))
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -424,10 +475,10 @@ def load_digest(store, session_id) -> str:
 
 
 def turn(store, session_id, text: str, dims: Optional[Dict[str, float]] = None,
-         seed: int = 1, with_memory: bool = True) -> Dict[str, float]:
+         seed: int = 1, with_memory: bool = True, outs=None) -> Dict[str, float]:
     """One user turn: resume, feed, persist, return the new state."""
     body = body_for(store, session_id, seed=seed)
-    state = body.feed(text, dims)
+    state = body.feed(text, dims, outs=outs)
     if with_memory:
         digest = load_digest(store, session_id)
         if digest:

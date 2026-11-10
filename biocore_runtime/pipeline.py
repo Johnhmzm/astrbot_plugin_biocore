@@ -4383,7 +4383,15 @@ def body_turn(store, session_id, text, payload=None):
         if digest:
             probe = text + "\n（她刚想起：" + digest[:200] + "）"
         dims = _mb.appraise_text(probe, cfg.get("summarizer") or {})
-        return _mb.turn(store, session_id, text, dims, with_memory=False)
+        # 7x7 评价矩阵在这里第一次真正上电：dims 进去，八个输出各自落到身体
+        outs = None
+        try:
+            from biocore_model import appraisal as _ap
+            if dims:
+                outs = _ap.appraise(dims, confidence=0.7)
+        except Exception:
+            outs = None
+        return _mb.turn(store, session_id, text, dims, with_memory=False, outs=outs)
     except Exception as exc:
         logger.warning("[body] turn failed: %s: %s", type(exc).__name__, str(exc)[:120])
         return {}
