@@ -7947,6 +7947,16 @@ def dispatch(action, payload=None):
                 }
             elif capture_enabled:
                 captured_user["reason"] = "no_store"
+            # 兜底：有些路径没走到上面那段（宿主 payload 与直接调用不同），
+            # 缺 norm 就补算一次，否则状态行会少掉 z 值那一段
+            try:
+                if "norm" not in session_state and isinstance(session_state.get("body"), dict):
+                    from biocore_runtime import mindbase_bridge as _mbn
+                    _zb = _mbn.norm_update(store, session_id, session_state["body"])
+                    if _zb:
+                        session_state["norm"] = _zb
+            except Exception:
+                pass
             block = prompt_block(dict(
                 data, phase="turn", session_id=session_id,
                 user_text=user_text,
