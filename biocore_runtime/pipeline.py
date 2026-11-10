@@ -4391,7 +4391,14 @@ def body_turn(store, session_id, text, payload=None):
                 outs = _ap.appraise(dims, confidence=0.7)
         except Exception:
             outs = None
-        return _mb.turn(store, session_id, text, dims, with_memory=False, outs=outs)
+        state = _mb.turn(store, session_id, text, dims, with_memory=False, outs=outs)
+        try:
+            # 拟合评价矩阵要的数据：dims、outs、状态前后
+            _mb.log_learn(store, session_id, dims, outs,
+                          _mb.load_prev(store, session_id), state)
+        except Exception:
+            pass
+        return state
     except Exception as exc:
         logger.warning("[body] turn failed: %s: %s", type(exc).__name__, str(exc)[:120])
         return {}

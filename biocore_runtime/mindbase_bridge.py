@@ -815,6 +815,45 @@ def restore_mb(body, store, session_id):
 
 CLOCK_FILE = "mindbase_clock.json"
 PREV_FILE = "mindbase_prev.json"
+LEARN_FILE = "learn_log.jsonl"
+LEARN_CAP = 5000
+
+
+def log_learn(store, session_id, dims, outs, before, after):
+    """一行一条：评价值 → 八个输出 → 状态怎么变。
+
+    这是拟合评价矩阵唯一需要的数据，没有它 49 个权重只能继续手设。
+    """
+    import json
+    import os
+    if not isinstance(dims, dict) or not dims:
+        return False
+    row = {
+        "dims": {k: round(float(dims.get(k) or 0.0), 4) for k in
+                 ("goal", "blame", "control", "certainty", "novelty", "involve", "hit")},
+        "outs": {k: round(float(v), 4) for k, v in (outs or {}).items()
+                 if isinstance(v, (int, float))},
+        "before": {k: round(float((before or {}).get(k) or 0.0), 4)
+                   for k in ("valence", "arousal", "stress", "social_drive")},
+        "after": {k: round(float((after or {}).get(k) or 0.0), 4)
+                  for k in ("valence", "arousal", "stress", "social_drive")},
+    }
+    try:
+        path = _body_path(store, session_id).replace(BODY_STATE_FILE, LEARN_FILE)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = []
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+            except Exception:
+                lines = []
+        lines.append(json.dumps(row, ensure_ascii=False))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines[-LEARN_CAP:]) + "\n")
+        return True
+    except Exception:
+        return False
 
 
 def save_prev(store, session_id, state):
