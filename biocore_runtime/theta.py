@@ -92,7 +92,8 @@ def values(store) -> Dict[str, float]:
 
 
 def log_turn(store, theta: Dict[str, float], grade: Optional[float], state=None,
-             kl: Optional[float] = None) -> bool:
+             kl: Optional[float] = None, expr: Optional[Dict[str, float]] = None,
+             rel: Optional[Dict[str, float]] = None) -> bool:
     """One observation: what theta was in force, and how the exchange scored."""
     if grade is None:
         return False
@@ -102,6 +103,10 @@ def log_turn(store, theta: Dict[str, float], grade: Optional[float], state=None,
                          if k in BOUNDS},
                "grade": round(float(grade), 4),
                "kl": (round(float(kl), 5) if isinstance(kl, (int, float)) else None),
+               "expr": ({k: round(float(v), 3) for k, v in (expr or {}).items()
+                         if isinstance(v, (int, float))} if expr else {}),
+               "rel": ({k: round(float(v), 4) for k, v in (rel or {}).items()
+                        if isinstance(v, (int, float))} if rel else {}),
                "state": {k: round(float(state.get(k) or 0.0), 4)
                          for k in ("valence", "stress", "action")
                          if isinstance((state or {}).get(k), (int, float))}}

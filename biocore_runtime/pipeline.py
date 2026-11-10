@@ -8008,16 +8008,30 @@ def dispatch(action, payload=None):
                             _kl = _mbj.state_kl(_mbj.load_prev(store, session_id),
                                                 _now_state)
                             data["state_kl"] = _kl
+                            # 表达层要用的字段：长度、句数、问句数；关系层：信任与亲密
+                            _reply = str(raw_assistant or "")
+                            _expr = {"chars": float(len(_reply)),
+                                     "sent": float(_reply.count("。") + _reply.count("！")
+                                                   + _reply.count("？") + _reply.count("!") + _reply.count("?")),
+                                     "quest": float(_reply.count("？") + _reply.count("?"))}
+                            logger.info("[learn] expr chars=%.0f sent=%.0f", _expr["chars"], _expr["sent"])
+                            _rel = {}
+                            _rs = data.get("relationship")
+                            if isinstance(_rs, dict):
+                                for _k in ("trust", "closeness"):
+                                    if isinstance(_rs.get(_k), (int, float)):
+                                        _rel[_k] = float(_rs[_k])
                             _th.log_turn(store, _cur, _grade.get("reward"),
-                                         _now_state, kl=_kl)
+                                         _now_state, kl=_kl, expr=_expr, rel=_rel)
                             if len(_th.read_log(store)) % 20 == 0:
                                 _moved = _th.iterate(store)
                                 if _moved.get("accepted"):
                                     _mbj.refresh_theta(store)
                                     data["theta"] = {"version": _moved.get("version"),
                                                      "knob": _moved.get("knob")}
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.warning("[learn] log failed: %s: %s",
+                                           type(_exc).__name__, str(_exc)[:120])
                         _mbj.micro_evolve(store, session_id,
                                           body_state(store, session_id))
                         data["exchange_grade"] = _grade
