@@ -8017,6 +8017,12 @@ def dispatch(action, payload=None):
                             _now_state = body_state(store, session_id)
                             _kl = _mbj.state_kl(_mbj.load_prev(store, session_id),
                                                 _now_state)
+                            # 一轮里可能有多条助手消息（宿主会多次 turn_end）：
+                            # 每次算完把 prev 推到当前位置，否则会重复同一个值或归零
+                            try:
+                                _mbj.save_prev(store, session_id, _now_state)
+                            except Exception:
+                                pass
                             data["state_kl"] = _kl
                             # 表达层要用的字段：长度、句数、问句数；关系层：信任与亲密
                             _reply = str(raw_assistant or "")
