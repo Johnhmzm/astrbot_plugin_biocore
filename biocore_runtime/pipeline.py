@@ -8017,8 +8017,13 @@ def dispatch(action, payload=None):
                             logger.info("[learn] expr chars=%.0f sent=%.0f", _expr["chars"], _expr["sent"])
                             _rel = {}
                             _rs = data.get("relationship")
+                            if not isinstance(_rs, dict) or not _rs:
+                                try:
+                                    _rs = relationship_read(store).get("relationship") or {}
+                                except Exception:
+                                    _rs = {}
                             if isinstance(_rs, dict):
-                                for _k in ("trust", "closeness"):
+                                for _k in ("trust", "closeness", "stage"):
                                     if isinstance(_rs.get(_k), (int, float)):
                                         _rel[_k] = float(_rs[_k])
                             _th.log_turn(store, _cur, _grade.get("reward"),

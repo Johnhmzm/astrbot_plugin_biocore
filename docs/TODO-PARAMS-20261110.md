@@ -9,7 +9,7 @@
 | 表达层（长度/语气/阈值） | 10 | 6–8 | **日志已通，工具就绪** | turn_log 记 chars/sent/quest；tools/fit_expression.py 可测「长好还是短好」 |
 | 记忆层（情绪一致性等） | 6 | 2 | 部分 | 情绪一致性权重可估；切分阈值无标签 |
 | 学习层超参（α/ε/奖励权重） | 4 | 1–2 | 不做 | 噪声比信号大 |
-| 关系层（trust/closeness 更新率） | 2 | 2 | **受阻** | 日志字段已留，但宿主 payload 里没有 relationship，需宿主补传 |
+| 关系层（trust/closeness 更新率） | 2 | 2 | **已通** | 核心 relationship_read 直接读；tools/fit_relationship.py 自检精确还原 0.0500 |
 | 人设编译映射 | — | 0 | 不做 | 一次性编译，非逐轮 |
 
 ## 当前进度
@@ -18,7 +18,8 @@
 已试  状态动力学 4 个（push/relax/replay/noise）   可估 2 个，其余不可辨识
 完成  评价矩阵 WEIGHTS                          8 个输出已上电，learn_log 已记录
 完成  表达层日志与拟合工具                       待真实数据
-当前  关系层                                    受阻：宿主需传 relationship
+完成  关系层日志与拟合工具                       待真实数据
+余项  CAPS                                       数据不足，长期观察
 ```
 
 ## 为什么先做评价矩阵
