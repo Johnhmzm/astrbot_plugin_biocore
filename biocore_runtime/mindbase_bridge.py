@@ -143,7 +143,7 @@ class DialogueBody:
                 nv = float(self.noise.network.last_noise)
                 for name in ("energy", "social", "safety", "curiosity"):
                     cur = float(self.mind.drives.values.get(name, 0.5))
-                    val = cur + BODY_NOISE_AMP * nv * 0.5
+                    val = cur + eff("noise_amp", BODY_NOISE_AMP) * nv * 0.5
                     self.mind.drives.values[name] = max(0.0, min(1.0, val))
             except Exception:
                 pass
@@ -189,7 +189,8 @@ class DialogueBody:
                 self.mind.inject_affect(float(d.get("valence") or 0.0),
                                         float(d.get("arousal") or 0.5),
                                         float(d.get("dominance") or 0.0),
-                                        intensity=PUSH_GAIN, blend=PUSH_GAIN)
+                                        intensity=eff("push_gain", PUSH_GAIN),
+                                        blend=eff("push_gain", PUSH_GAIN))
             except Exception:
                 pass
         else:
@@ -284,6 +285,31 @@ BODY_NOISE_AMP = float(_os.environ.get("BIOCORE_BODY_NOISE_AMP") or 0.30)
 PUSH_GAIN = float(_os.environ.get("BIOCORE_BODY_PUSH") or 0.35)
 ANCHOR_GAIN = float(_os.environ.get("BIOCORE_ANCHOR_GAIN") or 0.04)
 ANCHOR_LEARN = float(_os.environ.get("BIOCORE_ANCHOR_LEARN") or 0.25)
+# how much one idle recollection moves the baseline (small: only volume counts)
+REPLAY_LEARN = float(_os.environ.get("BIOCORE_REPLAY_LEARN") or 0.06)
+ANCHOR_RELAX = float(_os.environ.get("BIOCORE_ANCHOR_RELAX") or 0.02)
+
+# Values accepted by the parameter loop override the constants above. The loop
+# only accepts a change that also improves held-out turns, so this is the seam
+# where "learned" reaches the body.
+_THETA_OVERRIDE = {}
+
+
+def refresh_theta(store):
+    try:
+        from biocore_runtime import theta as _th
+        _THETA_OVERRIDE.clear()
+        _THETA_OVERRIDE.update(_th.values(store))
+    except Exception:
+        pass
+    return dict(_THETA_OVERRIDE)
+
+
+def eff(key, default):
+    try:
+        return float(_THETA_OVERRIDE.get(key, default))
+    except Exception:
+        return float(default)
 
 
 def _body_path(store, session_id):
@@ -450,13 +476,16 @@ def mirror_recall(store, session_id, lines, valence: float = 0.0):
     substrate memory is not persisted (no restore path), so the mirrored rows
     are kept here and replayed into each fresh body.
     """
+    import time as _t
+    _t_now = _t.time()
     rows = load_mirror(store, session_id)
     seen = {str(r.get("text") or "") for r in rows}
     for line in lines or []:
         text = str(line or "").lstrip("- ").strip()
         if not text or text in seen:
             continue
-        rows.append({"text": text[:400], "valence": float(valence or 0.0)})
+        rows.append({"text": text[:400], "valence": float(valence or 0.0),
+                     "ts": float(_t_now)})
         seen.add(text)
     save_mirror(store, session_id, rows)
     return len(rows)
@@ -784,3 +813,111 @@ def advance(store, session_id, now=None, seed=1):
     save_state(store, session_id, state)
     _clock_save(store, session_id, now)
     return {"ticks": ticks, "seconds": round(elapsed, 1), "state": state}
+
+
+IDLE_FILE = "mindbase_idle.json"
+
+
+def _idle_path(store, session_id):
+    return _body_path(store, session_id).replace(BODY_STATE_FILE, IDLE_FILE)
+
+
+def load_idle(store, session_id):
+    import json
+    try:
+        with open(_idle_path(store, session_id), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_idle(store, session_id, data):
+    import json
+    import os
+    path = _idle_path(store, session_id)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
+
+
+def idle_activity(store, session_id, now=None, seed=1, rng=None):
+    """What she does while nobody is talking.
+
+    Two kinds of inner events, both cheap and both recorded, because "alive"
+    without evidence is only state drift:
+
+      replay  pick a mirrored memory and run it through the body again
+      muse    a self-generated note: what she would say, not said
+
+    Volume is the point: a few events per idle hour accumulate into patterns
+    that a single turn never produces.
+    """
+    import random as _random
+    import time as _t
+    if _IMPORT_ERROR:
+        return {}
+    rng = rng or _random.Random(int(seed) ^ int((now or _t.time()) // 60))
+    hist = load_idle(store, session_id)
+    rows = load_mirror(store, session_id)
+    body = body_for(store, session_id, seed=seed)
+
+    # every idle run lets the baseline drift back a little: without this, a
+    # stretch of one-sided memories saturates the anchor (-0.94 after 48 runs)
+    body.anchor["valence"] = round(
+        body.anchor["valence"] * (1.0 - ANCHOR_RELAX), 4)
+    body.anchor["stress"] = round(
+        body.anchor["stress"] * (1.0 - ANCHOR_RELAX), 4)
+    events = []
+    if rows:
+        def _weight(r):
+            # recency: recent memories replay first (reverse replay);
+            # salience: stronger affect replays more often
+            age_h = max(0.0, (float(now or 0) - float(r.get("ts") or 0.0)) / 3600.0)
+            rec = 2.718 ** (-age_h / 24.0)
+            sal = 0.5 + abs(float(r.get("valence") or 0.0))
+            return max(1e-6, rec * sal)
+        for _ in range(min(3, max(1, len(rows) // 4))):
+            total = sum(_weight(r) for r in rows)
+            pick = rng.random() * total
+            acc = 0.0
+            row = rows[0]
+            for cand in rows:
+                acc += _weight(cand)
+                if acc >= pick:
+                    row = cand
+                    break
+            text = str(row.get("text") or "")
+            val = float(row.get("valence") or 0.0)
+            # replaying a memory pushes the body the way it did when it happened
+            # half strength: a recollection is not a fresh blow, otherwise a
+            # run of negative memories pins valence at its floor (-0.94)
+            body.feed(text, {"valence": val * 0.5, "arousal": 0.45}, ticks=0)
+            # a replayed memory keeps colouring her afterwards: volume is what
+            # turns a single recollection into a baseline shift
+            body.anchor["valence"] = round(
+                body.anchor["valence"] * (1 - eff("replay_learn", REPLAY_LEARN))
+                + val * eff("replay_learn", REPLAY_LEARN), 4)
+            events.append({"kind": "replay", "text": text[:40], "valence": val})
+
+    state = body.state()
+    v = float(state.get("valence") or 0.0)
+    stress = float(state.get("stress") or 0.0)
+    if rng.random() < 0.5:
+        note = "不想说话" if (stress > 0.25 or v < -0.2) else "想说点什么"
+        events.append({"kind": "muse", "text": note,
+                       "valence": round(v, 3), "stress": round(stress, 3)})
+
+    save_state(store, session_id, state)
+    hist["replays"] = int(hist.get("replays") or 0) + sum(1 for e in events if e["kind"] == "replay")
+    hist["muses"] = int(hist.get("muses") or 0) + sum(1 for e in events if e["kind"] == "muse")
+    hist["runs"] = int(hist.get("runs") or 0) + 1
+    hist["last"] = {"ts": round(float(now or _t.time()), 1),
+                    "events": events[-6:], "state": state}
+    save_idle(store, session_id, hist)
+    return {"runs": hist["runs"], "replays": hist["replays"],
+            "muses": hist["muses"], "events": events, "state": state}

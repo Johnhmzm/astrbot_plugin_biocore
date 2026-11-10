@@ -7736,8 +7736,16 @@ def dispatch(action, payload=None):
                     # time passes even when nobody talks
                     from biocore_runtime import mindbase_bridge as _mbc
                     _now = data.get("now")
-                    _mbc.advance(store, session_id,
-                                 float(_now) if isinstance(_now, (int, float)) else time.time())
+                    _nowv = float(_now) if isinstance(_now, (int, float)) else time.time()
+                    _gap = _mbc.advance(store, session_id, _nowv)
+                    # while she was alone she did things: replay + muse, batched
+                    # by elapsed time so volume accumulates without burning calls
+                    try:
+                        _idle_runs = max(0, min(12, int((_gap or {}).get("ticks", 0)) // 30))
+                        for _ in range(_idle_runs):
+                            _mbc.idle_activity(store, session_id, now=_nowv)
+                    except Exception:
+                        pass
                     body_turn(store, session_id, user_text, data)
                     _body = body_state(store, session_id)
                     data["body_state"] = _body
@@ -7924,6 +7932,22 @@ def dispatch(action, payload=None):
                         _mbj.teach(store, session_id,
                                    str(data.get("user_text") or "")[:120],
                                    _grade.get("reward"))
+                        # record (theta, grade) and every 20 observations try a
+                        # parameter step, accepted only on held-out turns
+                        try:
+                            from biocore_runtime import theta as _th
+                            _cur = _th.values(store)
+                            _mbj.refresh_theta(store)
+                            _th.log_turn(store, _cur, _grade.get("reward"),
+                                         body_state(store, session_id))
+                            if len(_th.read_log(store)) % 20 == 0:
+                                _moved = _th.iterate(store)
+                                if _moved.get("accepted"):
+                                    _mbj.refresh_theta(store)
+                                    data["theta"] = {"version": _moved.get("version"),
+                                                     "knob": _moved.get("knob")}
+                        except Exception:
+                            pass
                         _mbj.micro_evolve(store, session_id,
                                           body_state(store, session_id))
                         data["exchange_grade"] = _grade
@@ -8539,7 +8563,21 @@ def dispatch(action, payload=None):
                         _mb.save_digest(store, session_id, _lines)
                         # and into the substrate's own memory, so the fly brain
                         # holds the same episodes the prompt does
-                        _mb.mirror_recall(store, session_id, _lines)
+                        # carry the mood these lines were stored in, so idle
+                        # replays push the body the way the moment did
+                        _ids = set(str(x) for x in ((result or {}).get("ids") or []))
+                        _vals = []
+                        try:
+                            for _e in (load_memory(store, session_id).get("entries") or []):
+                                if str(_e.get("id") or "") not in _ids:
+                                    continue
+                                _a = _e.get("affect")
+                                if isinstance(_a, dict):
+                                    _vals.append(_num(_a.get("v", _a.get("valence")), 0.0))
+                        except Exception:
+                            _vals = []
+                        _avg_v = (sum(_vals) / len(_vals)) if _vals else 0.0
+                        _mb.mirror_recall(store, session_id, _lines, valence=_avg_v)
             except Exception:
                 pass
             return {"ok": True, **result}
