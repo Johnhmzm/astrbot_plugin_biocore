@@ -148,6 +148,11 @@ SENTENCE_RERANK_POOL = int(os.environ.get("BIOCORE_SENTENCE_RERANK_POOL") or 60)
 
 EVENT_SCORE_W_MAX = 0.9
 EVENT_SCORE_W_REST = 0.1
+# 事件分口径：mean = 0.9×最佳句 + 0.1×其余句均值（旧）；
+# countrank = 0.7×最佳句 + 0.3×句数名次（句子排名 + 句数排名）
+EVENT_SCORE_MODE = str(os.environ.get("BIOCORE_EVENT_SCORE") or "mean").strip().lower()
+EVENT_SCORE_W_COUNT = float(os.environ.get("BIOCORE_EVENT_COUNT_W") or 0.3)
+EVENT_RELEVANT_COS = float(os.environ.get("BIOCORE_EVENT_RELEVANT") or 0.4)
 EVENT_SCORE_TOL = 0.03
 # best-line gaps below this count as a tie; the overall level decides
 # one lucky sentence must not outrank a consistently relevant event,
@@ -1967,6 +1972,35 @@ def _rerank_entries(query, entries, rerank_config):
     return ordered or None
 
 
+def _mark_access(store, session_id, ids, now=None):
+    """记一次「被取用」：淘汰层要的 last_used 与 hits 靠它。
+
+    没有这两样，淘汰分只能靠重要度一项，76 6 条全会被判成"该归档"。
+    """
+    if not ids:
+        return 0
+    stamp = float(now if now is not None else time.time())
+    want = {str(i) for i in ids if i}
+    try:
+        doc = load_memory(store, session_id)
+        changed = []
+        for row in doc.get("entries") or []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("id") or "") in want:
+                row["hits"] = int(row.get("hits") or 0) + 1
+                row["last_used"] = round(stamp, 3)
+                changed.append(row)
+        if changed:
+            _api = _sql_store()
+            _api.write_doc(_store_root(store), session_id, doc,
+                           changed=changed, deleted=[])
+        return len(changed)
+    except Exception as exc:
+        logger.warning("[access] 记录失败：%s", str(exc)[:100])
+        return 0
+
+
 def _query_entries(store, session_id, query, top_k, rerank_config,
                    now=None, include_superseded=False):
     """engine.recall(query) over the injected candidates; None means fallback.
@@ -3721,9 +3755,28 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         bucket["max_cos"] = round(best, 6)
         bucket["rest_mean"] = round(rest_mean, 6)
         bucket["sentence_count"] = len(values)
+        bucket["relevant"] = sum(1 for value in values if value >= EVENT_RELEVANT_COS)
         bucket["score"] = round(EVENT_SCORE_W_MAX * best
                                 + EVENT_SCORE_W_REST * rest_mean, 6)
         bucket["in_top40"] = sum(1 for value in values if value in top40)
+    if EVENT_SCORE_MODE == "countrank":
+        # 句子排名 + 句数排名：句数按名次归一，避免长事件靠堆句子取胜
+        _by_count = sorted(order, key=lambda k: -grouped[k]["relevant"])
+        _rank_of = {}
+        _last_count, _rank = None, 0
+        for _i, _k in enumerate(_by_count, 1):
+            _c = grouped[_k]["relevant"]
+            if _c != _last_count:
+                _rank, _last_count = _i, _c
+            _rank_of[_k] = _rank
+        _n = max(1, len(order))
+        for _k in order:
+            _b = grouped[_k]
+            _norm = 1.0 - (_rank_of[_k] - 1) / float(_n - 1) if _n > 1 else 1.0
+            _b["count_rank"] = _rank_of[_k]
+            _b["count_norm"] = round(_norm, 6)
+            _b["score"] = round((1.0 - EVENT_SCORE_W_COUNT) * _b["max_cos"]
+                                + EVENT_SCORE_W_COUNT * _norm, 6)
     ranked = sorted(order, key=lambda key: (-grouped[key]["score"],
                                            -grouped[key]["in_top40"],
                                            grouped[key]["start"],
@@ -4872,6 +4925,11 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
                 _block = dict(_block, text=_merged, chars=len(_merged),
                               state_lines=len(_state_lines))
         if _block and _block.get("text"):
+            try:
+                from biocore_memory import timefmt as _tfa
+                _mark_access(store, session_id, _block.get("ids") or [], now=time.time())
+            except Exception:
+                pass
             # 时间链：同一属性说了好几次时，标出哪次被撤回
             try:
                 _summ = _inject_summarizer(store, payload)
@@ -5539,6 +5597,16 @@ def _rerank_config(store, payload=None):
         cfg = {}
     block = cfg.get("rerank") if isinstance(cfg.get("rerank"), dict) else cfg
     out = dict(block) if isinstance(block, dict) else {}
+    # 配置里写的是 enabled/base_url/model/top_n，代码读的是 rerank_* 前缀。
+    # 不做这个别名映射，重排会被静默判成 disabled（线上一直是这个状态）。
+    for _old, _new in (("enabled", "rerank_enabled"),
+                       ("base_url", "rerank_base_url"),
+                       ("model", "rerank_model"),
+                       ("api_key", "rerank_api_key"),
+                       ("top_n", "rerank_top_n"),
+                       ("timeout", "rerank_timeout")):
+        if _old in out and _new not in out:
+            out[_new] = out[_old]
     for key, env_key in RERANK_ENV.items():
         value = str(os.environ.get(env_key) or "").strip()
         if value:
@@ -5945,14 +6013,26 @@ def tool_call(name, args, store, session_id=None):
                 # position of the row it hit (the bench maps turns by position)
                 return {"ok": True, "entry": _compact(existing), "deduped": True,
                         "position": _entry_position(doc.get("entries"))}
-        # 轮次是会话内的坐标：没有它，条目和事件、和按区间取回都接不上
+        # 轮次是会话内的坐标：没有它，条目和事件、和按区间取回都接不上。
+        # 同一时间戳写入的条目共用一轮（一轮 = 一次对话，可能含用户与助手两条），
+        # 否则"同一轮里的两种说法"会被当成先后两个版本，冲突检测就失效了。
         try:
             _turns = [int(x.get("turn") or 0) for x in entries if isinstance(x, dict)]
             _next_turn = (max(_turns) if _turns else 0) + 1
         except Exception:
             _next_turn = len(entries) + 1
+        _same_turn = None
+        try:
+            _prev = entries[-1] if entries else None
+            if isinstance(_prev, dict):
+                _prev_ts = float(_prev.get("ts") or 0.0)
+                _prev_turn = int(_prev.get("turn") or 0)
+                if _prev_turn and abs(_prev_ts - float(now)) < 0.001:
+                    _same_turn = _prev_turn
+        except Exception:
+            _same_turn = None
         entry = _new_entry(text, role, args.get("tags"), now)
-        entry["turn"] = int(args.get("turn") or 0) or _next_turn
+        entry["turn"] = int(args.get("turn") or 0) or _same_turn or _next_turn
         # 「取」的时间通道要的输入：有效区间 + 时间桶（由 ts 推，不靠词表）
         try:
             entry["valid_from"] = round(float(now), 3)
