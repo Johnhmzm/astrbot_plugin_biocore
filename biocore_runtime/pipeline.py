@@ -4592,6 +4592,39 @@ def _bm25_rrf_fuse(query, scored, k=RRF_K):
     return [(float(scored[i][0]), scored[i][1]) for i, _v in fused]
 
 
+CHAIN_CACHE = {}
+CHAIN_CLUSTERS = 3      # 每次最多渲染几条链
+CHAIN_PAIRS = 4         # 每条链最多问几对（控制模型调用）
+CHAINS_ON = str(os.environ.get("BIOCORE_CHAINS") or "1").strip().lower() in ("1", "true", "on", "yes")
+
+
+def _chains_lines(rows, summarizer=None):
+    """把「同一属性说了好几次」的候选渲染成时间链，标出哪次被撤回。
+
+    以前这些说法只是并列摆着，模型不知道后一句已经推翻了前一句。
+    """
+    if not CHAINS_ON or not summarizer:
+        return []
+    try:
+        from biocore_memory.event import chains as _ch
+    except Exception:
+        return []
+    try:
+        clusters = _ch.cluster_candidates(rows or [])
+    except Exception:
+        return []
+    chains = [c for c in clusters if len(c) >= 2][:CHAIN_CLUSTERS]
+    out = []
+    for cluster in chains:
+        trimmed = cluster[-CHAIN_PAIRS:] if len(cluster) > CHAIN_PAIRS else cluster
+        try:
+            flags = _ch.mark_retractions(trimmed, llm=summarizer, cache=CHAIN_CACHE)
+            out.extend(_ch.render_cluster(trimmed, flags=flags))
+        except Exception as exc:
+            logger.warning("[chains] 渲染失败：%s", str(exc)[:100])
+    return out
+
+
 def _body_values_healthy(body):
     try:
         for key, lo, hi in (("valence", -1.0, 1.0), ("arousal", 0.0, 1.0),
@@ -4810,6 +4843,20 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
                 _block = dict(_block, text=_merged, chars=len(_merged),
                               state_lines=len(_state_lines))
         if _block and _block.get("text"):
+            # 时间链：同一属性说了好几次时，标出哪次被撤回
+            try:
+                _summ = _inject_summarizer(store, payload)
+                _rows_v = [row for row in _visible(load_memory(store, session_id).get("entries"))
+                           if isinstance(row, dict) and row.get("vector")]
+                _chain_lines = _chains_lines(_rows_v, _summ)
+                if _chain_lines:
+                    _extra = chr(10) + chr(10).join(_chain_lines)
+                    if len(_block.get("text") or "") + len(_extra) <= budget:
+                        _bt = _block.get("text") + _extra
+                        _block = dict(_block, text=_bt, chars=len(_bt))
+                        _block["chains"] = len(_chain_lines)
+            except Exception as _ce:
+                logger.warning("[chains] 跳过：%s", str(_ce)[:100])
             # 收口点：事件层/句子层都可能产出，边界在这里统一套
             if _fence_ok:
                 _ft = _fence_untrusted(_block.get("text"))
