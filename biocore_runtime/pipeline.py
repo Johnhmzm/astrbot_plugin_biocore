@@ -4814,7 +4814,11 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
                         except Exception:
                             continue
                         if _turn and _stamp > 0 and _turn not in _turn_dates:
-                            _turn_dates[_turn] = _day_str(_stamp)
+                            try:
+                                from biocore_memory import timefmt as _tf1
+                                _turn_dates[_turn] = _tf1.at(_stamp) or _day_str(_stamp)
+                            except Exception:
+                                _turn_dates[_turn] = _day_str(_stamp)
                 # scope the claims to the events the hit sentences belong to: a global
                 # top-8 surfaced unrelated lines (口头禅 etc.) and pushed the relevant
                 # ones out of the block

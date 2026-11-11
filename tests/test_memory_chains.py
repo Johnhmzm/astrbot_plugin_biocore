@@ -25,9 +25,23 @@ def test_render_marks_current_value_at_tail():
     clusters = C.cluster_candidates(_rows(), threshold=0.75)
     chain = [c for c in clusters if len(c) == 2][0]
     lines = C.render_cluster(chain)
-    assert lines[0].startswith('【时间链｜第165轮/第183轮】')
+    # 给模型看的是时间，不是轮号
+    assert lines[0].startswith('【时间链｜')
+    assert '轮' not in lines[0]
+    assert '1970-01-01' in lines[0]
     assert '当前值' in lines[-1] and '八月十八' in lines[-1]
     assert all('当前值' not in line for line in lines[1:-1])
+    assert '第165轮' not in '\n'.join(lines)
+
+
+def test_without_timestamps_it_falls_back_to_turns():
+    rows = [
+        {'turn': 5, 'ts': 0.0, 'text': '甲说', 'vector': [1.0, 0.0]},
+        {'turn': 8, 'ts': 0.0, 'text': '乙说', 'vector': [0.99, 0.01]},
+    ]
+    chain = C.cluster_candidates(rows, threshold=0.75)[0]
+    lines = C.render_cluster(chain)
+    assert '第5轮' in '\n'.join(lines), '没有时间时才退回轮号'
 
 
 def test_retraction_marks_old_value_and_is_cached():

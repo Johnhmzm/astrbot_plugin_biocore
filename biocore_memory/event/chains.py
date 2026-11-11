@@ -59,12 +59,15 @@ def chain_key(cluster):
 
 
 def _pair_prompt(earlier, later):
+    from biocore_memory import timefmt as _tf
     return ('判断同一属性的后一次说法是否明确撤回前一次：'
             '只有原文明确否定前一个值（“说错了/记错了/说早了/改成/不对”这类）才算撤回；'
             '补充、细化、换个说法都不算。只输出 JSON：{"retract": true 或 false}。\n\n'
-            '【前一次｜第%d轮】%s\n【后一次｜第%d轮】%s'
-            % (int(earlier.get('turn') or 0), str(earlier.get('text') or ''),
-               int(later.get('turn') or 0), str(later.get('text') or '')))
+            '【前一次｜%s】%s\n【后一次｜%s】%s'
+            % (_tf.label(earlier.get('ts'), earlier.get('turn')),
+               str(earlier.get('text') or ''),
+               _tf.label(later.get('ts'), later.get('turn')),
+               str(later.get('text') or '')))
 
 
 def mark_retractions(cluster, *, llm=None, cache=None):
@@ -92,7 +95,10 @@ def render_cluster(cluster, *, flags=None, max_links=6):
         return []
     flags = flags if isinstance(flags, dict) else {}
     links = list(cluster)[-max_links:]
-    turns = '/'.join('第%d轮' % int(item.get('turn') or 0) for item in links)
+    _stamps = [item.get('ts') for item in links]
+    from biocore_memory import timefmt as _tf
+    turns = _tf.span(_stamps) or ' / '.join(
+        _tf.label(item.get('ts'), item.get('turn')) for item in links)
     notes = {}
     for index in range(1, len(links)):
         prev, cur = links[index - 1], links[index]
@@ -106,7 +112,8 @@ def render_cluster(cluster, *, flags=None, max_links=6):
     lines = ['【时间链｜%s】' % turns]
     for index, item in enumerate(links):
         tail = ' ← 当前值' if index == len(links) - 1 else ''
-        lines.append('  %d. 第%d轮：%s%s%s' % (index + 1, int(item.get('turn') or 0),
-                                              str(item.get('text') or '')[:80],
-                                              notes.get(index, ''), tail))
+        lines.append('  %d. %s：%s%s%s' % (index + 1,
+                                           _tf.label(item.get('ts'), item.get('turn')),
+                                           str(item.get('text') or '')[:80],
+                                           notes.get(index, ''), tail))
     return lines

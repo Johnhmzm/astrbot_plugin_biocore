@@ -331,12 +331,18 @@ def is_private(item):
     return item.get('private') is True or str(item.get('status') or '').lower() == 'private'
 
 
-def state_line(key, item, max_values=4):
+def state_line(key, item, max_values=4, turn_dates=None):
     """One 【状态】 line: value (turn) / value (turn), settled or not, private or not."""
     values = value_list(item)[:max(1, int(max_values or 1))]
     if not values:
         return ''
-    body = ' / '.join('%s（第%d轮）' % (v['value'], int(v['turn'] or 0)) for v in values)
+    # 给模型看的是时间，不是轮号；没有时间可用时才退回轮号
+    from biocore_memory import timefmt as _tf
+    def _stamp(v):
+        turn = int(v.get('turn') or 0)
+        known = (turn_dates or {}).get(turn) or (turn_dates or {}).get(str(turn))
+        return str(known or '') or _tf.label(v.get('ts'), turn)
+    body = ' / '.join('%s（%s）' % (v['value'], _stamp(v)) for v in values)
     if is_multi_value(item):
         tail = '，未确定（%d 种说法并存）' % len(value_list(item))
     else:
@@ -346,7 +352,7 @@ def state_line(key, item, max_values=4):
     return '【状态】%s：%s%s' % (key, body, tail)
 
 
-def state_lines_for(event, state, max_lines=3):
+def state_lines_for(event, state, max_lines=3, turn_dates=None):
     """【状态】 lines for the multi-value keys this event actually mentions."""
     if not isinstance(event, dict) or not isinstance(state, dict):
         return []
@@ -362,7 +368,7 @@ def state_lines_for(event, state, max_lines=3):
             continue
         if not (is_multi_value(item) or is_private(item)):
             continue
-        line = state_line(key, item)
+        line = state_line(key, item, turn_dates=turn_dates)
         if line:
             lines.append(line)
     return lines[:max(0, int(max_lines or 0))]
