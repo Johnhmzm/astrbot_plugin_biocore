@@ -125,6 +125,11 @@ except Exception:  # pragma: no cover
 # retrieval temperature: 0 = deterministic top-k (a hard sort, T -> 0).
 # Above 0 the block is filled by weighted sampling, so near-miss sentences can
 # get in. Whether that helps is measured, not assumed.
+# 混合检索：BM25 稀疏召回与稠密召回各出一份排名，用 RRF 融合。
+# 稀疏侧擅长专有名词与不常见词，稠密侧擅长语义改写，两者误差不同向。
+HYBRID_RETRIEVAL = str(os.environ.get("BIOCORE_HYBRID") or "0").strip().lower() in ("1", "true", "on", "yes")
+RRF_K = 60
+
 RETRIEVE_TEMP = float(os.environ.get("BIOCORE_RETRIEVE_TEMP") or 0.0)
 # share of the pool that may be reshuffled by temperature
 RETRIEVE_TAIL = float(os.environ.get("BIOCORE_RETRIEVE_TAIL") or 0.15)
@@ -3727,6 +3732,13 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                           + scored[_pool_n:])
         # flat sentence delivery: every sentence ranked, packed
         # until the budget is spent -- no event grouping, no event order
+        if HYBRID_RETRIEVAL and scored:
+            try:
+                _rrf = _bm25_rrf_fuse(text, scored)
+                if _rrf:
+                    scored = _rrf
+            except Exception as _he:
+                logger.warning("[hybrid] fuse failed: %s", str(_he)[:120])
         header_s = "【相关记忆】"
         limit_s = max(50, budget - 90)
         used_s = len(header_s)
@@ -4483,6 +4495,61 @@ def _fence_untrusted(text):
     if not body:
         return ""
     return UNTRUSTED_NOTE + "\n" + UNTRUSTED_OPEN + "\n" + body + "\n" + UNTRUSTED_CLOSE
+
+
+_TOKEN_RE = None
+
+
+def _bm25_tokens(text):
+    """中文按单字 + 相邻双字切，英文数字按词切。"""
+    import re as _re
+    global _TOKEN_RE
+    if _TOKEN_RE is None:
+        _TOKEN_RE = _re.compile(r"[a-z0-9_]+|[\u3400-\u9fff]+", _re.I)
+    out = []
+    for part in _TOKEN_RE.findall(str(text or "").lower()):
+        if part[0] >= "\u3400":
+            out.extend(part)
+            out.extend(part[i:i + 2] for i in range(len(part) - 1))
+        else:
+            out.append(part)
+    return out
+
+
+def _bm25_rrf_fuse(query, scored, k=RRF_K):
+    """BM25 与稠密各排一次，用倒数排名融合（RRF 不需要分数归一化）。"""
+    import math as _m
+    from collections import Counter as _C
+    docs = [_bm25_tokens(row.get("text") if isinstance(row, dict) else "") for _s, row in scored]
+    q = set(_bm25_tokens(query))
+    if not q or not docs:
+        return None
+    df = _C()
+    for d in docs:
+        df.update(set(d))
+    n = len(docs)
+    avgdl = (sum(len(d) for d in docs) / n) or 1.0
+    k1, b = 1.5, 0.75
+    bm = []
+    for d in docs:
+        tf = _C(d)
+        dl = len(d) or 1
+        ssum = 0.0
+        for t in q:
+            f = tf.get(t, 0)
+            if not f:
+                continue
+            idf = _m.log(1 + (n - df[t] + 0.5) / (df[t] + 0.5))
+            ssum += idf * f * (k1 + 1) / (f + k1 * (1 - b + b * dl / avgdl))
+        bm.append(ssum)
+    dense_order = sorted(range(n), key=lambda i: -float(scored[i][0]))
+    bm_order = sorted(range(n), key=lambda i: -bm[i])
+    score = {}
+    for order in (dense_order, bm_order):
+        for rank, idx in enumerate(order):
+            score[idx] = score.get(idx, 0.0) + 1.0 / (k + rank + 1)
+    fused = sorted(score.items(), key=lambda kv: -kv[1])
+    return [(float(scored[i][0]), scored[i][1]) for i, _v in fused]
 
 
 def _body_values_healthy(body):
