@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS entries (
   id TEXT PRIMARY KEY,
   -- 业务键：人能读、能引用、能当世界书/提示词里的触发词（借自 shujuku 的 code_index）
   code TEXT,
+  -- 逻辑身份：只由内容决定，重排/换库/重新导入都不变
+  semantic_id TEXT,
   turn INTEGER CHECK(turn IS NULL OR turn >= 0),
   ts REAL CHECK(ts IS NULL OR ts >= 0),
   role TEXT CHECK(role IS NULL OR role IN ('user', 'assistant', 'system')),
@@ -95,6 +97,10 @@ def _ensure_entries_schema(conn):
         cols = [row[1] for row in conn.execute('PRAGMA table_info(entries)')]
         if 'code' not in cols:
             conn.execute('ALTER TABLE entries ADD COLUMN code TEXT')
+        if 'semantic_id' not in cols:
+            conn.execute('ALTER TABLE entries ADD COLUMN semantic_id TEXT')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_semantic'
+                     ' ON entries(semantic_id) WHERE semantic_id IS NOT NULL')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_code'
                      ' ON entries(code) WHERE code IS NOT NULL')
         missing = conn.execute('SELECT id FROM entries WHERE code IS NULL'
@@ -449,7 +455,7 @@ def read_doc(root, session_id, with_vectors=False):
         entries = []
         # the vector lives in its own BLOB column, not in `raw`: reading only
         # `raw` is why recall saw vector=None on every row
-        columns = 'raw, vector, code' if with_vectors else 'raw, code'
+        columns = 'raw, vector, code, semantic_id' if with_vectors else 'raw, code, semantic_id'
         for row in conn.execute('SELECT %s FROM entries ORDER BY rowid' % columns).fetchall():
             raw = row[0]
             if not raw:
@@ -459,9 +465,12 @@ def read_doc(root, session_id, with_vectors=False):
             except Exception:
                 continue
             # 业务键以列为准（老库是迁移回填的，raw 里没有）
-            code = row[-1]
+            code = row[-2] if len(row) > 1 else None
             if code:
                 entry['code'] = str(code)
+            sid = row[-1]
+            if sid:
+                entry['semantic_id'] = str(sid)
             if with_vectors:
                 blob = row[1] if len(row) > 1 else None
                 entry['vector'] = unpack_vector(blob)
@@ -510,6 +519,14 @@ def write_doc(root, session_id, doc, changed=None, deleted=None, stamp_meta=True
         for row in changed:
             if not isinstance(row, dict):
                 continue
+            _sid = str(row.get('semantic_id') or '')
+            if not _sid:
+                try:
+                    from biocore_memory import semantic_identity as _si
+                    _sid = _si.semantic_id(session_id, row.get('ts'),
+                                           row.get('role'), row.get('text'))
+                except Exception:
+                    _sid = ''
             code = str(row.get('code') or '')
             if not code:
                 cur = conn.execute('SELECT COALESCE(MAX(CAST(SUBSTR(code, 2) AS INTEGER)), 0)'
@@ -519,13 +536,14 @@ def write_doc(root, session_id, doc, changed=None, deleted=None, stamp_meta=True
             _prev = conn.execute('SELECT raw FROM entries WHERE id=?',
                                  (str(row.get('id') or ''),)).fetchone()
             conn.execute(
-                'INSERT INTO entries (id,code,turn,ts,role,text,vector,hits,importance,deleted,raw)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET'
-                ' code=COALESCE(entries.code, excluded.code), turn=excluded.turn,'
+                'INSERT INTO entries (id,code,semantic_id,turn,ts,role,text,vector,hits,importance,deleted,raw)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET'
+                ' code=COALESCE(entries.code, excluded.code),'
+                ' semantic_id=COALESCE(entries.semantic_id, excluded.semantic_id), turn=excluded.turn,'
                 ' ts=excluded.ts, role=excluded.role, text=excluded.text,'
                 ' vector=excluded.vector, hits=excluded.hits, importance=excluded.importance,'
                 ' deleted=excluded.deleted, raw=excluded.raw',
-                (str(row.get('id') or ''), code, int(row.get('turn') or 0),
+                (str(row.get('id') or ''), code, _sid, int(row.get('turn') or 0),
                  float(row.get('ts') or 0.0), str(row.get('role') or 'user'),
                  str(row.get('text') or ''), pack_vector(row.get('vector')),
                  int(row.get('hits') or 1), float(row.get('importance') or 0.2),
