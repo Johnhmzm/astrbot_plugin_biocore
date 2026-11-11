@@ -345,7 +345,29 @@ ANCHOR_RELAX = float(_os.environ.get("BIOCORE_ANCHOR_RELAX") or 0.02)
 # Values accepted by the parameter loop override the constants above. The loop
 # only accepts a change that also improves held-out turns, so this is the seam
 # where "learned" reaches the body.
+import contextvars as _ctxvars
+
+# 参数作用域：以前是模块级 dict，并发两个会话会互相串。
+# 现在优先读 contextvar（请求级），没有才回落到模块级（兼容旧调用）。
+_THETA_SCOPE: "_ctxvars.ContextVar" = _ctxvars.ContextVar("biocore_theta", default=None)
 _THETA_OVERRIDE = {}
+
+
+class theta_scope:
+    """with theta_scope(values): eff() 在这个块内只读 values。"""
+
+    def __init__(self, values):
+        self._values = values
+        self._token = None
+
+    def __enter__(self):
+        self._token = _THETA_SCOPE.set(self._values or {})
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._token is not None:
+            _THETA_SCOPE.reset(self._token)
+        return False
 
 
 def refresh_theta(store):
@@ -360,6 +382,9 @@ def refresh_theta(store):
 
 def eff(key, default):
     try:
+        scoped = _THETA_SCOPE.get()
+        if isinstance(scoped, dict) and key in scoped:
+            return float(scoped[key])
         return float(_THETA_OVERRIDE.get(key, default))
     except Exception:
         return float(default)

@@ -4408,6 +4408,21 @@ def _body_enabled(store, payload=None):
 
 
 def body_turn(store, session_id, text, payload=None):
+    """本轮的身体推进。
+
+    参数（theta）走请求级作用域：同一个进程里并发两个会话时，各自的参数
+    不会互相覆盖——以前是模块级 dict，后跑的会改掉先跑的。
+    """
+    try:
+        from biocore_runtime import mindbase_bridge as _mbs
+        from biocore_runtime import theta as _ths
+        with _mbs.theta_scope(_ths.values(store)):
+            return _body_turn_impl(store, session_id, text, payload)
+    except Exception:
+        return _body_turn_impl(store, session_id, text, payload)
+
+
+def _body_turn_impl(store, session_id, text, payload=None):
     """Feed one user turn into the digital-fly body and return its state.
 
     The body lives in the substrate; this process dies every turn, so the state
@@ -7962,7 +7977,15 @@ def dispatch(action, payload=None):
                 q_reward_last(store, session_id, True, _gap_min * 60.0, data)
             except Exception:
                 pass
-            # prompt_block renders session_state, not data["state"]; the body
+            try:
+                from biocore_runtime import receipts as _rc2
+                _miss = _rc2.missing_kinds(store, session_id)
+                if _miss:
+                    logger.warning("[receipts] 上一轮缺副作用：%s", ",".join(_miss))
+                    data["missing_receipts"] = _miss
+            except Exception:
+                pass
+            # prompt_block renders sessionState, not data["state"]; the body
             # has to sit here or the line never shows
             if _require_feature(store, BODY_SWITCH_KEY, data):
                 try:
@@ -8135,6 +8158,17 @@ def dispatch(action, payload=None):
                                         _rel[_k] = float(_rs[_k])
                             _th.log_turn(store, _cur, _grade.get("reward"),
                                          _now_state, kl=_kl, expr=_expr, rel=_rel)
+                            try:
+                                from biocore_runtime import receipts as _rc
+                                _fp = _rc.fingerprint(session_id,
+                                                     str(data.get("user_text") or ""),
+                                                     str(raw_assistant or ""))
+                                _rc.record(store, session_id, "grade", _fp)
+                                _rc.record(store, session_id, "turn_log", _fp)
+                                _rc.record(store, session_id, "learn_log", _fp)
+                            except Exception as _rce:
+                                logger.warning("[receipts] 写入失败: %s: %s",
+                                               type(_rce).__name__, str(_rce)[:120])
                             if len(_th.read_log(store)) % 20 == 0:
                                 _moved = _th.iterate(store)
                                 if _moved.get("accepted"):
