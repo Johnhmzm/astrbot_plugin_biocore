@@ -4655,6 +4655,34 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
     # a store whose vectors came from another model must never be read silently
     ensure_vector_space(store, session_id)
     # 0 / None mean "use the default": an explicit rule, not a falsy accident
+    # 17 地址即读集：给了明确区间就按区间取，不再走相似度
+    _range = (payload or {}).get("turn_range") if isinstance(payload, dict) else None
+    if _range:
+        try:
+            lo, hi = int(_range[0]), int(_range[1])
+        except Exception:
+            lo = hi = None
+        if lo is not None and hi is not None:
+            _rows = [r for r in _visible(load_memory(store, session_id).get("entries"))
+                     if isinstance(r, dict)]
+            def _addr(i, row):
+                # 没有轮次的老条目用位置号兜底，否则它们永远落在区间之外
+                try:
+                    t = int(row.get("turn") or 0)
+                except Exception:
+                    t = 0
+                return t if t > 0 else i + 1
+            picked = [row for i, row in enumerate(_rows) if lo <= _addr(i, row) <= hi]
+            picked.sort(key=lambda r: int(r.get("turn") or 0))
+            lines = []
+            for row in picked:
+                when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
+                body = str(row.get("text") or "").strip()
+                if body:
+                    lines.append("- %s%s" % (body, ("（%s）" % when) if when else ""))
+            text = "【相关记忆】" + chr(10) + chr(10).join(lines) if lines else ""
+            return {"text": text, "chars": len(text), "mode": "range",
+                    "range": [lo, hi], "ids": [str(r.get("id") or "") for r in picked]}
     _recall = recall_settings(store, payload)
     if max_chars in (None, 0):
         budget = _recall["inject_chars"]

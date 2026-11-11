@@ -1058,6 +1058,17 @@ def _idle_path(store, session_id):
     return _body_path(store, session_id).replace(BODY_STATE_FILE, IDLE_FILE)
 
 
+def idle_resume_point(store, session_id):
+    """上次回放到的时刻；没有就返回 None（表示还没跑过）。"""
+    hist = load_idle(store, session_id)
+    state = hist.get("run_state") if isinstance(hist.get("run_state"), dict) else {}
+    try:
+        last = float(state.get("last_ts") or 0.0)
+        return last if last > 0 else None
+    except Exception:
+        return None
+
+
 def load_idle(store, session_id):
     import json
     try:
@@ -1152,6 +1163,10 @@ def idle_activity(store, session_id, now=None, seed=1, rng=None):
     hist["replays"] = int(hist.get("replays") or 0) + sum(1 for e in events if e["kind"] == "replay")
     hist["muses"] = int(hist.get("muses") or 0) + sum(1 for e in events if e["kind"] == "muse")
     hist["runs"] = int(hist.get("runs") or 0) + 1
+    # 18 恢复即产物：把「回放到哪了」也落盘，进程被杀后能接着跑而不是从头
+    hist["run_state"] = {"last_ts": round(float(now or 0.0), 1),
+                         "replays": int(hist.get("replays") or 0),
+                         "muses": int(hist.get("muses") or 0)}
     hist["last"] = {"ts": round(float(now or _t.time()), 1),
                     "events": events[-6:], "state": state}
     save_idle(store, session_id, hist)
