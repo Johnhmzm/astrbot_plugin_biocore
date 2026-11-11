@@ -41,6 +41,11 @@ CREATE TABLE IF NOT EXISTS claims (
 CREATE TABLE IF NOT EXISTS event_state (
   session TEXT PRIMARY KEY, seen INTEGER, global_state TEXT, open_buf TEXT, updated REAL
 );
+CREATE TABLE IF NOT EXISTS changes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts REAL, batch TEXT, op TEXT, entry_id TEXT, before TEXT, after TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_changes_batch ON changes(batch);
 CREATE TABLE IF NOT EXISTS journal (
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, payload TEXT
 );
@@ -346,6 +351,86 @@ def read_entry_vectors(root, session_id):
         conn.close()
 
 
+class WriteNotVerified(RuntimeError):
+    """写完回读对不上：库里的内容和要写的不是一回事。"""
+
+
+def _verify_write(conn, changed, deleted):
+    """写后回读校验：条数与文本都要对上，否则抛。
+
+    「宿主保存成功」不等于「数据正确」——上一层的 ok 与这一层的事实是两件事。
+    """
+    for row in changed or []:
+        if not isinstance(row, dict):
+            continue
+        rid = str(row.get('id') or '')
+        got = conn.execute('SELECT text, deleted FROM entries WHERE id=?',
+                           (rid,)).fetchone()
+        want_text = str(row.get('text') or '')
+        if row.get('deleted'):
+            if not got or not got[1]:
+                raise WriteNotVerified('删除标记没有落库: %s' % rid)
+            continue
+        if not got:
+            raise WriteNotVerified('写入后读不到: %s' % rid)
+        if str(got[0]) != want_text:
+            raise WriteNotVerified('文本不一致: %s' % rid)
+    for entry_id in deleted or []:
+        got = conn.execute('SELECT 1 FROM entries WHERE id=?',
+                           (str(entry_id),)).fetchone()
+        if got:
+            raise WriteNotVerified('删除没有生效: %s' % entry_id)
+
+
+def _reinsert_from_raw(conn, entry_id, raw):
+    """按 raw 里的完整字段把一行插回去（只写 id/raw 会撞 NOT NULL）。"""
+    try:
+        row = json.loads(raw) if raw else {}
+    except Exception:
+        row = {}
+    conn.execute(
+        'INSERT OR REPLACE INTO entries'
+        ' (id,code,turn,ts,role,text,vector,hits,importance,deleted,raw)'
+        ' VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        (entry_id, row.get('code'), int(row.get('turn') or 0),
+         float(row.get('ts') or 0.0), str(row.get('role') or 'user'),
+         str(row.get('text') or '(恢复时缺失)'),
+         pack_vector(row.get('vector')), int(row.get('hits') or 1),
+         float(row.get('importance') or 0.2), 0, raw))
+
+
+def changes_tail(root, session_id, limit=50):
+    conn = connect(root, session_id)
+    try:
+        rows = conn.execute('SELECT ts,batch,op,entry_id FROM changes'
+                            ' ORDER BY id DESC LIMIT ?', (int(limit),)).fetchall()
+        return [{'ts': r[0], 'batch': r[1], 'op': r[2], 'entry_id': r[3]} for r in rows]
+    finally:
+        conn.close()
+
+
+def undo_batch(root, session_id, batch):
+    """把某一批变更撤回去（删除的恢复、写入的还原或删掉）。"""
+    conn = connect(root, session_id)
+    try:
+        rows = conn.execute('SELECT op,entry_id,before,after FROM changes'
+                            ' WHERE batch=? ORDER BY id DESC', (str(batch),)).fetchall()
+        for op, entry_id, before, after in rows:
+            if op == 'delete':
+                if before:
+                    _reinsert_from_raw(conn, str(entry_id), before)
+            else:
+                if before:
+                    conn.execute('UPDATE entries SET raw=? WHERE id=?',
+                                 (before, str(entry_id)))
+                else:
+                    conn.execute('DELETE FROM entries WHERE id=?', (str(entry_id),))
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
 def read_doc(root, session_id, with_vectors=False):
     """The session document as the JSON file used to hold it.
 
@@ -418,6 +503,7 @@ def write_doc(root, session_id, doc, changed=None, deleted=None, stamp_meta=True
                 conn.execute('INSERT INTO meta (k, v) VALUES (?, ?)'
                              ' ON CONFLICT(k) DO UPDATE SET v=excluded.v',
                              (key, str(value)))
+        batch = '%d' % int(time.time() * 1000)
         rows = doc.get('entries') if isinstance(doc.get('entries'), list) else []
         if changed is None:
             changed = rows
@@ -430,6 +516,8 @@ def write_doc(root, session_id, doc, changed=None, deleted=None, stamp_meta=True
                                    ' FROM entries WHERE code LIKE \'M%\'').fetchone()
                 code = 'M%04d' % (int((cur or [0])[0] or 0) + 1)
                 row['code'] = code
+            _prev = conn.execute('SELECT raw FROM entries WHERE id=?',
+                                 (str(row.get('id') or ''),)).fetchone()
             conn.execute(
                 'INSERT INTO entries (id,code,turn,ts,role,text,vector,hits,importance,deleted,raw)'
                 ' VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET'
@@ -443,9 +531,21 @@ def write_doc(root, session_id, doc, changed=None, deleted=None, stamp_meta=True
                  int(row.get('hits') or 1), float(row.get('importance') or 0.2),
                  1 if row.get('deleted') else 0,
                  json.dumps(row, ensure_ascii=False)))
+            conn.execute('INSERT INTO changes (ts,batch,op,entry_id,before,after)'
+                         ' VALUES (?,?,?,?,?,?)',
+                         (time.time(), batch, 'upsert', str(row.get('id') or ''),
+                          _prev[0] if _prev else None,
+                          json.dumps(row, ensure_ascii=False)))
         for entry_id in deleted or []:
+            prev = conn.execute('SELECT raw FROM entries WHERE id=?',
+                                (str(entry_id),)).fetchone()
+            conn.execute('INSERT INTO changes (ts,batch,op,entry_id,before,after)'
+                         ' VALUES (?,?,?,?,?,?)',
+                         (time.time(), batch, 'delete', str(entry_id),
+                          prev[0] if prev else None, None))
             conn.execute('DELETE FROM entries WHERE id=?', (str(entry_id),))
         conn.commit()
+        _verify_write(conn, changed, deleted)
         return True
     finally:
         conn.close()
