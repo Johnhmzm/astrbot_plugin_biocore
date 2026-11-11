@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Event-level selection: score = 0.9 * max + 0.1 * rest_mean, whole events."""
+"""Event-level selection: score = (1/2)·ln Σ exp(2·s), whole events."""
 import math
 import sys
 import unittest
@@ -53,11 +53,12 @@ def consistent(event_id, values, base_ts):
 
 
 class ScoreTest(unittest.TestCase):
-    def test_one_strong_line_beats_a_consistent_weaker_event(self):
+    def test_one_strong_line_loses_to_a_consistent_event(self):
+        # 平滑最大值：一句 0.90 撑不起一个事件，三句 0.80 左右合起来更可信
         rows = mixed("EVA", 0.90, 0.10, 1777800000)
         rows += consistent("EVB", [0.80, 0.78, 0.76], 1777860000)
         order = [item["event_id"] for item in build(rows)["events"]]
-        self.assertEqual(order[0], "EVA")
+        self.assertEqual(order[0], "EVB")
 
     def test_a_small_gap_lets_the_rest_of_the_event_decide(self):
         rows = mixed("EVC", 0.81, 0.10, 1777800000)
@@ -73,11 +74,14 @@ class ScoreTest(unittest.TestCase):
         self.assertEqual(first["sentence_count"], 1)
 
     def test_meta_carries_the_arithmetic(self):
+        import math
         rows = mixed("EVA", 0.90, 0.10, 1777800000)
         first = build(rows)["events"][0]
         for key in ("max_cos", "rest_mean", "score", "sentence_count"):
             self.assertIn(key, first)
-        self.assertAlmostEqual(first["score"], 0.9 * 0.90 + 0.1 * 0.10, places=3)
+        # 事件分 = (1/β)·ln Σ exp(β·s)，β=2；mixed() 是一句 0.90 加五句 0.10
+        expected = (1.0 / 2.0) * math.log(math.exp(2 * 0.90) + 5 * math.exp(2 * 0.10))
+        self.assertAlmostEqual(first["score"], expected, places=3)
 
 
 class WholeEventTest(unittest.TestCase):

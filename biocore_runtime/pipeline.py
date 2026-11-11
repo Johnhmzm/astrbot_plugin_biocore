@@ -150,7 +150,8 @@ EVENT_SCORE_W_MAX = 0.9
 EVENT_SCORE_W_REST = 0.1
 # 事件分口径：mean = 0.9×最佳句 + 0.1×其余句均值（旧）；
 # countrank = 0.7×最佳句 + 0.3×句数名次（句子排名 + 句数排名）
-EVENT_SCORE_MODE = str(os.environ.get("BIOCORE_EVENT_SCORE") or "mean").strip().lower()
+EVENT_SCORE_MODE = str(os.environ.get("BIOCORE_EVENT_SCORE") or "lse").strip().lower()
+EVENT_SCORE_BETA = float(os.environ.get("BIOCORE_EVENT_BETA") or 2.0)
 EVENT_SCORE_W_COUNT = float(os.environ.get("BIOCORE_EVENT_COUNT_W") or 0.3)
 EVENT_RELEVANT_COS = float(os.environ.get("BIOCORE_EVENT_RELEVANT") or 0.4)
 EVENT_SCORE_TOL = 0.03
@@ -3759,6 +3760,16 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         bucket["score"] = round(EVENT_SCORE_W_MAX * best
                                 + EVENT_SCORE_W_REST * rest_mean, 6)
         bucket["in_top40"] = sum(1 for value in values if value in top40)
+    if EVENT_SCORE_MODE == "lse":
+        # 平滑最大值：接近"取最高那句"，但第二三句也会抬分（170 题实测 MRR 0.059→0.098）
+        for _k in order:
+            _b = grouped[_k]
+            _vals = [v for v, _r in _b["rows"]]
+            try:
+                _b["score"] = round((1.0 / EVENT_SCORE_BETA)
+                                    * math.log(sum(math.exp(EVENT_SCORE_BETA * v) for v in _vals)), 6)
+            except Exception:
+                _b["score"] = round(max(_vals) if _vals else 0.0, 6)
     if EVENT_SCORE_MODE == "countrank":
         # 句子排名 + 句数排名：句数按名次归一，避免长事件靠堆句子取胜
         _by_count = sorted(order, key=lambda k: -grouped[k]["relevant"])
@@ -7752,7 +7763,7 @@ def recall_settings(store, payload=None):
     if value < RECALL_INJECT_MIN or value > RECALL_INJECT_MAX:
         raise RuntimeError("recall.inject_chars=%d 超出合法范围 [%d, %d]" % (value, RECALL_INJECT_MIN, RECALL_INJECT_MAX))
     delivery = (cfg.get("delivery") or os.environ.get("BIOCORE_RECALL_DELIVERY")
-                or pl.get("delivery") or "sentence")
+                or pl.get("delivery") or "event")
     delivery = str(delivery).strip().lower()
     if delivery not in RECALL_DELIVERIES:
         raise RuntimeError("recall.delivery=%r 不合法；只接受 %s"

@@ -35,7 +35,7 @@ def rows(count=40):
                 "句子内容" + str(i) * 2 + "填充" * 20) for i in range(count)]
 
 
-def build(budget, delivery="sentence"):
+def build(budget, delivery="event"):
     old = P._event_embed_fn
     P._event_embed_fn = lambda *a, **k: EmbedStub()
     try:
@@ -77,7 +77,7 @@ class ConfigValidationTest(unittest.TestCase):
     def test_the_defaults_are_exposed(self):
         settings = self._settings({})
         self.assertEqual(settings["inject_chars"], P.RECALL_INJECT_DEFAULT)
-        self.assertEqual(settings["delivery"], "sentence")
+        self.assertEqual(settings["delivery"], "event")
 
     def test_a_configured_budget_is_used(self):
         settings = self._settings({"recall": {"inject_chars": 40000,
