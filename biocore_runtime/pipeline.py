@@ -133,6 +133,8 @@ MEMORY_CODES = str(os.environ.get("BIOCORE_MEMORY_CODES") or "0").strip().lower(
 # 提示词前缀稳定性：稳定内容放前面，变化的数值放后面，能让上游的缓存命中更多。
 # 默认关：顺序会改变模型读到的优先级，必须先量。
 STABLE_PREFIX = str(os.environ.get("BIOCORE_STABLE_PREFIX") or "0").strip().lower() in ("1", "true", "on", "yes")
+# 原子门禁：注入块要么整块成立，要么整块不注入，绝不交付半块。
+ATOMIC_BLOCKS = str(os.environ.get("BIOCORE_ATOMIC_BLOCKS") or "1").strip().lower() in ("1", "true", "on", "yes")
 RRF_K = 60
 
 RETRIEVE_TEMP = float(os.environ.get("BIOCORE_RETRIEVE_TEMP") or 0.0)
@@ -3793,6 +3795,16 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             skipped.append("trimmed")
             body_s = header_s + chr(10) + chr(10).join(out_lines)
             body_s += chr(10) + "已折叠 %d 条" % len(skipped)
+        if ATOMIC_BLOCKS and len(body_s) > budget:
+            # 原子门禁：宁可整块不注入，也不给半块
+            logger.warning("[atomic] 句子块超预算（%d > %d），整块回退",
+                           len(body_s), budget)
+            return {"text": "", "chars": 0, "mode": "sentence",
+                    "atomic_rejected": True, "reason": "over_budget",
+                    "over_by": len(body_s) - budget,
+                    "events_picked": 0, "events_shown": 0, "kept": len(scored),
+                    "shown": 0, "folded": 0, "folded_ids": [], "folded_events": [],
+                    "events": [], "ids": []}
         return {"text": body_s, "chars": len(body_s), "mode": "sentence",
                 "events_picked": 0, "events_shown": 0, "kept": len(scored),
                 "shown": len(shown_ids), "folded": len(skipped),
@@ -7532,6 +7544,45 @@ def recall_settings(store, payload=None):
                            % (delivery, " / ".join(RECALL_DELIVERIES)))
     return {"inject_chars": value, "delivery": delivery}
 
+# 配置白名单：只允许这些键，且类型要对得上。
+# 没有白名单时，任何拼错的键都会静默留在文件里、被当成"已配置"。
+CONFIG_SCHEMA = {
+    "persona_text": str, "embedding": dict, "rerank": dict, "expression": dict,
+    "autonomy": dict, "standby": dict, "sanitize_reply": bool, "switches": dict,
+    "recall_mode": str, "recall": dict, "summarizer": dict,
+    "event_layer": bool, "event_summarizer": dict, "updated_at": (int, float),
+}
+CONFIG_DROPPED = {}
+
+
+def sanitize_config(doc):
+    """按白名单裁剪配置；丢弃的键记进 CONFIG_DROPPED 并以警告列出。"""
+    if not isinstance(doc, dict):
+        return {}
+    out = {}
+    dropped = []
+    for key, value in doc.items():
+        want = CONFIG_SCHEMA.get(str(key))
+        if want is None:
+            dropped.append("%s(未声明)" % key)
+            continue
+        if not isinstance(value, want):
+            dropped.append("%s(类型应为 %s)" % (key, getattr(want, "__name__", str(want))))
+            continue
+        if key == "switches":
+            # 开关只接受布尔值：字符串 "true" 会让下游判断出错
+            clean = {k: v for k, v in value.items() if isinstance(v, bool)}
+            if len(clean) != len(value):
+                dropped.append("switches(非布尔项)")
+            out[key] = clean
+            continue
+        out[key] = value
+    if dropped:
+        CONFIG_DROPPED["last"] = dropped
+        logger.warning("[config] 丢弃 %d 个不合规项：%s", len(dropped), ",".join(dropped[:6]))
+    return out
+
+
 def _load_runtime_config(store):
     data_dir = _store_data_dir(store)
     doc = {}
@@ -7539,7 +7590,9 @@ def _load_runtime_config(store):
         doc = _load_json(data_dir / CORE_CONFIG_FILE, {})
     if not isinstance(doc, dict) or not doc:
         doc = _RUNTIME_CONFIG
-    return doc if isinstance(doc, dict) else {}
+    if not isinstance(doc, dict):
+        return {}
+    return sanitize_config(doc)
 
 
 def configure(payload):
@@ -7552,6 +7605,7 @@ def configure(payload):
     doc = {key: value for key, value in data.items()
            if key not in ("store", "data_dir")}
     doc["updated_at"] = round(time.time(), 3)
+    doc = sanitize_config(doc)
     if data_dir is not None:
         try:
             _atomic_write(Path(data_dir) / CORE_CONFIG_FILE, doc)
