@@ -5953,6 +5953,17 @@ def tool_call(name, args, store, session_id=None):
             _next_turn = len(entries) + 1
         entry = _new_entry(text, role, args.get("tags"), now)
         entry["turn"] = int(args.get("turn") or 0) or _next_turn
+        # 「取」的时间通道要的输入：有效区间 + 时间桶（由 ts 推，不靠词表）
+        try:
+            entry["valid_from"] = round(float(now), 3)
+            entry["valid_to"] = None
+            import time as _t
+            _day = _t.strftime("%Y-%m-%d", _t.localtime(float(now)))
+            _bucket = _t.strftime("%Y-%m", _t.localtime(float(now)))
+            entry["cue_index"] = {"time_coarse": _bucket, "day": _day,
+                                  "entities": [], "place": []}
+        except Exception:
+            pass
         # explicit fact annotation only: the caller names the attribute, the
         # core never guesses one from the text (version resolution needs it).
         for key in ("subject", "attribute", "fact_value", "attribute_value"):
