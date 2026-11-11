@@ -8278,6 +8278,29 @@ def dispatch(action, payload=None):
             session_state = apply_intero_to_state(session_state, data.get("state"))
             return {"ok": True, "prompt_block": block["text"],
                     "state": session_state}
+        if action == "repair_links":
+            # 老数据的坐标修复：轮次按位置补、缺的字段补齐；先备份再写
+            session_id = str(data.get("session_id") or "").strip()
+            if not session_id:
+                return bad("missing session_id")
+            from biocore_memory.store import link_repair as _lr
+            doc = load_memory(store, session_id)
+            entries = doc.get("entries") or []
+            events = (_load_event_state(store, session_id).get("events") or [])
+            before = _lr.broken_counts(entries, events)
+            changed = _lr.repair(entries, events)
+            try:
+                _api = _sql_store()
+                _api.export_doc_json(_store_root(store), session_id,
+                                     path=os.path.join(_store_data_dir(store),
+                                                       "%s.before-repair.json" % session_id))
+            except Exception:
+                pass
+            if changed.get("turn"):
+                save_memory(store, session_id, entries)
+            return {"ok": True, "before": before, "changed": changed,
+                    "after": _lr.broken_counts(entries, events)}
+
         if action == "turn_start":
             session_id = str(data.get("session_id") or "").strip()
             if not session_id:
