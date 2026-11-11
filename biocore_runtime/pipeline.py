@@ -1244,9 +1244,28 @@ def capture(session_id, role, text, store, config=None):
     entry = None
     position = 0
     if decision["capture"]:
+        # 情绪快照与自我相关是「值不值得记」的判据输入：缺了就补，
+        # 否则价值判定永远拿不到数（importance 会一直是常数）
+        _affect = cfg.get("affect")
+        _self_rel = cfg.get("self_relevance")
+        if not isinstance(_affect, dict):
+            try:
+                _b = body_state(store, session_id) or {}
+                if isinstance(_b, dict) and _b:
+                    _affect = {"valence": _b.get("valence"), "arousal": _b.get("arousal")}
+            except Exception:
+                _affect = None
+        if _self_rel is None:
+            try:
+                _dims = (cfg.get("dims") or {}) if isinstance(cfg.get("dims"), dict) else {}
+                if _dims:
+                    _self_rel = _num(_dims.get("involve"), 0.0)
+            except Exception:
+                _self_rel = None
         result = tool_call("remember", {
             "text": decision["text"], "role": decision["role"], "ts": now,
-            "affect": cfg.get("affect"),
+            "affect": _affect,
+            "self_relevance": _self_rel,
             "participants": cfg.get("participants"),
         }, store, session_id=session_id)
         entry = result.get("entry") if result.get("ok") else None
@@ -4059,8 +4078,14 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
     if len(events) > 1:
         events[:] = _merge_small_events(events)
     for index, ev in enumerate(events, 1):
-        # bisecting pops and re-closes halves, so ids are renumbered here
-        ev["event_id"] = "EV%03d" % index
+        # 事件 id 必须稳定：以前按序号重编号，任何重建都会让已存的引用失效
+        try:
+            _sig = "EV_%s" % __import__("hashlib").sha1(
+                ("%s-%s" % (int(ev.get("start") or 0), int(ev.get("end") or 0))).encode()
+            ).hexdigest()[:8]
+            ev["event_id"] = _sig
+        except Exception:
+            ev["event_id"] = "EV%03d" % index
     if new_rows or seen != len(entries) or tail_closed:
         _save_event_state(store, session_id,
                           {"seen": len(entries), "events": events,
@@ -5920,7 +5945,14 @@ def tool_call(name, args, store, session_id=None):
                 # position of the row it hit (the bench maps turns by position)
                 return {"ok": True, "entry": _compact(existing), "deduped": True,
                         "position": _entry_position(doc.get("entries"))}
+        # 轮次是会话内的坐标：没有它，条目和事件、和按区间取回都接不上
+        try:
+            _turns = [int(x.get("turn") or 0) for x in entries if isinstance(x, dict)]
+            _next_turn = (max(_turns) if _turns else 0) + 1
+        except Exception:
+            _next_turn = len(entries) + 1
         entry = _new_entry(text, role, args.get("tags"), now)
+        entry["turn"] = int(args.get("turn") or 0) or _next_turn
         # explicit fact annotation only: the caller names the attribute, the
         # core never guesses one from the text (version resolution needs it).
         for key in ("subject", "attribute", "fact_value", "attribute_value"):
@@ -5946,6 +5978,19 @@ def tool_call(name, args, store, session_id=None):
         affect = _affect_pair_from(args.get("affect"))
         if affect:
             entry["affect"] = dict(affect)
+        try:
+            _sr = args.get("self_relevance")
+            if isinstance(_sr, (int, float)):
+                entry["self_relevance"] = round(max(0.0, min(1.0, float(_sr))), 3)
+        except Exception:
+            pass
+        try:
+            # 重要度不再是常数：情绪强度 + 自我相关 两层，剩下的留给淘汰层
+            _v = abs(float((entry.get("affect") or {}).get("valence") or 0.0))
+            _sr = float(entry.get("self_relevance") or 0.0)
+            entry["importance"] = round(min(1.0, 0.30 + 0.40 * _v + 0.30 * _sr), 3)
+        except Exception:
+            pass
 
         if _segment is not None:
             try:   # event segmentation runs before the coordinates are built
