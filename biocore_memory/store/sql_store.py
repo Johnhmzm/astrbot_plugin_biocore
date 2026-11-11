@@ -18,7 +18,14 @@ from pathlib import Path
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS entries (
-  id TEXT PRIMARY KEY, turn INTEGER, ts REAL, role TEXT, text TEXT,
+  id TEXT PRIMARY KEY,
+  -- 业务键：人能读、能引用、能当世界书/提示词里的触发词（借自 shujuku 的 code_index）
+  code TEXT,
+  turn INTEGER CHECK(turn IS NULL OR turn >= 0),
+  ts REAL CHECK(ts IS NULL OR ts >= 0),
+  role TEXT CHECK(role IS NULL OR role IN ('user', 'assistant', 'system')),
+  -- 空条目没有意义：库这一层直接拒，不靠调用方自觉
+  text TEXT NOT NULL CHECK(length(text) > 0),
   vector BLOB, hits INTEGER DEFAULT 1, importance REAL DEFAULT 0.2,
   deleted INTEGER DEFAULT 0, raw TEXT
 );
@@ -73,6 +80,33 @@ _OPEN_CONNS = []          # weak refs only: a forgotten handle must not survive
                           # (a strong list would keep the file undeletable forever)
 
 
+def _ensure_entries_schema(conn):
+    """老库补 code 列并回填业务键（M0001 起）。
+
+    约束（CHECK）只对新库生效——SQLite 不能给已有表加 CHECK，
+    所以老库靠这条唯一索引 + 这里的一次回填保证不重号。
+    """
+    try:
+        cols = [row[1] for row in conn.execute('PRAGMA table_info(entries)')]
+        if 'code' not in cols:
+            conn.execute('ALTER TABLE entries ADD COLUMN code TEXT')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_code'
+                     ' ON entries(code) WHERE code IS NOT NULL')
+        missing = conn.execute('SELECT id FROM entries WHERE code IS NULL'
+                               ' ORDER BY rowid').fetchall()
+        if missing:
+            cur = conn.execute('SELECT COALESCE(MAX(CAST(SUBSTR(code, 2) AS INTEGER)), 0)'
+                               ' FROM entries WHERE code LIKE \'M%\'').fetchone()
+            n = int((cur or [0])[0] or 0)
+            for row in missing:
+                n += 1
+                conn.execute('UPDATE entries SET code=? WHERE id=?',
+                             ('M%04d' % n, row[0]))
+        conn.commit()
+    except Exception:
+        pass
+
+
 def connect(root, session_id):
     """A fresh connection per call; registered so store_close() can release it.
 
@@ -89,6 +123,7 @@ def connect(root, session_id):
     conn.execute('PRAGMA synchronous=NORMAL')
     conn.executescript(SCHEMA)
     conn.commit()
+    _ensure_entries_schema(conn)
     try:
         _OPEN_CONNS.append(weakref.ref(conn))
     except TypeError:       # a backend without weakref support: nothing to track
@@ -329,7 +364,7 @@ def read_doc(root, session_id, with_vectors=False):
         entries = []
         # the vector lives in its own BLOB column, not in `raw`: reading only
         # `raw` is why recall saw vector=None on every row
-        columns = 'raw, vector' if with_vectors else 'raw'
+        columns = 'raw, vector, code' if with_vectors else 'raw, code'
         for row in conn.execute('SELECT %s FROM entries ORDER BY rowid' % columns).fetchall():
             raw = row[0]
             if not raw:
@@ -338,6 +373,10 @@ def read_doc(root, session_id, with_vectors=False):
                 entry = json.loads(raw)
             except Exception:
                 continue
+            # 业务键以列为准（老库是迁移回填的，raw 里没有）
+            code = row[-1]
+            if code:
+                entry['code'] = str(code)
             if with_vectors:
                 blob = row[1] if len(row) > 1 else None
                 entry['vector'] = unpack_vector(blob)
@@ -385,13 +424,20 @@ def write_doc(root, session_id, doc, changed=None, deleted=None, stamp_meta=True
         for row in changed:
             if not isinstance(row, dict):
                 continue
+            code = str(row.get('code') or '')
+            if not code:
+                cur = conn.execute('SELECT COALESCE(MAX(CAST(SUBSTR(code, 2) AS INTEGER)), 0)'
+                                   ' FROM entries WHERE code LIKE \'M%\'').fetchone()
+                code = 'M%04d' % (int((cur or [0])[0] or 0) + 1)
+                row['code'] = code
             conn.execute(
-                'INSERT INTO entries (id,turn,ts,role,text,vector,hits,importance,deleted,raw)'
-                ' VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET'
-                ' turn=excluded.turn, ts=excluded.ts, role=excluded.role, text=excluded.text,'
+                'INSERT INTO entries (id,code,turn,ts,role,text,vector,hits,importance,deleted,raw)'
+                ' VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET'
+                ' code=COALESCE(entries.code, excluded.code), turn=excluded.turn,'
+                ' ts=excluded.ts, role=excluded.role, text=excluded.text,'
                 ' vector=excluded.vector, hits=excluded.hits, importance=excluded.importance,'
                 ' deleted=excluded.deleted, raw=excluded.raw',
-                (str(row.get('id') or ''), int(row.get('turn') or 0),
+                (str(row.get('id') or ''), code, int(row.get('turn') or 0),
                  float(row.get('ts') or 0.0), str(row.get('role') or 'user'),
                  str(row.get('text') or ''), pack_vector(row.get('vector')),
                  int(row.get('hits') or 1), float(row.get('importance') or 0.2),

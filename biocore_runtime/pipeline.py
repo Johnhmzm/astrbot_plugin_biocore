@@ -128,6 +128,8 @@ except Exception:  # pragma: no cover
 # 混合检索：BM25 稀疏召回与稠密召回各出一份排名，用 RRF 融合。
 # 稀疏侧擅长专有名词与不常见词，稠密侧擅长语义改写，两者误差不同向。
 HYBRID_RETRIEVAL = str(os.environ.get("BIOCORE_HYBRID") or "0").strip().lower() in ("1", "true", "on", "yes")
+# 记忆业务键（M0001）是否进提示词。默认关：改行格式要先做对照再开。
+MEMORY_CODES = str(os.environ.get("BIOCORE_MEMORY_CODES") or "0").strip().lower() in ("1", "true", "on", "yes")
 RRF_K = 60
 
 RETRIEVE_TEMP = float(os.environ.get("BIOCORE_RETRIEVE_TEMP") or 0.0)
@@ -4833,6 +4835,11 @@ def _inject_block_core(session_id, store, max_chars=None, top_k=TOP_K,
         room = budget - len(text)
         if room <= 2:
             break
+        # 业务键进提示词是改格式，必须先量再开（BIOCORE_MEMORY_CODES=1）
+        if MEMORY_CODES and isinstance(entry, dict):
+            _code = str(entry.get("code") or "").strip()
+            if _code:
+                prefix = "[%s] " % _code + prefix
         line = "\n- " + prefix + content
         if len(line) > room:
             clipped = room - 4 - len(prefix)
