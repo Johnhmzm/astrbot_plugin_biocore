@@ -223,7 +223,22 @@ def merge_claims(claims, now=None):
     confidence is the strongest value it holds, not the weakest.
     """
     table = {}
+    # 键归一：同一个属性换个说法（或主体带了个限定词）要落回同一个键，
+    # 否则两条关于同一件事的事实永远见不到面，状态也就一直是单值。
+    from biocore_memory.event import keynorm as _kn
+    known = []
     for item in claims or []:
+        try:
+            hit = _kn.normalize_key(item.get("subject"), item.get("attr"), known)
+            if hit:
+                subj, attr = _kn.split_key(hit)
+                item = dict(item, subject=subj, attr=attr)
+            else:
+                made = _kn.key_of(item.get("subject"), item.get("attr"))
+                if made:
+                    known.append(made)
+        except Exception:
+            pass
         key = "%s·%s" % (item.get("subject"), item.get("attr"))
         slot = table.setdefault(key, {"values": [], "status": "current"})
         raw = str(item.get("value") or "")
