@@ -3769,7 +3769,12 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
         for score, row in scored:
             when = _day_str(float(row.get("ts") or 0.0)) if row.get("ts") else ""
             body_text = str(row.get("text") or "").strip()
-            line = "- %s%s" % (body_text, ("（%s）" % when) if when else "")
+            _tag = ""
+            if MEMORY_CODES:
+                _c = str(row.get("code") or "").strip()
+                if _c:
+                    _tag = "[%s] " % _c
+            line = "- %s%s%s" % (_tag, body_text, ("（%s）" % when) if when else "")
             if used_s + len(line) + 1 > limit_s:
                 skipped.append(str(row.get("id") or ""))
                 continue
@@ -4248,6 +4253,19 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
         # compaction marks a row archived: out of the block, still on disk
         rows = [r for r in rows if not r.get("archived")]
         rows.sort(key=lambda r: float(r.get("ts") or 0.0))
+        if MEMORY_CODES:
+            # 事件里的行是建事件时的快照，code 要按 id 从条目表补
+            try:
+                _codes = {str(e.get("id") or ""): str(e.get("code") or "")
+                          for e in (load_memory(store, session_id).get("entries") or [])
+                          if isinstance(e, dict)}
+                for _r in rows:
+                    if not _r.get("code"):
+                        _c = _codes.get(str(_r.get("id") or ""), "")
+                        if _c:
+                            _r["code"] = _c
+            except Exception:
+                pass
         EVENT_CAP_STATS["rows"] += len(rows)
         if os.environ.get("BIOCORE_DEBUG_EV"):
             print("DBG-EV ev=%d-%d rows=%d" % (start, end, len(rows)), file=sys.stderr)
@@ -4272,7 +4290,12 @@ def _event_layer_block(session_id, store, query, budget, rerank_config=None,
                 except Exception:
                     pass
             who = "用户" if str(row.get("role")) == "user" else "助手"
-            lines.append("- [%s %s] %s" % (_day(row.get("ts")), who, body))
+            _tag = ""
+            if MEMORY_CODES:
+                _c = str(row.get("code") or "").strip()
+                if _c:
+                    _tag = "[%s] " % _c
+            lines.append("- %s[%s %s] %s" % (_tag, _day(row.get("ts")), who, body))
     if not lines:
         return None
     state_lines = []
