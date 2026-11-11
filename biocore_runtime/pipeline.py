@@ -8162,6 +8162,16 @@ def dispatch(action, payload=None):
             except Exception:
                 pass
             try:
+                from biocore_runtime import state_health as _sh
+                _issues = _sh.contradictions(store, session_id)
+                if _issues:
+                    logger.warning("[state] 状态根矛盾：%s", "；".join(_issues[:3]))
+                    data["state_issues"] = _issues
+                    if _sh.repair_clock(store, session_id):
+                        logger.warning("[state] 时钟已回拨到当前时间")
+            except Exception:
+                pass
+            try:
                 from biocore_runtime import receipts as _rc2
                 _miss = _rc2.missing_kinds(store, session_id)
                 if _miss:
