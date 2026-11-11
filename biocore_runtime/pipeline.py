@@ -130,6 +130,9 @@ except Exception:  # pragma: no cover
 HYBRID_RETRIEVAL = str(os.environ.get("BIOCORE_HYBRID") or "0").strip().lower() in ("1", "true", "on", "yes")
 # 记忆业务键（M0001）是否进提示词。默认关：改行格式要先做对照再开。
 MEMORY_CODES = str(os.environ.get("BIOCORE_MEMORY_CODES") or "0").strip().lower() in ("1", "true", "on", "yes")
+# 提示词前缀稳定性：稳定内容放前面，变化的数值放后面，能让上游的缓存命中更多。
+# 默认关：顺序会改变模型读到的优先级，必须先量。
+STABLE_PREFIX = str(os.environ.get("BIOCORE_STABLE_PREFIX") or "0").strip().lower() in ("1", "true", "on", "yes")
 RRF_K = 60
 
 RETRIEVE_TEMP = float(os.environ.get("BIOCORE_RETRIEVE_TEMP") or 0.0)
@@ -4915,6 +4918,28 @@ def gate_reply(reply_text, flags=None):
 
 
 # ---------------------------------------------------------------- prompt block
+_LAST_BLOCK = {}
+
+
+def _note_prefix(session_id, text):
+    """记下同一会话相邻两次提示词块的公共前缀长度（只看不判）。"""
+    prev = _LAST_BLOCK.get(session_id)
+    _LAST_BLOCK[session_id] = text
+    if not prev:
+        return
+    n = 0
+    for a, b in zip(prev, text):
+        if a != b:
+            break
+        n += 1
+    PREFIX_STATS["last"] = n
+    PREFIX_STATS["seen"] = PREFIX_STATS.get("seen", 0) + 1
+    PREFIX_STATS["total"] = PREFIX_STATS.get("total", 0) + n
+
+
+PREFIX_STATS = {}
+
+
 def _state_block(state, budget):
     state = state if isinstance(state, dict) else {}
     core = state.get("core") if isinstance(state.get("core"), dict) else {}
@@ -5041,7 +5066,15 @@ def prompt_block(payload):
     switches = normalize_switches(data.get("switches"))
     state_text = _state_block(state, budget)
     constraints = _constraints_block(state, switches, data)
-    text = (state_text + "\n" + constraints).strip()
+    if STABLE_PREFIX:
+        # 约束（规则为主，变化慢）在前，状态（每轮都变）在后
+        text = (constraints + "\n" + state_text).strip()
+    else:
+        text = (state_text + "\n" + constraints).strip()
+    try:
+        _note_prefix(session_id, text)
+    except Exception:
+        pass
     if _lifecycle is not None:
         try:
             repair = _lifecycle.repair_lines(data.get("store"))
