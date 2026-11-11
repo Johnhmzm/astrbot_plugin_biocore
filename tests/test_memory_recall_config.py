@@ -77,7 +77,7 @@ class ConfigValidationTest(unittest.TestCase):
     def test_the_defaults_are_exposed(self):
         settings = self._settings({})
         self.assertEqual(settings["inject_chars"], P.RECALL_INJECT_DEFAULT)
-        self.assertEqual(settings["delivery"], "event")
+        self.assertEqual(settings["delivery"], "sentence")
 
     def test_a_configured_budget_is_used(self):
         settings = self._settings({"recall": {"inject_chars": 40000,

@@ -44,9 +44,11 @@ def repair(entries, events) -> Dict[str, int]:
         if turn <= 0:
             row['turn'] = index
             report['turn'] += 1
-        if not str(row.get('event_id') or ''):
+        # 事件快照里的 id 是权威的：旧引用可能已经过期（事件重建会换号），
+        # 所以这里覆盖写，而不是只在为空时补。
+        if True:
             eid = by_entry.get(str(row.get('id') or ''))
-            if eid:
+            if eid and str(row.get('event_id') or '') != eid:
                 row['event_id'] = eid
                 report['event_id'] += 1
     return report

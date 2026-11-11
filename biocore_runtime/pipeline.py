@@ -152,6 +152,110 @@ EVENT_SCORE_W_REST = 0.1
 # countrank = 0.7×最佳句 + 0.3×句数名次（句子排名 + 句数排名）
 EVENT_SCORE_MODE = str(os.environ.get("BIOCORE_EVENT_SCORE") or "lse").strip().lower()
 EVENT_SCORE_BETA = float(os.environ.get("BIOCORE_EVENT_BETA") or 2.0)
+# β 的目标函数选 NDCG@10（保头部名次），不是似然：见 docs 里 P01/P16/P20 的对照
+BETA_GRID = [0.5 + 0.1 * i for i in range(0, 56)]
+BETA_SAMPLES = "beta_samples.jsonl"
+
+
+def _ndcg_at_k(order, target, k=10):
+    try:
+        rank = order.index(target) + 1
+    except ValueError:
+        return 0.0
+    return 1.0 / math.log2(rank + 1) if rank <= k else 0.0
+
+
+BETA_CONFIG = "event_beta.json"
+
+
+def _event_beta(store=None):
+    """当前 β：环境变量优先，其次自动重估值，最后默认 2.0。"""
+    override = str(os.environ.get("BIOCORE_EVENT_BETA") or "").strip()
+    if override:
+        try:
+            return float(override)
+        except Exception:
+            pass
+    try:
+        path = os.path.join(_store_data_dir(store), BETA_CONFIG)
+        with open(path, encoding="utf-8") as fh:
+            value = float(json.load(fh).get("beta") or 0.0)
+        if 0.3 <= value <= 8.0:
+            return value
+    except Exception:
+        pass
+    return float(EVENT_SCORE_BETA)
+
+
+def _save_beta(store, beta, samples):
+    try:
+        path = os.path.join(_store_data_dir(store), BETA_CONFIG)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"beta": round(float(beta), 4), "samples": int(samples),
+                       "updated_ts": round(time.time(), 3)}, fh)
+        return True
+    except Exception as exc:
+        logger.warning("[beta] 写入失败：%s", str(exc)[:100])
+        return False
+
+
+def record_beta_sample(store, session_id, scores_by_event, target_event):
+    """记一条样本：这次提问的答案是哪个事件，以及各事件的句子分。"""
+    if not target_event or not isinstance(scores_by_event, dict) or not scores_by_event:
+        return False
+    try:
+        path = os.path.join(_store_data_dir(store), BETA_SAMPLES)
+        row = {"session_id": str(session_id), "target": str(target_event),
+               "scores": {str(k): [round(float(x), 4) for x in v]
+                          for k, v in scores_by_event.items()}}
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + chr(10))
+        return True
+    except Exception as exc:
+        logger.warning("[beta] 记录失败：%s", str(exc)[:100])
+        return False
+
+
+def tune_beta(store, session_id=None, limit=400, k=10):
+    """在已记录的样本上按 NDCG@10 重估 β；返回 (beta, 样本数, 提升)。"""
+    path = os.path.join(_store_data_dir(store), BETA_SAMPLES)
+    if not os.path.exists(path):
+        return None, 0, 0.0
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except Exception:
+                    continue
+                if session_id and str(row.get("session_id")) != str(session_id):
+                    continue
+                if row.get("target") in (row.get("scores") or {}):
+                    rows.append(row)
+    except Exception:
+        return None, 0, 0.0
+    rows = rows[-int(limit or 400):]
+    if len(rows) < 20:
+        return None, len(rows), 0.0
+    def score_at(beta):
+        total = 0.0
+        for row in rows:
+            sc = {}
+            for key, vals in (row.get("scores") or {}).items():
+                try:
+                    sc[key] = (1.0 / beta) * math.log(sum(math.exp(beta * x) for x in vals))
+                except Exception:
+                    sc[key] = max(vals) if vals else 0.0
+            order = sorted(sc, key=lambda kk: -sc[kk])
+            total += _ndcg_at_k(order, row["target"], k=k)
+        return total / len(rows)
+    best_beta, best = None, -1.0
+    for beta in BETA_GRID:
+        value = score_at(beta)
+        if value > best:
+            best_beta, best = beta, value
+    return best_beta, len(rows), best
 EVENT_SCORE_W_COUNT = float(os.environ.get("BIOCORE_EVENT_COUNT_W") or 0.3)
 EVENT_RELEVANT_COS = float(os.environ.get("BIOCORE_EVENT_RELEVANT") or 0.4)
 EVENT_SCORE_TOL = 0.03
@@ -3761,13 +3865,14 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
                                 + EVENT_SCORE_W_REST * rest_mean, 6)
         bucket["in_top40"] = sum(1 for value in values if value in top40)
     if EVENT_SCORE_MODE == "lse":
+        _beta_now = _event_beta(store)
         # 平滑最大值：接近"取最高那句"，但第二三句也会抬分（170 题实测 MRR 0.059→0.098）
         for _k in order:
             _b = grouped[_k]
             _vals = [v for v, _r in _b["rows"]]
             try:
-                _b["score"] = round((1.0 / EVENT_SCORE_BETA)
-                                    * math.log(sum(math.exp(EVENT_SCORE_BETA * v) for v in _vals)), 6)
+                _b["score"] = round((1.0 / _beta_now)
+                                    * math.log(sum(math.exp(_beta_now * v) for v in _vals)), 6)
             except Exception:
                 _b["score"] = round(max(_vals) if _vals else 0.0, 6)
     if EVENT_SCORE_MODE == "countrank":
@@ -3788,6 +3893,15 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             _b["count_norm"] = round(_norm, 6)
             _b["score"] = round((1.0 - EVENT_SCORE_W_COUNT) * _b["max_cos"]
                                 + EVENT_SCORE_W_COUNT * _norm, 6)
+    try:
+        if EVENT_SCORE_MODE == "lse":
+            _snap = {str(k): [round(float(sv), 4) for sv, _r in grouped[k]["rows"]]
+                     for k in grouped}
+            _p = os.path.join(_store_data_dir(store), "last_event_scores.json")
+            with open(_p, "w", encoding="utf-8") as _fh:
+                json.dump({"session_id": str(session_id), "scores": _snap}, _fh)
+    except Exception:
+        pass
     ranked = sorted(order, key=lambda key: (-grouped[key]["score"],
                                            -grouped[key]["in_top40"],
                                            grouped[key]["start"],
@@ -3812,8 +3926,10 @@ def _sentence_recall_block(store, session_id, query, entries, events, payload=No
             _pool_n = max(1, min(SENTENCE_RERANK_POOL, len(scored)))
             _head_rows = [row for _value, row in scored[:_pool_n]]
             try:
+                # 候选池是 60 句，配置里 rerank_top_n 常是 20：不传就会只重排 20 条，
+                # 另外 40 条按余弦排在后面。这里显式对齐到池子大小。
                 _ordered, _rr = _rerank_rows(store, text, _head_rows, payload,
-                                             stage="sentence")
+                                             stage="sentence", top_n=_pool_n)
             except Exception:
                 _ordered, _rr = None, {"reranked": False}
             if _ordered and (_rr or {}).get("reranked"):
@@ -7763,7 +7879,7 @@ def recall_settings(store, payload=None):
     if value < RECALL_INJECT_MIN or value > RECALL_INJECT_MAX:
         raise RuntimeError("recall.inject_chars=%d 超出合法范围 [%d, %d]" % (value, RECALL_INJECT_MIN, RECALL_INJECT_MAX))
     delivery = (cfg.get("delivery") or os.environ.get("BIOCORE_RECALL_DELIVERY")
-                or pl.get("delivery") or "event")
+                or pl.get("delivery") or "sentence")
     delivery = str(delivery).strip().lower()
     if delivery not in RECALL_DELIVERIES:
         raise RuntimeError("recall.delivery=%r 不合法；只接受 %s"
@@ -8265,6 +8381,51 @@ def trace_read(store, session_id, limit=TRACE_DEFAULT_LIMIT):
 
 
 # ---------------------------------------------------------------- CLI dispatch
+def _infer_target_event(store, session_id, reply_text):
+    """回复文本和哪个事件重叠最多，就当作这次"答案来自哪个事件"。"""
+    try:
+        from biocore_memory.recall import channels as _ch
+        events = (_load_event_state(store, session_id).get("events") or [])
+        text = str(reply_text or "").strip()
+        if not text or not events:
+            return ""
+        best_key, best = "", 0.0
+        for ev in events:
+            key = "%d-%d" % (int(ev.get("start") or 0), int(ev.get("end") or 0))
+            value = _ch.lexical_score(text, str(ev.get("text") or ""))
+            if value > best:
+                best_key, best = key, value
+        return best_key if best > 0 else ""
+    except Exception:
+        return ""
+
+
+def _maybe_tune_beta(store, session_id, data):
+    """每累计 20 条样本重估一次 β，并用指数平滑吸收，避免抖动。"""
+    try:
+        path = os.path.join(_store_data_dir(store), BETA_SAMPLES)
+        if not os.path.exists(path):
+            return None
+        count = 0
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    count += 1
+        if count < 20 or count % 20 != 0:
+            return None
+        beta_new, samples, score = tune_beta(store, limit=400)
+        if not beta_new:
+            return None
+        current = _event_beta(store)
+        smoothed = 0.9 * current + 0.1 * float(beta_new)
+        _save_beta(store, smoothed, samples)
+        return {"beta": round(smoothed, 4), "fit": beta_new,
+                "samples": samples, "ndcg10": round(score, 4)}
+    except Exception as exc:
+        logger.warning("[beta] 重估失败：%s", str(exc)[:120])
+        return None
+
+
 def dispatch(action, payload=None):
     """One CLI action -> JSON-safe result (never raises)."""
     data = payload if isinstance(payload, dict) else {}
@@ -8549,6 +8710,24 @@ def dispatch(action, payload=None):
                         "trace": None, "trace_file": "", "disabled": True,
                         "reason": "core_disabled"}
             raw_assistant = clean_text(data.get("assistant_text"))
+            # β 自适应：从这次回复推断"答案来自哪个事件"，记一条样本，
+            # 每 20 条重估一次并指数平滑 —— 数据涨了参数跟着涨。
+            try:
+                if EVENT_SCORE_MODE == "lse" and raw_assistant:
+                    _lp = os.path.join(_store_data_dir(store), "last_event_scores.json")
+                    _snap = {}
+                    if os.path.exists(_lp):
+                        with open(_lp, encoding="utf-8") as _fh:
+                            _snap = json.load(_fh).get("scores") or {}
+                    _tgt = _infer_target_event(store, session_id, raw_assistant)
+                    if _snap and _tgt:
+                        record_beta_sample(store, session_id, _snap, _tgt)
+                        _tuned = _maybe_tune_beta(store, session_id, data)
+                        if _tuned:
+                            logger.info("[beta] 重估 beta=%.3f (fit=%.2f, n=%d, ndcg10=%.3f)",
+                                        _tuned["beta"], _tuned["fit"], _tuned["samples"], _tuned["ndcg10"])
+            except Exception as _be:
+                logger.warning("[beta] 跳过：%s", str(_be)[:120])
             # the brain grades the exchange; the body only consumes the number
             try:
                 if _require_feature(store, BODY_SWITCH_KEY, data):
